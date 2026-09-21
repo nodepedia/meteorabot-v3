@@ -2,7 +2,7 @@ import config, { MAX_CONCURRENT_PER_POOL } from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
 import { getOpenPositionCountsByPool } from "../meteora/positions.js";
-import { loadPoolList } from "./pool-list.js";
+import { loadPoolList, commentPoolInList } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
@@ -51,6 +51,31 @@ let candidateCache = [];
 let _refreshBusy = false;
 let _watchBusy = false;
 
+// Matikan pool secara persisten: beri `#` di pool.txt + hentikan pemantauan
+// in-process seketika (poll harga cepat tidak mengecek `skipped`). Hapus `#`
+// secara manual untuk mengaktifkan kembali.
+export function deactivatePool(pool, reason) {
+  if (!pool) return;
+  // Dry run tidak boleh mengubah pool.txt; cukup skip runtime.
+  if (config.dryRun) {
+    skipped.add(pool);
+    return;
+  }
+  candidateCache = candidateCache.filter((c) => c.pool !== pool);
+  failureCounts.delete(pool);
+  failureCooldownUntil.delete(pool);
+  dryRunNoted.delete(pool);
+  if (commentPoolInList(pool)) {
+    skipped.delete(pool);
+    log.info(
+      `Pool ${pool.slice(0, 8)} ditandai '#' di ${config.entry.poolListFile}${reason ? ` (${reason})` : ""} — hapus '#' untuk memantau lagi`
+    );
+  } else {
+    skipped.add(pool);
+    log.warn(`Pool ${pool.slice(0, 8)} gagal ditandai di ${config.entry.poolListFile} — skip sampai restart`);
+  }
+}
+
 // Refresh lambat: pool list, posisi terbuka (RPC), expiry, kuota, dan pool info.
 // Hanya fungsi ini yang menyentuh RPC, sehingga aman dijalankan sesekali.
 export async function refreshCandidates() {
@@ -80,15 +105,15 @@ export async function refreshCandidates() {
       if (!firstSeenAt.has(poolAddress)) firstSeenAt.set(poolAddress, now);
       const ageHours = (now - firstSeenAt.get(poolAddress)) / 3_600_000;
       if (ageHours >= config.entry.expiryHours) {
-        skipped.add(poolAddress);
         log.warn(
-          `Pool ${poolAddress.slice(0, 8)} expired after ${config.entry.expiryHours}h without entry — skipped until restart`
+          `Pool ${poolAddress.slice(0, 8)} expired after ${config.entry.expiryHours}h without entry — dinonaktifkan`
         );
         tg.notifyPoolExpired({
           pool: poolAddress,
           pair: pairNameCache.get(poolAddress) || null,
           expiryHours: config.entry.expiryHours,
         });
+        deactivatePool(poolAddress, "expired tanpa entry");
         continue;
       }
 
@@ -111,12 +136,12 @@ export async function refreshCandidates() {
         continue;
       }
       if (info.unsupported) {
-        skipped.add(poolAddress);
         const quoteLabel = info.quoteMint || `${info.xMint?.slice(0, 4) || "?"}/${info.yMint?.slice(0, 4) || "?"}`;
         log.warn(
-          `Pool ${poolAddress.slice(0, 8)} rejected: pair bukan SOL (${info.pairName || poolAddress} | quote ${quoteLabel}) — skip sampai restart`
+          `Pool ${poolAddress.slice(0, 8)} rejected: pair bukan SOL (${info.pairName || poolAddress} | quote ${quoteLabel})`
         );
         tg.notifyPoolUnsupported({ pool: poolAddress, pair: info.pairName, quoteMint: quoteLabel });
+        deactivatePool(poolAddress, "pair bukan SOL");
         continue;
       }
       if (!info.baseMint) {
@@ -228,9 +253,8 @@ function startEntry(trigger, candidate) {
       const failures = (failureCounts.get(pool) || 0) + 1;
       failureCounts.set(pool, failures);
       if (failures >= config.entry.maxFailures) {
-        skipped.add(pool);
-        failureCooldownUntil.delete(pool);
-        log.error(`Pool ${pool.slice(0, 8)} aborted after ${failures} failed entries — skip sampai restart`);
+        deactivatePool(pool, `gagal entry ${failures}x`);
+        log.error(`Pool ${pool.slice(0, 8)} aborted after ${failures} failed entries — dinonaktifkan`);
         if (rateLimited) {
           tg.notifyEntryRateLimited({
             pool,

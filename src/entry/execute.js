@@ -1,4 +1,4 @@
-import { Keypair, sendAndConfirmTransaction } from "@solana/web3.js";
+import { Keypair } from "@solana/web3.js";
 import BN from "bn.js";
 import config, { BINS_BELOW, BINS_ABOVE, STRATEGY } from "../config/index.js";
 import log from "../core/logger.js";
@@ -7,6 +7,8 @@ import { getConnection } from "../solana/connection.js";
 import { getWallet } from "../solana/wallet.js";
 import { getTokenBalance, getMintDecimals } from "../solana/balances.js";
 import { swapSolToToken, swapToSol } from "../solana/swap.js";
+import { buildFeePlan, checkFeeCap } from "../solana/fees.js";
+import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { getPoolInfo } from "./pool-info.js";
 import { trackPosition } from "../state/positions.js";
@@ -71,6 +73,21 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
     };
   }
 
+  // Rencana fee (priority/Jito) + cek batas biaya sebelum membeli token.
+  const feePlan = buildFeePlan();
+  const feeCap = checkFeeCap(feePlan);
+  if (!feeCap.ok) {
+    log.error(
+      `Entry ${poolAddress.slice(0, 8)} dibatalkan: estimasi fee ${feeCap.totalSol.toFixed(6)} SOL > cap ${feeCap.cap} SOL (mode ${feePlan.mode})`
+    );
+    return {
+      success: false,
+      error: `estimasi fee ${feeCap.totalSol.toFixed(6)} SOL > cap ${feeCap.cap} SOL (mode ${feePlan.mode})`,
+      feeCap: true,
+      baseMint,
+    };
+  }
+
   const swap = await swapSolToToken(baseMint, tokenSideSol);
   if (!swap.success) {
     return {
@@ -95,6 +112,7 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
   // 2. Initialize position + add liquidity (double-sided, BidAsk)
   const newPosition = Keypair.generate();
   let txHash = null;
+  let recovered = false;
   try {
     const tx = await pool.initializePositionAndAddLiquidityByStrategy({
       positionPubKey: newPosition.publicKey,
@@ -104,19 +122,42 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
       strategy: { minBinId, maxBinId, strategyType },
       slippage: config.entry.slippageBps,
     });
-    txHash = await sendAndConfirmTransaction(connection, tx, [wallet, newPosition]);
+    const sent = await sendAndConfirmRobust({
+      connection,
+      tx,
+      signers: [wallet, newPosition],
+      feePlan,
+      wallet,
+    });
+    txHash = sent.signature;
   } catch (err) {
     log.error(`Entry tx failed for ${poolAddress.slice(0, 8)}: ${err.message}`);
-    const orphaned = await getTokenBalance(baseMint);
-    if (orphaned > 0) {
-      const revert = await swapToSol(baseMint, orphaned);
-      if (revert.success) {
-        log.info(`Reverted ${orphaned} ${baseMint.slice(0, 8)} → SOL after failed entry`);
-      } else {
-        log.error(`Failed to revert ${orphaned} ${baseMint.slice(0, 8)} → SOL: ${revert.error}`);
-      }
+    // Konfirmasi gagal bukan berarti tx tidak mendarat (mis. blockhash expired
+    // padahal sudah masuk). Cek akun posisi sebelum me-revert token.
+    let landed = false;
+    try {
+      landed = !!(await connection.getAccountInfo(newPosition.publicKey));
+    } catch {
+      landed = false;
     }
-    return { success: false, error: err.message, baseMint };
+    if (landed) {
+      recovered = true;
+      txHash = err.signature || null;
+      log.warn(
+        `Entry ${pairName || poolAddress.slice(0, 8)}: konfirmasi gagal (${err.message}) tapi posisi ada on-chain — dianggap sukses`
+      );
+    } else {
+      const orphaned = await getTokenBalance(baseMint);
+      if (orphaned > 0) {
+        const revert = await swapToSol(baseMint, orphaned);
+        if (revert.success) {
+          log.info(`Reverted ${orphaned} ${baseMint.slice(0, 8)} → SOL after failed entry`);
+        } else {
+          log.error(`Failed to revert ${orphaned} ${baseMint.slice(0, 8)} → SOL: ${revert.error}`);
+        }
+      }
+      return { success: false, error: err.message, baseMint };
+    }
   }
 
   const positionAddress = newPosition.publicKey.toString();
@@ -128,12 +169,28 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
   if (isDca) {
     // Naratif DCA ditangani pemanggil (entry/dca.js) agar tidak dobel.
     log.debug(`[detail] DCA entry ${pair}: position ${positionAddress} tx ${txHash?.slice(0, 16)} (use ${uses})`);
+  } else if (recovered) {
+    log.info(`📌 ENTRY ${pair} — posisi terbuka (dipulihkan dari tx yang konfirmasinya gagal) — ${sizeSol} SOL`);
+    recordAction(`ENTRY ${pair} — ${sizeSol} SOL`);
+    tg.notifyEntry({ pair, pool: poolAddress, feeMode: feePlan.mode, feeSol: feeCap.totalSol });
   } else {
     log.info(`📌 ENTRY ${pair} — harga menyentuh garis tren → beli ${sizeSol} SOL`);
-    log.debug(`[detail] pool ${poolAddress} | position ${positionAddress} | tx ${txHash?.slice(0, 16)} | use ${uses}`);
+    const feeLabel = feePlan.mode !== "none" ? ` | fee ~${feeCap.totalSol.toFixed(6)} SOL (${feePlan.mode})` : "";
+    log.debug(
+      `[detail] pool ${poolAddress} | position ${positionAddress} | tx ${txHash?.slice(0, 16)} | use ${uses}${feeLabel}`
+    );
     recordAction(`ENTRY ${pair} — ${sizeSol} SOL`);
-    tg.notifyEntry({ pair, pool: poolAddress });
+    tg.notifyEntry({ pair, pool: poolAddress, feeMode: feePlan.mode, feeSol: feeCap.totalSol });
   }
 
-  return { success: true, position: positionAddress, pool: poolAddress, pair, tx: txHash };
+  return {
+    success: true,
+    position: positionAddress,
+    pool: poolAddress,
+    pair,
+    tx: txHash,
+    recovered,
+    feeMode: feePlan.mode,
+    feeSol: feeCap.totalSol,
+  };
 }

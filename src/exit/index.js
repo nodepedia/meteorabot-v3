@@ -26,7 +26,7 @@ import { processBounceRecovery } from "./bounce.js";
 import { clearBounceRecovery } from "../state/bounce.js";
 import { clearDcaState, resetStaleDcaPools, getPoolDcaCount } from "../state/dca.js";
 import { getEntryInProgressPools, getClosingPools, takeRecentActions } from "../entry/runtime.js";
-import { getWatchSnapshot } from "../entry/index.js";
+import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
 import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
@@ -69,6 +69,9 @@ function handleMissingPositions(seen) {
     log.warn(`${label}: position tidak terbaca ${count} cycle — dianggap ditutup manual`);
     tg.notifyPositionMissing(p.position, p.pair, count);
     sweepClosedPosition(p.baseMint, label);
+    if (!getOpenTrackedPositions().some((t) => t.pool === p.pool)) {
+      deactivatePool(p.pool, "posisi ditutup manual / hilang");
+    }
   }
 }
 

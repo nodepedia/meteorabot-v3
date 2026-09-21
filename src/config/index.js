@@ -3,6 +3,14 @@ import { modeRules, LEGACY_MODE } from "./rules.js";
 
 const e = loadEnv();
 
+const FEE_MODES = ["none", "priority", "jito", "both"];
+function normalizeFeeMode(raw) {
+  const value = String(raw == null ? "" : raw)
+    .trim()
+    .toLowerCase();
+  return FEE_MODES.includes(value) ? value : "none";
+}
+
 // Mode = "<strategi>:<komposisi>".
 //   strategi   : bidask | spot
 //   komposisi  : double (token+SOL) | token | sol
@@ -36,6 +44,9 @@ const spotSol = modeRules(e, "SPOT_SOL", {});
 const entry = {
   enabled: bool(e.ENTRY_ENABLED, true),
   poolListFile: e.POOL_LIST_FILE || "pool.txt",
+  // Default untuk baris pool.txt yang hanya berisi alamat (tanpa ,size,max).
+  defaultSizeSol: num(e.ENTRY_DEFAULT_SIZE_SOL, 0),
+  defaultMaxPositions: Math.max(1, Math.floor(num(e.ENTRY_DEFAULT_MAX_POSITION, 1))),
   // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
   scanIntervalSec: num(e.ENTRY_SCAN_INTERVAL_SEC, 30),
   timeframe: e.ENTRY_TIMEFRAME || "15m",
@@ -50,6 +61,26 @@ const entry = {
   maxFailures: num(e.ENTRY_MAX_FAILURES, 3),
   // held_pullback = close harus tetap di atas garis; first_touch = sentuh garis = entry.
   touchMode: (e.ENTRY_TOUCH_MODE || "held_pullback").toLowerCase() === "first_touch" ? "first_touch" : "held_pullback",
+  // Strategi fee entry. none = perilaku lama + retry; priority = ComputeBudget;
+  // jito = tip Jito; both = keduanya. Lihat src/solana/{fees,send,jito}.js.
+  fees: {
+    mode: normalizeFeeMode(e.ENTRY_FEE_MODE),
+    priorityMicroLamports: Math.max(0, num(e.ENTRY_PRIORITY_FEE_MICRO_LAMPORTS, 50000)),
+    computeUnitLimit: Math.max(0, num(e.ENTRY_COMPUTE_UNIT_LIMIT, 0)),
+    jitoTipSol: Math.max(0, num(e.ENTRY_JITO_TIP_SOL, 0.001)),
+    maxSol: Math.max(0, num(e.ENTRY_FEE_MAX_SOL, 0.002)),
+    retryAttempts: Math.max(1, Math.floor(num(e.ENTRY_TX_RETRY_ATTEMPTS, 5))),
+    confirmTimeoutSec: Math.max(1, num(e.ENTRY_TX_CONFIRM_TIMEOUT_SEC, 30)),
+    resendIntervalMs: Math.max(200, num(e.ENTRY_TX_RESEND_INTERVAL_MS, 2000)),
+    dualSend: bool(e.ENTRY_DUAL_SEND, true),
+    jitoBlockEngineUrl: e.JITO_BLOCK_ENGINE_URL || "https://mainnet.block-engine.jito.wtf",
+    jitoTipAccounts:
+      e.JITO_TIP_ACCOUNTS != null && e.JITO_TIP_ACCOUNTS !== ""
+        ? e.JITO_TIP_ACCOUNTS.split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [],
+  },
 };
 
 // DCA (averaging-down) — trailing TP terbalik: arm saat PnL <= armPct, lacak

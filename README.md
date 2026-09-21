@@ -4,7 +4,7 @@ Combined auto-entry and deterministic exit bot for Meteora DLMM pools on Solana.
 
 ## Features
 
-- **Auto-entry** — Supertrend (ATR 10 × 3) **bullish** on **native 15m candles from GMGN**; entry fires on `first_touch` when the real-time **Jupiter** price drops to or below the Supertrend line. Candidate refresh (`ENTRY_SCAN_INTERVAL_SEC`) and Jupiter price polling (`JUPITER_POLL_INTERVAL_SEC`, `1` = 1 req/s, one batched request for all pools) run on separate cadences, so the slow RPC/pool refresh never throttles the signal. Jupiter `price/v3` allows ~10 req/10s per key, so do not go below `1`. BidAsk two-sided, bins −34/+34; per-pool size from `pool.txt`. Bearish = the pool is not watched at all. Next entry only after the previous position closes (and while still bullish), up to `max_position`.
+- **Auto-entry** — Supertrend (ATR 10 × 3) **bullish** on **native 15m candles from GMGN**; entry fires on `first_touch` when the real-time **Jupiter** price drops to or below the Supertrend line. Candidate refresh (`ENTRY_SCAN_INTERVAL_SEC`) and Jupiter price polling (`JUPITER_POLL_INTERVAL_SEC`, `1` = 1 req/s, one batched request for all pools) run on separate cadences, so the slow RPC/pool refresh never throttles the signal. - Jupiter `price/v3` allows ~10 req/10s per key, so do not go below `1`. BidAsk two-sided, bins −34/+34; size per pool from `pool.txt` (default in `.env`, overridable per line). Bearish = the pool is not watched at all. Next entry only after the previous position closes (and while still bullish), up to `max_position`.
 - **Deterministic exit** per composite mode `<strategy>:<composition>` — `bidask:double`, `bidask:token`, `bidask:sol`, `spot:double` (plus scaffold `spot:token` / `spot:sol`) — stop loss, OOR, 2-phase trailing TP, indicator-armed trailing (RSI+MACD / RSI+BB), bounce recovery. Composition is detected from the position's initial entry deposits (`allTimeDeposits`), falling back to current bin contents; strategy is inferred from bin span.
 - **DCA (averaging-down)** — trailing TP terbalik: saat posisi menyentuh `DCA_ARM_PCT` (−10%), bot melacak *trough* (titik terendah PnL), lalu membuka posisi baru di pool yang sama saat PnL rebound `DCA_REBOUND_PCT` dari trough, setelah konfirmasi `DCA_CONFIRM_DELAY_SEC`. Sekali per posisi; total **per sesi** (sejak posisi pertama dibuka sampai semua posisi di pool close) dibatasi `DCA_MAX_ADDS` dan disimpan persisten di `state.json`, jadi tahan restart. Size mengikuti `entry_size` `pool.txt`, tidak memakai kuota `max_position`, dan tidak butuh Supertrend bullish.
 - **Auto swap** — base token → SOL via Jupiter after close.
@@ -86,7 +86,7 @@ nano pool.txt ## fill pool token
 npm start              # foreground, or: npm run pm2
 ```
 
-`pool.txt` format: `pool_address,entry_size,max_position`.
+`pool.txt`: one pool per line — bare address (uses `.env` defaults) or `pool_address,entry_size,max_position` to override.
 
 > Deploying to a VPS? See [VPS Installation](#vps-installation-ubuntu).
 
@@ -148,7 +148,15 @@ Required values:
 
 ### 5. Create `pool.txt`
 
-Format: `pool_address,entry_size,max_position` (one pool per line). This file is git-ignored.
+One pool per line. A bare pool address uses the defaults from `.env`
+(`ENTRY_DEFAULT_SIZE_SOL`, `ENTRY_DEFAULT_MAX_POSITION`); add `,entry_size,max_position`
+to override per pool. This file is git-ignored.
+
+The bot **comments out (`#`) a pool line automatically** once that pool is done:
+entry+exit complete (all positions closed), entry failed `ENTRY_MAX_FAILURES` times,
+pair is not SOL, or it expired without an entry. Remove the leading `#` to let the
+bot watch/enter that pool again. Do not keep `pool.txt` open in an editor while the
+bot runs — saving would overwrite the bot's marks.
 
 ### 6. Test in the foreground
 

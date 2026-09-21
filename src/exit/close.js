@@ -4,12 +4,13 @@ import * as tg from "../notify/telegram.js";
 import { closePosition } from "../meteora/close.js";
 import { getTokenBalance } from "../solana/balances.js";
 import { swapToSol } from "../solana/swap.js";
-import { recordClose, getTrackedPosition } from "../state/positions.js";
+import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
 import { clearTrailingState } from "../state/trailing.js";
 import { clearBounceRecovery } from "../state/bounce.js";
 import { clearDcaState } from "../state/dca.js";
 import { clearTrailingTimer } from "./trailing.js";
 import { addClosingPool, removeClosingPool, recordAction } from "../entry/runtime.js";
+import { deactivatePool } from "../entry/index.js";
 import { humanReason, fmtPct } from "../core/report.js";
 
 // Guard per-posisi: cegah beberapa close paralel untuk posisi yang sama
@@ -67,6 +68,11 @@ export async function handleClose(pos, reason) {
       recordAction(`CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(pos.pnlPct)}`);
 
       tg.notifyClose(pairLabel, reason, pos.pnlPct, swapInfo, peakPnl);
+
+      // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
+      // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.
+      const stillOpenInPool = getOpenTrackedPositions().some((p) => p.pool === pos.pool);
+      if (!stillOpenInPool) deactivatePool(pos.pool, "entry+exit selesai");
     } else {
       const brief = String(result?.error || "unknown").split("\n")[0];
       log.error(`Close failed for ${pairLabel}: ${brief}`);

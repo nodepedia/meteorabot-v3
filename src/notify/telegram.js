@@ -59,8 +59,13 @@ export function notifyStartup(info = {}) {
   send(lines.join("\n"));
 }
 
-export function notifyEntry({ pair, pool }) {
-  send(`🚀 ENTRY ${pair || pool?.slice(0, 8) || ""}\nPool: ${pool || "?"}`);
+export function notifyEntry({ pair, pool, feeMode, feeSol }) {
+  const mode = feeMode || config.entry.fees.mode;
+  const lines = [`🚀 ENTRY ${pair || pool?.slice(0, 8) || ""}`, `Pool: ${pool || "?"}`];
+  if (mode && mode !== "none") {
+    lines.push(`Fee: ${mode}${feeSol > 0 ? ` (~${feeSol.toFixed(6)} SOL)` : ""}`);
+  }
+  send(lines.join("\n"));
 }
 
 export function notifyDca({ pair, pool, pnlPct, sizeSol }) {
@@ -111,6 +116,7 @@ export function notifyEntryFailed({ pool, pair, error, attempts, maxFailures, co
     `Alasan: ${error || "unknown"}`,
     `Percobaan: ${attempts}${maxFailures != null ? `/${maxFailures}` : ""}`,
   ];
+  if (config.entry.fees.mode !== "none") lines.push(`Fee: ${config.entry.fees.mode}`);
   if (cooldownSec > 0) lines.push(`Cooldown: ${cooldownSec}s`);
   send(lines.join("\n"));
 }
