@@ -73,6 +73,8 @@ src/
 test/                 # node:test unit + module-load smoke tests
 scripts/
   patch-anchor.js     # Node 24 ESM patch (postinstall)
+  pnl-report.js       # Laporan PnL posisi (WIB, SOL + USD)
+  scan-pnl.js         # Scan PnL cepat per wallet (lama)
 ```
 
 ## Quick Start
@@ -231,6 +233,27 @@ Mirror of trailing TP, inverted. Driven by a dedicated watcher on its own cadenc
 | `npm test` | Run unit + module-load tests (`node:test`) |
 | `npm run lint` | Run ESLint |
 | `npm run format` | Format with Prettier |
+
+## PnL Report
+
+`scripts/pnl-report.js` menarik PnL posisi dari Meteora datapi dan mencetak tabel (waktu WIB/UTC+7, SOL + USD) beserta ringkasan posisi closed/open dan total realized. Read-only — tidak menyentuh `state.json` dan tidak mengirim transaksi.
+
+```bash
+node scripts/pnl-report.js                              # hari ini 00:00 WIB → sekarang
+node scripts/pnl-report.js --days 1                     # 1 hari terakhir
+node scripts/pnl-report.js --from "2026-09-21 08:30" --to "2026-09-21 17:00"
+node scripts/pnl-report.js --wallet <alamat>            # override wallet
+```
+
+| Opsi | Keterangan |
+|---|---|
+| `--from "YYYY-MM-DD HH:mm"` | Mulai (WIB). Default: hari ini 00:00 WIB |
+| `--to "YYYY-MM-DD HH:mm"` | Sampai (WIB). Default: sekarang |
+| `--days N` | `N` hari terakhir (menimpa `--from`) |
+| `--wallet <alamat>` | Wallet; default dari `WALLET_PRIVATE_KEY` di `.env` |
+| `-h`, `--help` | Tampilkan bantuan |
+
+`scripts/scan-pnl.js <alamat> [--days N]` adalah scanner lama yang lebih sederhana (wallet wajib sebagai argumen).
 
 ## Development
 
