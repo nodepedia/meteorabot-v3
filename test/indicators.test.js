@@ -42,12 +42,12 @@ test("computeMACD returns a boolean greenAfterDarkRed with enough data", () => {
   assert.ok(Array.isArray(macd.histogram));
 });
 
-test("greenAfterDarkRed true saat hijau setelah merah gelap", () => {
-  assert.equal(isGreenAfterDarkRed([-3, -2, 0.5]), true);
+test("greenAfterDarkRed true saat merah makin gelap lalu hijau naik", () => {
+  assert.equal(isGreenAfterDarkRed([-3, -4, 0.5]), true);
 });
 
-test("greenAfterDarkRed false saat bar sebelumnya merah terang (turun)", () => {
-  assert.equal(isGreenAfterDarkRed([-1, -2, 0.5]), false);
+test("greenAfterDarkRed false saat bar sebelumnya merah terang (RED LIGHT)", () => {
+  assert.equal(isGreenAfterDarkRed([-3, -2, 0.5]), false);
 });
 
 test("greenAfterDarkRed false saat bar sebelumnya sudah hijau", () => {
@@ -55,7 +55,7 @@ test("greenAfterDarkRed false saat bar sebelumnya sudah hijau", () => {
 });
 
 test("greenAfterDarkRed false saat bar terakhir belum hijau", () => {
-  assert.equal(isGreenAfterDarkRed([-3, -2, -1]), false);
+  assert.equal(isGreenAfterDarkRed([-3, -4, -1]), false);
 });
 
 test("greenAfterDarkRed false untuk data kurang dari 3 bar", () => {

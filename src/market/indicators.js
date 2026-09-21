@@ -68,16 +68,17 @@ export function computeMACD(closes, fast = 12, slow = 26, signal = 9) {
   };
 }
 
-// Pure: bar MACD terakhir hijau (hist > 0) tepat setelah bar sebelumnya merah
-// gelap (hist < 0 tapi naik / mendekati nol). Transisi merah gelap -> merah
-// terang -> hijau tidak dianggap sinyal, jadi bar tepat sebelum hijau wajib
-// merah gelap. Butuh minimal 3 bar histogram.
+// Pure: bar MACD terakhir hijau tepat setelah bar sebelumnya merah gelap.
+// - RED (t-1)   : hist < 0 dan makin negatif (H[t-1] < H[t-2]).
+// - GREEN (t)   : hist > 0 dan naik (H[t] > H[t-1]).
+// Transisi RED -> RED LIGHT -> GREEN (merah makin terang) bukan sinyal, wajib
+// bar tepat sebelum hijau benar-benar merah gelap. Butuh minimal 3 bar histogram.
 export function isGreenAfterDarkRed(histogram) {
   if (!Array.isArray(histogram) || histogram.length < 3) return false;
   const last = histogram[histogram.length - 1];
   const prev = histogram[histogram.length - 2];
   const prevPrev = histogram[histogram.length - 3];
-  return prev < 0 && prev > prevPrev && last > 0;
+  return prev < 0 && prev < prevPrev && last > 0 && last > prev;
 }
 
 export function computeBB(closes, period = 20, stddev = 2) {

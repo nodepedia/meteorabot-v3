@@ -102,7 +102,8 @@ export function closedCandles(candles) {
 
 // Pure: pilih reason sinyal indikator dari nilai yang sudah dihitung.
 // Urutan dipertahankan: rsi_macd -> rsi_bb. Sinyal RSI+MACD = RSI(2) >= 90 dan
-// bar MACD hijau (hist > 0) tepat setelah bar merah gelap (hist < 0 dan naik).
+// bar MACD hijau (hist > 0 dan naik) tepat setelah bar merah gelap (hist < 0
+// dan makin negatif), keduanya pada candle t yang sama.
 // Sinyal RSI+BB = RSI(2) >= 90 dan high candle (yang sudah tutup) menembus BB upper.
 export function detectIndicatorSignal({ rsiLatest, macdGreenAfterDarkRed, bbUpper, highLatest }) {
   if (!(rsiLatest >= 90)) return null;
