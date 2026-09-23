@@ -121,7 +121,7 @@ node -v && npm -v
 ### 3. Clone and install the project
 
 ```bash
-git clone https://github.com/nodepedia/meteorabot-v3/.git
+git clone https://github.com/nodepedia/meteorabot-v3
 cd meteorabot
 npm install
 ```
