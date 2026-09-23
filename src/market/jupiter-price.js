@@ -35,13 +35,16 @@ function quotaExhausted(now) {
 
 // Ambil harga USD real-time untuk sekumpulan mint (batch, <=50 mint/request).
 // Mengembalikan Map mint -> harga.
-export async function getPrices(mints = []) {
+export async function getPrices(mints = [], { force = false } = {}) {
   const out = new Map();
   const unique = [...new Set(mints.filter(Boolean))];
   if (unique.length === 0) return out;
 
   const now = Date.now();
-  if (now < blockedUntil || now < nextAllowedAt || quotaExhausted(now)) return out;
+  // force = lewati pacing antar-poll (untuk cek sesekali di jalur entry/DCA),
+  // tetap menghormati backoff 429 dan kuota.
+  if (now < blockedUntil || quotaExhausted(now)) return out;
+  if (!force && now < nextAllowedAt) return out;
   nextAllowedAt = now + pollGapMs();
 
   const headers = { "Content-Type": "application/json" };

@@ -54,7 +54,18 @@ const entry = {
   stMultiplier: num(e.ST_MULTIPLIER, 3),
   expiryHours: num(e.ENTRY_EXPIRY_HOURS, 6),
   sizeSplit: num(e.ENTRY_SIZE_SPLIT, 0.5),
+  // Slippage initialize position (basis poin) — dipakai sebagai acuan lama.
   slippageBps: num(e.ENTRY_SLIPPAGE_BPS, 1000),
+  // Slippage aktif bin untuk add-liquidity, dalam PERSEN (SDK memakai persen,
+  // bukan basis poin). Menghasilkan maxActiveBinSlippage = ceil(pct / binStep%).
+  activeBinSlippagePct: Math.max(0, num(e.ENTRY_ACTIVE_BIN_SLIPPAGE_PCT, 10)),
+  // Rem harga: batalkan entry/DCA kalau harga aktif pool menyimpang dari harga
+  // pasar (Jupiter) melebihi ambang ini. Gagal ambil harga = lanjut (fail-open).
+  poolPriceCheck: bool(e.ENTRY_POOL_PRICE_CHECK, true),
+  maxPoolPriceDeviationPct: Math.max(0, num(e.ENTRY_MAX_POOL_PRICE_DEVIATION_PCT, 15)),
+  // Saat deviasi di atas ambang, coba ulang (baca ulang harga tiap percobaan).
+  poolPriceMaxAttempts: Math.max(1, Math.floor(num(e.ENTRY_POOL_PRICE_MAX_ATTEMPTS, 3))),
+  poolPriceRetryDelaySec: Math.max(0, num(e.ENTRY_POOL_PRICE_RETRY_DELAY_SEC, 10)),
   gasReserve: num(e.GAS_RESERVE, 0.05),
   failureCooldownSec: num(e.ENTRY_FAILURE_COOLDOWN_SEC, 300),
   oneShotPerSignal: bool(e.ENTRY_ONE_SHOT_PER_SIGNAL, true),

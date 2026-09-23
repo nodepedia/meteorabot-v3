@@ -105,8 +105,11 @@ export async function swapSolToToken(baseMint, solAmount) {
       });
       const txid = result.signature;
       await sleep(2000);
-      const amountOut = await getTokenBalance(baseMint);
-      log.info(`Swapped ${solAmount} SOL → ${baseMint.slice(0, 8)} (balance ${amountOut}): tx ${txid?.slice(0, 16)}`);
+      const balanceAfter = await getTokenBalance(baseMint);
+      const amountOut = balanceAfter - balanceBefore;
+      log.info(
+        `Swapped ${solAmount} SOL → ${baseMint.slice(0, 8)} (delta ${amountOut}, balance ${balanceAfter}): tx ${txid?.slice(0, 16)}`
+      );
       return { success: true, tx: txid, amountOut };
     } catch (err) {
       lastErr = err;
@@ -120,7 +123,7 @@ export async function swapSolToToken(baseMint, solAmount) {
         log.info(
           `swapSolToToken: saldo ${baseMint.slice(0, 8)} naik ${balanceBefore} → ${balanceAfter} walau error — dianggap sukses`
         );
-        return { success: true, tx: err.signature, amountOut: balanceAfter, recovered: true };
+        return { success: true, tx: err.signature, amountOut: balanceAfter - balanceBefore, recovered: true };
       }
 
       if (attempt < maxAttempts) {

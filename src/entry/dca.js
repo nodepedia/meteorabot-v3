@@ -181,6 +181,23 @@ export function maybeStartDca(pos, tracked, pairLabel) {
         tg.notifyDca({ pair, pool: pos.pool, pnlPct: pos.pnlPct, sizeSol: entry.sizeSol });
         return;
       }
+      // Rem harga kehabisan percobaan: hentikan DCA untuk posisi ini saja
+      // (biarkan dcaTriggered=true), kembalikan kuota sesi. Pool TIDAK
+      // dinonaktifkan; exit posisi terbuka tetap jalan lewat state.
+      if (result.skipped && result.exhausted) {
+        decrementPoolDca(pos.pool);
+        log.warn(
+          `DCA ${pair} dihentikan: ${result.reason || "harga pool menyimpang"} — DCA posisi ini tidak dilanjut`
+        );
+        tg.notifyError(`DCA ${pair} dihentikan: ${result.reason || "harga pool menyimpang"}`);
+        return;
+      }
+      if (result.skipped) {
+        clearDcaTriggered(pos.position);
+        decrementPoolDca(pos.pool);
+        log.warn(`DCA ${pair} dilewati: ${result.reason || "harga pool menyimpang"}`);
+        return;
+      }
       log.warn(`DCA failed for ${pos.pool.slice(0, 8)}: ${result.error}`);
       clearDcaTriggered(pos.position);
       decrementPoolDca(pos.pool);

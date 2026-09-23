@@ -11,6 +11,7 @@ import { buildFeePlan, checkFeeCap } from "../solana/fees.js";
 import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { getPoolInfo } from "./pool-info.js";
+import { guardPoolPrice } from "./price-guard.js";
 import { trackPosition } from "../state/positions.js";
 import { incrementEntryUsage, getEntryUsage, recordAction } from "./runtime.js";
 
@@ -36,14 +37,58 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
     return { success: false, error: `entry size/split invalid: size=${sizeSol}, split=${split}` };
   }
 
-  const activeBin = await pool.getActiveBin();
-  const activeBinId = activeBin.binId;
-  const minBinId = activeBinId - BINS_BELOW;
-  const maxBinId = activeBinId + BINS_ABOVE;
   const strategyType = StrategyType?.[STRATEGY_ENUM[STRATEGY] || "BidAsk"] ?? StrategyType?.BidAsk;
   if (strategyType === undefined) {
     return { success: false, error: `Unsupported strategy: ${STRATEGY}` };
   }
+
+  // Baca bin aktif + rem harga. Saat deviasi di atas ambang, coba ulang beberapa
+  // kali (baca ulang harga pool & pasar) sebelum menyerah. Dilakukan sebelum ada
+  // SOL yang keluar. Gagal ambil harga pasar = lanjut (fail-open).
+  let activeBin = null;
+  if (config.entry.poolPriceCheck) {
+    const label = pairName || poolAddress.slice(0, 8);
+    const limit = config.entry.maxPoolPriceDeviationPct;
+    const delayMs = Math.max(0, Number(config.entry.poolPriceRetryDelaySec) || 0) * 1000;
+    const result = await guardPoolPrice({
+      getActiveBin: () => pool.getActiveBin(),
+      baseMint,
+      baseIsX,
+      thresholdPct: limit,
+      signalTokenUsd: signal?.price,
+      signalSolUsd: signal?.solPrice,
+      attempts: config.entry.poolPriceMaxAttempts,
+      delayMs,
+      onUnavailable: (guard) =>
+        log.warn(`Entry ${label}: ${guard.reason} — lanjut tanpa cek deviasi harga`),
+      onRetry: ({ attempt, attempts, deviationPct }) =>
+        log.warn(
+          `Entry ${label}: harga pool ${deviationPct.toFixed(1)}% dari pasar (batas ${limit}%) — coba lagi ${attempt}/${attempts} dalam ${delayMs / 1000}s`
+        ),
+    });
+    activeBin = result.activeBin;
+    if (result.exhausted) {
+      const dev = result.guard.deviationPct.toFixed(1);
+      log.warn(
+        `Entry ${label} dibatalkan: harga pool ${dev}% dari pasar setelah ${result.attempts}x percobaan (batas ${limit}%)`
+      );
+      return {
+        success: false,
+        skipped: true,
+        exhausted: true,
+        attempts: result.attempts,
+        deviationPct: result.guard.deviationPct,
+        reason: `harga pool ${dev}% dari pasar (${result.attempts}x)`,
+        baseMint,
+      };
+    }
+  } else {
+    activeBin = await pool.getActiveBin();
+  }
+
+  const activeBinId = activeBin.binId;
+  const minBinId = activeBinId - BINS_BELOW;
+  const maxBinId = activeBinId + BINS_ABOVE;
 
   log.debug(
     `[detail] Entry ${pairName || poolAddress.slice(0, 8)}: ${sizeSol} SOL (SOL ${solSideSol} | token ${tokenSideSol}) bins ${minBinId}→${maxBinId} active ${activeBinId}`
@@ -120,7 +165,7 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
       totalXAmount,
       totalYAmount,
       strategy: { minBinId, maxBinId, strategyType },
-      slippage: config.entry.slippageBps,
+      slippage: config.entry.activeBinSlippagePct,
     });
     const sent = await sendAndConfirmRobust({
       connection,

@@ -1,5 +1,6 @@
 import config from "../config/index.js";
 import log from "../core/logger.js";
+import { WSOL_MINT } from "../core/constants.js";
 import { getPrices } from "../market/jupiter-price.js";
 import { ensureSupertrend, getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
 
@@ -42,7 +43,8 @@ export async function watchPrices(candidates = [], deps = {}) {
 
   if (bullish.length === 0) return { triggered: [], pending: candidates.length };
 
-  const prices = await fetchPrices(bullish.map((b) => b.mint));
+  // WSOL disertakan agar referensi harga pasar SOL/USD tersedia untuk rem harga.
+  const prices = await fetchPrices([...bullish.map((b) => b.mint), WSOL_MINT]);
   for (const [mint, price] of prices) {
     if (Number.isFinite(price)) lastPrices.set(mint, price);
   }
@@ -55,7 +57,14 @@ export async function watchPrices(candidates = [], deps = {}) {
     const price = prices.get(b.mint);
     if (price == null) continue;
     if (price <= b.line * (1 + tolerance)) {
-      triggered.push({ pool: b.pool, mint: b.mint, line: b.line, price, direction: "bullish" });
+      triggered.push({
+        pool: b.pool,
+        mint: b.mint,
+        line: b.line,
+        price,
+        solPrice: prices.get(WSOL_MINT),
+        direction: "bullish",
+      });
     }
   }
 

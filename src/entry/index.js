@@ -236,7 +236,13 @@ function startEntry(trigger, candidate) {
 
   executeEntry(
     pool,
-    { direction: trigger.direction, line: trigger.line, price: trigger.price, touchType: "price" },
+    {
+      direction: trigger.direction,
+      line: trigger.line,
+      price: trigger.price,
+      solPrice: trigger.solPrice,
+      touchType: "price",
+    },
     sizeSol
   )
     .then((result) => {
@@ -245,6 +251,26 @@ function startEntry(trigger, candidate) {
         firstSeenAt.delete(pool);
         failureCooldownUntil.delete(pool);
         failureCounts.delete(pool);
+        return;
+      }
+
+      // Rem harga kehabisan percobaan (harga pool meleset terus): batalkan dan
+      // nonaktifkan pool (beri '#' di pool.txt) — bukan dihitung gagal biasa.
+      if (result.skipped && result.exhausted) {
+        log.warn(
+          `Pool ${pool.slice(0, 8)} dibatalkan: ${result.reason || "harga pool menyimpang"} — dinonaktifkan`
+        );
+        deactivatePool(pool, "harga pool meleset terus");
+        tg.notifyEntryAborted({
+          pool,
+          pair: pairName,
+          attempts: result.attempts || config.entry.poolPriceMaxAttempts,
+          error: result.reason || "harga pool menyimpang",
+        });
+        return;
+      }
+      if (result.skipped) {
+        log.warn(`Pool ${pool.slice(0, 8)} dilewati: ${result.reason || "harga pool menyimpang"}`);
         return;
       }
 
