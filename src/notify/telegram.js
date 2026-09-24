@@ -2,6 +2,8 @@ import https from "https";
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import { getOORState, getTrackedPosition } from "../state/positions.js";
+import { resolveTrailingReference } from "../exit/trailing.js";
+import { trailingDropThreshold } from "../state/trailing.js";
 
 const TOKEN = config.telegramBotToken;
 const CHAT_ID = config.telegramChatId;
@@ -75,14 +77,39 @@ export function notifyDca({ pair, pool, pnlPct, sizeSol }) {
   );
 }
 
-export function notifyClose(pair, reason, pnlPct, swapInfo, _peakPnl = null) {
-  const label = reason?.startsWith("trailing_tp") ? "Trailing TP" : reason;
-  const pnlStr = pnlPct != null ? ` | PnL: ${pnlPct > 0 ? "+" : ""}${pnlPct.toFixed(2)}%` : "";
-  let swapStr = " | Swap: -";
-  if (swapInfo) {
-    swapStr = ` | Swap: ${swapInfo.success ? "✅" : "❌"}`;
+function signedPct(v) {
+  if (v == null || !Number.isFinite(Number(v))) return "?";
+  const n = Number(v);
+  return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+// Label pendek untuk alasan exit (bukan kalimat naratif).
+export function exitLabel(reason) {
+  if (!reason) return "?";
+  const r = String(reason);
+  if (r.startsWith("trailing_tp")) return "Trailing TP";
+  if (r.startsWith("indicator_trailing")) return "Trailing Indikator";
+  if (r === "stop_loss") return "Stop Loss";
+  if (r === "oor_kanan") return "OOR Kanan";
+  if (r === "oor_kiri") return "OOR Kiri";
+  if (r.startsWith("bounce_recovery")) return "Bounce Recovery";
+  if (r === "not_detected") return "Tidak Terdeteksi";
+  return r;
+}
+
+export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = null) {
+  const row = (label, value) => `${label.padEnd(16)}: ${value}`;
+  const lines = [`🔒 Closed ${pair}`, "", row("Trigger Exit", exitLabel(reason)), row("PnL", signedPct(pnlPct))];
+  if (drawdownPnl != null) lines.push(row("Drawdown", signedPct(drawdownPnl)));
+  if (swapInfo && swapInfo.success === false) {
+    const detail = swapInfo.error ? `: ${swapInfo.error}` : " — perlu swap manual";
+    lines.push(`⚠️ Swap GAGAL${detail}`);
   }
-  send(`🔒 Closed ${pair}: ${label}${pnlStr}${swapStr}`);
+  return lines.join("\n");
+}
+
+export function notifyClose(pair, reason, pnlPct, swapInfo, drawdownPnl = null) {
+  send(buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl));
 }
 
 export function notifyError(msg) {
@@ -141,68 +168,66 @@ export function notifyEntryAborted({ pool, pair, attempts, error }) {
   );
 }
 
-function fmtNum(v) {
-  if (v == null) return "?";
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-  return v.toFixed(2);
-}
-
 function emoji(v) {
   if (v == null || v === 0) return "";
   return v > 0 ? "🟢" : "🔴";
 }
 
-export function notifyStatus(positions) {
-  if (!positions || positions.length === 0) return;
+// OOR hanya dikembalikan saat posisi benar-benar keluar rentang.
+function oorMarker(p) {
+  if (p.activeBin == null || p.lowerBin == null || p.upperBin == null) return null;
+  const state = getOORState(p.position);
+  if (state) return state.arah === "kanan" ? "OOR 🟢" : "OOR 🔴";
+  if (p.activeBin > p.upperBin) return "OOR 🟢";
+  if (p.activeBin < p.lowerBin) return "OOR 🔴";
+  return null;
+}
+
+// Level PnL yang akan memicu exit saat ini (trailing aktif, atau stop loss).
+function computeExitAt(p, tracked) {
+  const rules = config.rulesFor(p.mode || "bidask:double");
+  if (tracked && p.pnlPct != null) {
+    const resolved = resolveTrailingReference(tracked, p.pnlPct, rules);
+    if (resolved) {
+      const threshold = trailingDropThreshold(resolved.reference, rules.trailingDropRatioPct, rules.trailingDropPct);
+      return resolved.reference - threshold;
+    }
+  }
+  if (rules.enableStopLoss) return rules.stopLossPct;
+  return null;
+}
+
+export function buildStatusMessage(positions) {
+  if (!positions || positions.length === 0) return "";
   let msg = "🚨 Meteora DLMM Position Status:\n";
   for (const p of positions) {
     const label = p.pair || p.position?.slice(0, 8) || "?";
     const age = p.ageMinutes != null ? `${p.ageMinutes}m` : "?m";
+    const tracked = getTrackedPosition(p.position);
 
     msg += `\n${label}\n`;
     msg += `Age : ${age}\n`;
 
-    // PnL
     if (p.pnlPct != null) {
-      const prefix = p.pnlPct > 0 ? "+" : "";
-      msg += `PnL: ${prefix}${p.pnlPct.toFixed(2)}%${emoji(p.pnlPct)}\n`;
+      msg += `PnL: ${signedPct(p.pnlPct)}${emoji(p.pnlPct)}\n`;
     }
 
-    // Yield + OOR (1 line)
+    // Yield selalu tampil; info OOR hanya muncul saat keluar rentang.
     const yieldPct = p.feePct24h != null && p.feePct24h > 0 ? `${p.feePct24h.toFixed(2)}%` : null;
-    let oorLabel = null;
-    if (p.activeBin != null && p.lowerBin != null && p.upperBin != null) {
-      const state = getOORState(p.position);
-      if (state) {
-        oorLabel = state.arah === "kanan" ? "OOR 🟢" : "OOR 🔴";
-      } else if (p.activeBin > p.upperBin) {
-        oorLabel = "OOR 🟢";
-      } else if (p.activeBin < p.lowerBin) {
-        oorLabel = "OOR 🔴";
-      } else {
-        oorLabel = "In Range";
-      }
-    }
-    const yieldLine = [yieldPct, oorLabel].filter(Boolean).join(" | ");
+    const yieldLine = [yieldPct, oorMarker(p)].filter(Boolean).join(" | ");
     if (yieldLine) msg += `Yield: ${yieldLine}\n`;
 
-    const trailing = getTrackedPosition(p.position);
-    if (trailing?.trailingActive) {
-      const isIndicator = trailing.trailingArmedBy != null;
-      const ref = isIndicator ? trailing.trailingAnchor : trailing.lastPnlPeak;
-      const refStr = ref != null ? ` (${isIndicator ? "anchor" : "peak"}: +${ref.toFixed(2)}%)` : "";
-      msg += `Trailing: 🔁${refStr}\n`;
+    if (tracked?.trailingActive) {
+      msg += `Trailing: 🔁\n`;
+      if (tracked.lastPnlPeak != null) msg += `Peak: ${signedPct(tracked.lastPnlPeak)}\n`;
     }
-
-    // Market Cap
-    if (p.marketCap != null && p.marketCap > 0) msg += `MC: ${fmtNum(p.marketCap)}\n`;
-
-    // Volumes
-    const v1m = p.volume1m != null && p.volume1m > 0 ? `Vol 5m: $${fmtNum(p.volume1m)}` : null;
-    const v1h = p.volume1h != null && p.volume1h > 0 ? `Vol 1h: $${fmtNum(p.volume1h)}` : null;
-    const volLine = [v1m, v1h].filter(Boolean).join(" | ");
-    if (volLine) msg += `${volLine}\n`;
+    const exitAt = computeExitAt(p, tracked);
+    if (exitAt != null) msg += `Exit at : ${signedPct(exitAt)}\n`;
   }
-  send(msg.trim());
+  return msg.trim();
+}
+
+export function notifyStatus(positions) {
+  const msg = buildStatusMessage(positions);
+  if (msg) send(msg);
 }

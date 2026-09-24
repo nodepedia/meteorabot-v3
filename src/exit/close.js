@@ -39,6 +39,7 @@ export async function handleClose(pos, reason) {
       const trackedClose = getTrackedPosition(pos.position);
       const refPnl = trackedClose?.trailingArmedBy ? trackedClose?.trailingAnchor : trackedClose?.lastPnlPeak;
       const peakPnl = reason?.includes("trailing") ? (refPnl ?? null) : null;
+      const lowestPnl = trackedClose?.lastPnlLowest ?? null;
       clearTrailingTimer(pos.position);
       clearTrailingState(pos.position);
       clearBounceRecovery(pos.position);
@@ -53,6 +54,7 @@ export async function handleClose(pos, reason) {
           swapInfo = {
             mint: result.baseMint.slice(0, 8),
             success: swapResult?.success === true,
+            error: swapResult?.success ? null : String(swapResult?.error || "unknown").split("\n")[0],
           };
           if (swapResult?.success) {
             log.debug(`[detail] swap ${pairLabel} proceeds → SOL`);
@@ -67,7 +69,7 @@ export async function handleClose(pos, reason) {
       log.debug(`[detail] reason=${reason} | position ${positionAddress} | peakRef=${peakPnl ?? "-"}`);
       recordAction(`CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(pos.pnlPct)}`);
 
-      tg.notifyClose(pairLabel, reason, pos.pnlPct, swapInfo, peakPnl);
+      tg.notifyClose(pairLabel, reason, pos.pnlPct, swapInfo, lowestPnl);
 
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.
