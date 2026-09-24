@@ -129,11 +129,7 @@ export function clearDcaTriggered(positionAddress) {
   writeState(state);
 }
 
-export function clearDcaState(positionAddress) {
-  if (!positionAddress) return;
-  const state = readState();
-  const p = state.positions[positionAddress];
-  if (!p) return;
+function clearDcaFields(p) {
   p.dcaArmed = false;
   p.dcaTrough = null;
   p.dcaArmedAt = null;
@@ -142,12 +138,43 @@ export function clearDcaState(positionAddress) {
   p.pendingDcaTrough = null;
   p.pendingDcaCurrent = null;
   p.pendingDcaStartedAt = null;
+}
+
+export function clearDcaState(positionAddress) {
+  if (!positionAddress) return;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return;
+  clearDcaFields(p);
   writeState(state);
+}
+
+// Setelah posisi DCA ditutup profit (trailing TP murni), buka lagi kesempatan
+// DCA untuk posisi lain yang masih terbuka di pool yang sama. Reset penuh agar
+// mereka harus arm ulang (menyentuh DCA_ARM_PCT) sebelum memicu DCA berikutnya.
+export function resetPoolDcaState(pool, exceptPosition) {
+  if (!pool) return;
+  const state = readState();
+  let changed = false;
+  for (const p of Object.values(state.positions)) {
+    if (!p || p.closed === true) continue;
+    if (p.pool !== pool || p.position === exceptPosition) continue;
+    clearDcaFields(p);
+    changed = true;
+  }
+  if (changed) writeState(state);
+}
+
+// Alasan close yang me-refund kuota DCA: trailing TP murni (peak-based).
+// Sinyal indikator (indicator_trailing), stop loss, OOR, dll bukan refund.
+export function isDcaRefundReason(reason) {
+  return typeof reason === "string" && reason.startsWith("trailing_tp");
 }
 
 // --- Counter DCA per sesi (persisten di state.dcaUsage) ---
 // Sesi = rentang saat pool punya >=1 posisi terbuka. Counter naik saat trigger
-// DCA (sebelum eksekusi, jadi aman crash) dan di-reset saat sesi berakhir
+// DCA (sebelum eksekusi, jadi aman crash), turun 1 saat posisi DCA close profit
+// (trailing TP, lihat isDcaRefundReason), dan di-reset saat sesi berakhir
 // (pool tidak lagi punya posisi terbuka). Inilah yang membatasi DCA_MAX_ADDS
 // per sesi sekaligus tahan restart.
 

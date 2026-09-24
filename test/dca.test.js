@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateDca, isDcaEligible } from "../src/state/dca.js";
+import { evaluateDca, isDcaEligible, isDcaRefundReason } from "../src/state/dca.js";
 
 const cfg = { enabled: true, armPct: -10, reboundPct: 1 };
 const pos = (pnlPct) => ({ position: "p1", pool: "pool1", pnlPct });
@@ -64,4 +64,15 @@ test("isDcaEligible menolak posisi closed atau sudah trigger", () => {
   assert.equal(isDcaEligible({ closed: true }), false);
   assert.equal(isDcaEligible({ dcaTriggered: true }), false);
   assert.equal(isDcaEligible({}), true);
+});
+
+test("isDcaRefundReason hanya trailing TP murni", () => {
+  assert.equal(isDcaRefundReason("trailing_tp: peak 12.00% -> 10.00%"), true);
+  assert.equal(isDcaRefundReason("indicator_trailing(rsi_macd): peak 12.00% -> 10.00%"), false);
+  assert.equal(isDcaRefundReason("stop_loss"), false);
+  assert.equal(isDcaRefundReason("oor_kanan"), false);
+  assert.equal(isDcaRefundReason("oor_kiri"), false);
+  assert.equal(isDcaRefundReason("bounce_recovery: peak 5.00% -> 3.00%"), false);
+  assert.equal(isDcaRefundReason(null), false);
+  assert.equal(isDcaRefundReason(undefined), false);
 });

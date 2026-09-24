@@ -7,7 +7,7 @@ import { swapToSol } from "../solana/swap.js";
 import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
 import { clearTrailingState } from "../state/trailing.js";
 import { clearBounceRecovery } from "../state/bounce.js";
-import { clearDcaState } from "../state/dca.js";
+import { clearDcaState, decrementPoolDca, resetPoolDcaState, isDcaRefundReason } from "../state/dca.js";
 import { clearTrailingTimer } from "./trailing.js";
 import { addClosingPool, removeClosingPool, recordAction } from "../entry/runtime.js";
 import { deactivatePool } from "../entry/index.js";
@@ -37,6 +37,7 @@ export async function handleClose(pos, reason) {
       recordClose(pos.position, reason, pos.pnlPct);
       // Ambil tracked sebelum clearTrailingState agar referensi trailing masih tersedia.
       const trackedClose = getTrackedPosition(pos.position);
+      const wasDca = trackedClose?.isDca === true;
       const refPnl = trackedClose?.trailingArmedBy ? trackedClose?.trailingAnchor : trackedClose?.lastPnlPeak;
       const peakPnl = reason?.includes("trailing") ? (refPnl ?? null) : null;
       const lowestPnl = trackedClose?.lastPnlLowest ?? null;
@@ -44,6 +45,14 @@ export async function handleClose(pos, reason) {
       clearTrailingState(pos.position);
       clearBounceRecovery(pos.position);
       clearDcaState(pos.position);
+
+      // Posisi DCA ditutup profit (trailing TP murni): kembalikan slot kuota
+      // sesi + reset posisi sisa di pool ini agar bisa DCA lagi. Exit lain
+      // (indikator/stop/OOR) tidak me-refund — sesi dianggap selesai.
+      if (wasDca && isDcaRefundReason(reason)) {
+        decrementPoolDca(pos.pool);
+        resetPoolDcaState(pos.pool, pos.position);
+      }
 
       // Auto-swap base token to SOL (Jupiter V2, with retries)
       let swapInfo = null;

@@ -16,6 +16,7 @@ const {
   markDcaTriggered,
   clearDcaTriggered,
   clearDcaState,
+  resetPoolDcaState,
   getPoolDcaCount,
   incrementPoolDca,
   decrementPoolDca,
@@ -29,10 +30,16 @@ function resetState() {
 }
 
 let seq = 0;
-function newPos() {
+function newPos(pool = POOL, isDca = false) {
   const addr = `PosDca000000000000000000000000000000000${seq++}`;
-  trackPosition(addr, POOL, "TEST-SOL", "mint", 0, "bidask:double");
+  trackPosition(addr, pool, "TEST-SOL", "mint", 0, "bidask:double", isDca);
   return addr;
+}
+
+function setClosed(addr) {
+  const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  state.positions[addr].closed = true;
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state));
 }
 
 test("arm + trail menyimpan trough terdalam", () => {
@@ -125,4 +132,40 @@ test("clearDcaState mereset seluruh field DCA posisi", () => {
   assert.equal(t.dcaTrough, null);
   assert.equal(t.dcaTriggered, false);
   assert.equal(t.pendingDcaTrough, null);
+});
+
+test("resetPoolDcaState reset posisi terbuka lain di pool sama, kecuali yang ditutup", () => {
+  resetState();
+  const other = "PoolOther111111111111111111111111111111111";
+  const p1 = newPos();
+  const closedDca = newPos(POOL, true);
+  const p3 = newPos(other);
+
+  for (const p of [p1, closedDca, p3]) {
+    setDcaArmedAndTrough(p, -12);
+    markDcaTriggered(p);
+  }
+
+  resetPoolDcaState(POOL, closedDca);
+
+  const t1 = getTrackedPosition(p1);
+  assert.equal(t1.dcaArmed, false);
+  assert.equal(t1.dcaTrough, null);
+  assert.equal(t1.dcaTriggered, false);
+
+  assert.equal(getTrackedPosition(closedDca).dcaTriggered, true, "posisi yang dikecualikan tidak diubah");
+  assert.equal(getTrackedPosition(p3).dcaTriggered, true, "pool lain tidak diubah");
+});
+
+test("resetPoolDcaState melewati posisi yang sudah closed", () => {
+  resetState();
+  const p1 = newPos();
+  const p2 = newPos(POOL, true);
+  setDcaArmedAndTrough(p1, -12);
+  markDcaTriggered(p1);
+  setClosed(p1);
+
+  resetPoolDcaState(POOL, p2);
+
+  assert.equal(getTrackedPosition(p1).dcaTriggered, true, "posisi closed tidak direset");
 });
