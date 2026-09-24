@@ -238,10 +238,13 @@ Mirror of trailing TP, inverted. Driven by a dedicated watcher on its own cadenc
 
 `scripts/pnl-report.js` menarik PnL posisi dari Meteora datapi dan mencetak tabel (waktu WIB/UTC+7, SOL + USD) beserta ringkasan posisi closed/open dan total realized. Read-only — tidak menyentuh `state.json` dan tidak mengirim transaksi.
 
+Saat periode ≤ 2 hari, modal posisi ikut diverifikasi dari transaksi on-chain (perlu `RPC_URL` / `HELIUS_API_KEY`). Ini menangkap kasus Meteora salah menilai sisi token saat deposit (harga token ter-revaluasi ekstrem). Baris yang dikoreksi ditandai `⚠ koreksi`, dan ringkasan menampilkan angka Meteora asli sebagai pembanding. Bila tak bisa diverifikasi, dipakai angka Meteora dengan tanda `? tak terverifikasi`.
+
 ```bash
 node scripts/pnl-report.js                              # hari ini 00:00 WIB → sekarang
-node scripts/pnl-report.js --days 1                     # 1 hari terakhir
+node scripts/pnl-report.js --days 1                     # 1 hari terakhir (verify otomatis)
 node scripts/pnl-report.js --from "2026-09-21 08:30" --to "2026-09-21 17:00"
+node scripts/pnl-report.js --days 30 --no-verify        # periode panjang, tanpa on-chain
 node scripts/pnl-report.js --wallet <alamat>            # override wallet
 ```
 
@@ -251,9 +254,11 @@ node scripts/pnl-report.js --wallet <alamat>            # override wallet
 | `--to "YYYY-MM-DD HH:mm"` | Sampai (WIB). Default: sekarang |
 | `--days N` | `N` hari terakhir (menimpa `--from`) |
 | `--wallet <alamat>` | Wallet; default dari `WALLET_PRIVATE_KEY` di `.env` |
+| `--verify` / `--no-verify` | Paksa on/off verifikasi modal on-chain |
+| `--reconcile-threshold PCT` | Ambang beda modal (%) agar dikoreksi (default 25) |
 | `-h`, `--help` | Tampilkan bantuan |
 
-`scripts/scan-pnl.js <alamat> [--days N]` adalah scanner lama yang lebih sederhana (wallet wajib sebagai argumen).
+`scripts/scan-pnl.js <alamat> [--days N] [--verify|--no-verify] [--reconcile-threshold PCT]` adalah scanner lama yang lebih sederhana (wallet wajib sebagai argumen); memakai verifikasi on-chain yang sama bila `--days ≤ 2`.
 
 ## Development
 

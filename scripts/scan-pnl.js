@@ -1,4 +1,6 @@
+import fs from "fs";
 import process from "process";
+import { collectWalletFlows, reconcilePosition } from "../src/meteora/pnl-reconcile.js";
 
 const BASE = "https://dlmm.datapi.meteora.ag";
 const PAGE_SIZE = 20;
@@ -7,23 +9,55 @@ const COLOR = Boolean(process.stdout.isTTY);
 
 let WALLET = null;
 let DAYS = null;
+let VERIFY = null;
+let THRESHOLD = 25;
 const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--days" || args[i] === "-d") {
     DAYS = Number(args[++i]);
+  } else if (args[i] === "--verify") {
+    VERIFY = true;
+  } else if (args[i] === "--no-verify") {
+    VERIFY = false;
+  } else if (args[i] === "--reconcile-threshold") {
+    THRESHOLD = Number(args[++i]);
   } else if (!args[i].startsWith("-") && !WALLET) {
     WALLET = args[i];
   }
 }
 
 if (!WALLET) {
-  console.error("Usage: node scripts/scan-pnl.js <wallet_address> [--days N]");
+  console.error(
+    "Usage: node scripts/scan-pnl.js <wallet_address> [--days N] [--verify|--no-verify] [--reconcile-threshold PCT]"
+  );
   process.exit(1);
 }
 
 if (DAYS != null && (!Number.isFinite(DAYS) || DAYS <= 0)) {
   console.error("--days harus berupa angka > 0");
   process.exit(1);
+}
+
+if (!Number.isFinite(THRESHOLD) || THRESHOLD < 0) {
+  console.error("--reconcile-threshold harus berupa angka >= 0");
+  process.exit(1);
+}
+
+function readEnv(key) {
+  try {
+    const env = fs.readFileSync(new URL("../.env", import.meta.url), "utf8");
+    const m = env.match(new RegExp(`^${key}=(.*)$`, "m"));
+    return m ? m[1].trim().replace(/^["']|["']$/g, "") : null;
+  } catch {
+    return null;
+  }
+}
+
+function rpcFromEnv() {
+  const direct = readEnv("RPC_URL");
+  if (direct) return direct;
+  const key = readEnv("HELIUS_API_KEY");
+  return key ? `https://rpc.helius.xyz/?api-key=${key}` : "https://api.mainnet-beta.solana.com";
 }
 
 async function fetchJson(url, tries = 3) {
@@ -73,7 +107,7 @@ async function getPoolPositions(wallet, pool, status) {
   for (;;) {
     const url = `${BASE}/positions/${pool}/pnl?user=${wallet}&status=${status}&pageSize=${PAGE_SIZE}&page=${page}`;
     const data = await fetchJson(url);
-    for (const p of data.positions || []) positions.push(p);
+    for (const p of data.positions || []) positions.push({ ...p, pool, tokenX: data.tokenX, tokenY: data.tokenY });
     if (!data.hasNext) break;
     page++;
   }
@@ -151,6 +185,7 @@ function printTable(rows) {
     { key: "pnl", header: "PNL SOL", align: "right" },
     { key: "pnlPct", header: "PNL %", align: "right" },
   ];
+  if (rows.some((r) => r.note)) cols.push({ key: "note", header: "VERIF", align: "left" });
 
   const widths = cols.map((c) => Math.max(c.header.length, ...rows.map((r) => String(r[c.key]).length)));
 
@@ -172,33 +207,39 @@ function printTable(rows) {
   }
 }
 
-function printSummary(positions) {
+function printSummary(rows) {
   let deposit = 0;
   let withdraw = 0;
   let fee = 0;
   let pnl = 0;
+  let apiPnl = 0;
   let wins = 0;
   let losses = 0;
+  let corrected = 0;
 
-  for (const p of positions) {
-    deposit += num(p.allTimeDeposits?.total?.sol) ?? 0;
-    withdraw += num(p.allTimeWithdrawals?.total?.sol) ?? 0;
-    fee += num(p.allTimeFees?.total?.sol) ?? 0;
-    const pnlSol = num(p.pnlSol) ?? 0;
-    pnl += pnlSol;
-    if (pnlSol >= 0) wins++;
+  for (const r of rows) {
+    deposit += num(r._depSol) ?? 0;
+    withdraw += num(r._wdSol) ?? 0;
+    fee += num(r._feeSol) ?? 0;
+    pnl += num(r._pnlSol) ?? 0;
+    apiPnl += num(r._apiPnlSol) ?? 0;
+    if ((num(r._pnlSol) ?? 0) >= 0) wins++;
     else losses++;
+    if (r._corrected) corrected++;
   }
 
   console.log("");
   console.log("RINGKASAN");
-  console.log(`  Total posisi   : ${positions.length}`);
+  console.log(`  Total posisi   : ${rows.length}`);
   console.log(`  Total deposit  : ${deposit.toFixed(5)} SOL`);
   console.log(`  Total withdraw : ${withdraw.toFixed(5)} SOL`);
   console.log(`  Total fee      : ${fee.toFixed(5)} SOL`);
   console.log(`  Total PnL      : ${pnl >= 0 ? "+" : ""}${pnl.toFixed(5)} SOL`);
+  if (corrected > 0) {
+    console.log(`  Meteora (asli) : ${apiPnl >= 0 ? "+" : ""}${apiPnl.toFixed(5)} SOL — dikoreksi ${corrected} posisi`);
+  }
   console.log(
-    `  Win / Loss     : ${wins} / ${losses} (${positions.length ? ((wins / positions.length) * 100).toFixed(1) : "0.0"}% win)`
+    `  Win / Loss     : ${wins} / ${losses} (${rows.length ? ((wins / rows.length) * 100).toFixed(1) : "0.0"}% win)`
   );
 }
 
@@ -222,14 +263,38 @@ async function main() {
 
   const since = DAYS != null ? Math.floor(Date.now() / 1000) - DAYS * 86400 : 0;
 
+  const verify = VERIFY == null ? DAYS != null && DAYS <= 2 : VERIFY;
+  let flows = null;
+  if (verify) {
+    const fromMs = since > 0 ? since * 1000 - 5 * 60 * 1000 : 0;
+    process.stderr.write(`Verifikasi modal on-chain (ambang ${THRESHOLD}%)...\n`);
+    try {
+      flows = await collectWalletFlows(WALLET, fromMs, Date.now(), { rpcUrl: rpcFromEnv() });
+      process.stderr.write(`  ${flows.length} tx dicek.\n`);
+    } catch (err) {
+      process.stderr.write(`  verifikasi gagal (${err.message}); pakai angka Meteora.\n`);
+    }
+  }
+
   const rows = [];
   for (const { pool, positions } of perPool) {
     const m = meta.get(pool.poolAddress) || {};
     const pair = `${m.tokenX || "?"}-${m.tokenY || "?"}`;
     for (const pos of positions) {
       if (since && (Number(pos.createdAt) || 0) < since) continue;
+      const rec = flows ? reconcilePosition(pos, flows, { thresholdPct: THRESHOLD }) : null;
+      const depSol = rec ? rec.depositSol : num(pos.allTimeDeposits?.total?.sol);
+      const pnlSol = rec ? rec.pnlSol : num(pos.pnlSol);
+      const pnlPct =
+        rec && rec.corrected && rec.depositSol > 0 ? (rec.pnlSol / rec.depositSol) * 100 : pos.pnlSolPctChange;
       rows.push({
         _createdAt: Number(pos.createdAt) || 0,
+        _depSol: depSol,
+        _wdSol: num(pos.allTimeWithdrawals?.total?.sol),
+        _feeSol: num(pos.allTimeFees?.total?.sol),
+        _pnlSol: pnlSol,
+        _apiPnlSol: num(pos.pnlSol),
+        _corrected: rec ? rec.corrected : false,
         no: 0,
         open: fmtTime(pos.createdAt),
         close: fmtTime(pos.closedAt),
@@ -237,11 +302,12 @@ async function main() {
         pos: shortAddr(pos.positionAddress),
         pair,
         pool: shortAddr(pool.poolAddress),
-        deposit: fmtSol(pos.allTimeDeposits?.total?.sol),
+        deposit: fmtSol(depSol),
         withdraw: fmtSol(pos.allTimeWithdrawals?.total?.sol),
         fee: fmtSol(pos.allTimeFees?.total?.sol),
-        pnl: fmtSol(pos.pnlSol),
-        pnlPct: fmtPct(pos.pnlSolPctChange),
+        pnl: fmtSol(pnlSol),
+        pnlPct: fmtPct(pnlPct),
+        note: rec ? (rec.corrected ? "⚠ koreksi" : rec.verified ? "ok" : "? tak terverifikasi") : "",
       });
     }
   }
@@ -259,14 +325,7 @@ async function main() {
     return;
   }
   printTable(rows);
-  printSummary(
-    rows.map((r) => ({
-      allTimeDeposits: { total: { sol: r.deposit } },
-      allTimeWithdrawals: { total: { sol: r.withdraw } },
-      allTimeFees: { total: { sol: r.fee } },
-      pnlSol: r.pnl,
-    }))
-  );
+  printSummary(rows);
 }
 
 main().catch((err) => {
