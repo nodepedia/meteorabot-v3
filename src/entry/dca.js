@@ -1,4 +1,5 @@
 import config from "../config/index.js";
+import { LEGACY_MODE } from "../config/rules.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
 import { getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
@@ -28,6 +29,13 @@ import {
   recordAction,
 } from "./runtime.js";
 
+// DCA hanya untuk mode yang terdaftar di config.dca.eligibleModes (default
+// bidask:double). Label mode lama dinormalkan lewat LEGACY_MODE.
+export function isDcaModeEligible(mode) {
+  const normalized = LEGACY_MODE[mode] || mode;
+  return (config.dca.eligibleModes || []).includes(normalized);
+}
+
 // Dipanggil tiap tick watcher DCA. Satu request PnL per pool dipakai untuk
 // scan (arm/trail/queue) sekaligus konfirmasi rebound — tidak ada timer
 // terpisah. Posisi diambil dari state (tanpa RPC).
@@ -35,7 +43,7 @@ export async function tickDca() {
   const cfg = config.dca;
   if (!cfg.enabled) return;
 
-  const open = getOpenTrackedPositions().filter((t) => t && t.position && t.pool);
+  const open = getOpenTrackedPositions().filter((t) => t && t.position && t.pool && isDcaModeEligible(t.mode));
   if (open.length === 0) return;
 
   const byPool = new Map();
@@ -109,6 +117,7 @@ export function processDca(pos, tracked, pairLabel) {
 
   tracked = getTrackedPosition(pos.position);
   if (!isDcaEligible(tracked)) return;
+  if (!isDcaModeEligible(tracked.mode)) return;
   // Konfirmasi sedang berjalan — diselesaikan tick berikutnya.
   if (tracked.pendingDcaTrough != null) return;
 
@@ -137,6 +146,7 @@ export function maybeStartDca(pos, tracked, pairLabel) {
   const cfg = config.dca;
   if (!cfg.enabled || !pos?.position || !pos?.pool || pos.pnlPct == null) return false;
   if (!isDcaEligible(tracked)) return false;
+  if (!isDcaModeEligible(tracked.mode)) return false;
   if (isEntryInProgressPool(pos.pool)) return false;
   if (isPoolClosing(pos.pool)) return false;
   if (Date.now() < getDcaCooldownUntil(pos.pool)) return false;
@@ -186,9 +196,7 @@ export function maybeStartDca(pos, tracked, pairLabel) {
       // dinonaktifkan; exit posisi terbuka tetap jalan lewat state.
       if (result.skipped && result.exhausted) {
         decrementPoolDca(pos.pool);
-        log.warn(
-          `DCA ${pair} dihentikan: ${result.reason || "harga pool menyimpang"} — DCA posisi ini tidak dilanjut`
-        );
+        log.warn(`DCA ${pair} dihentikan: ${result.reason || "harga pool menyimpang"} — DCA posisi ini tidak dilanjut`);
         tg.notifyError(`DCA ${pair} dihentikan: ${result.reason || "harga pool menyimpang"}`);
         return;
       }

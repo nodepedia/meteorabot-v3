@@ -122,6 +122,13 @@ const dca = {
   // Ambang minimum sebelum pending rebound dikonfirmasi (efektif = tick watcher).
   confirmDelaySec: Math.max(0, num(e.DCA_CONFIRM_DELAY_SEC, 5)),
   cooldownSec: Math.max(0, num(e.DCA_COOLDOWN_SEC, 300)),
+  // Mode yang boleh di-DCA (dipisah koma). Default: hanya bidask:double.
+  eligibleModes:
+    e.DCA_ELIGIBLE_MODES != null && e.DCA_ELIGIBLE_MODES !== ""
+      ? e.DCA_ELIGIBLE_MODES.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : ["bidask:double"],
 };
 
 // Entry execution is fixed by design: BidAsk, two-sided (token + SOL), bins ±34.

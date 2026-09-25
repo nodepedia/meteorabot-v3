@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluateDca, isDcaEligible, isDcaRefundReason } from "../src/state/dca.js";
+import { isDcaModeEligible } from "../src/entry/dca.js";
 
 const cfg = { enabled: true, armPct: -10, reboundPct: 1 };
 const pos = (pnlPct) => ({ position: "p1", pool: "pool1", pnlPct });
@@ -64,6 +65,14 @@ test("isDcaEligible menolak posisi closed atau sudah trigger", () => {
   assert.equal(isDcaEligible({ closed: true }), false);
   assert.equal(isDcaEligible({ dcaTriggered: true }), false);
   assert.equal(isDcaEligible({}), true);
+});
+
+test("isDcaModeEligible hanya bidask:double (default)", () => {
+  assert.equal(isDcaModeEligible("bidask:double"), true);
+  assert.equal(isDcaModeEligible("bidask"), true); // legacy -> bidask:double
+  assert.equal(isDcaModeEligible("spot"), false);
+  assert.equal(isDcaModeEligible("bidask:token"), false);
+  assert.equal(isDcaModeEligible("bidask:sol"), false);
 });
 
 test("isDcaRefundReason hanya trailing TP murni", () => {
