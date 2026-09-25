@@ -17,15 +17,16 @@ import { humanReason, fmtPct } from "../core/report.js";
 // (timer konfirmasi trailing + safety-net siklus bisa memicu bersamaan).
 const closingPositions = new Set();
 
-export async function handleClose(pos, reason) {
+export async function handleClose(pos, reason, opts = {}) {
+  const { skipAutoSwap = false, skipDeactivate = false } = opts;
   const pairLabel = pos.pair || pos.position?.slice(0, 8) || "?";
   const positionAddress = pos.position;
 
-  if (!positionAddress) return;
+  if (!positionAddress) return { success: false, error: "no position address" };
 
   if (closingPositions.has(positionAddress)) {
     log.info(`${pairLabel}: close already in progress — skip duplicate (${reason})`);
-    return;
+    return { success: false, skipped: true };
   }
   closingPositions.add(positionAddress);
   addClosingPool(pos.pool);
@@ -56,7 +57,7 @@ export async function handleClose(pos, reason) {
 
       // Auto-swap base token to SOL (Jupiter V2, with retries)
       let swapInfo = null;
-      if (config.swap.autoSwapAfterClose && result.baseMint) {
+      if (!skipAutoSwap && config.swap.autoSwapAfterClose && result.baseMint) {
         const balance = await getTokenBalance(result.baseMint);
         if (balance > 0) {
           const swapResult = await swapToSol(result.baseMint, balance);
@@ -83,16 +84,19 @@ export async function handleClose(pos, reason) {
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.
       const stillOpenInPool = getOpenTrackedPositions().some((p) => p.pool === pos.pool);
-      if (!stillOpenInPool) deactivatePool(pos.pool, "entry+exit selesai");
+      if (!skipDeactivate && !stillOpenInPool) deactivatePool(pos.pool, "entry+exit selesai");
+      return { success: true, swapInfo };
     } else {
       const brief = String(result?.error || "unknown").split("\n")[0];
       log.error(`Close failed for ${pairLabel}: ${brief}`);
       tg.notifyError(`Close failed ${pairLabel}: ${brief}`);
+      return { success: false, error: result?.error || "unknown" };
     }
   } catch (err) {
     const brief = String(err.message || err).split("\n")[0];
     log.error(`Close error for ${pairLabel}: ${brief}`);
     tg.notifyError(`Close error ${pairLabel}: ${brief}`);
+    return { success: false, error: err.message };
   } finally {
     closingPositions.delete(positionAddress);
     removeClosingPool(pos.pool);

@@ -14,8 +14,19 @@ export function evaluateExit(position, candles) {
     return { action: "close", reason: "stop_loss" };
   }
 
-  // 2. OOR kanan — semua mode close langsung
+  // 2. OOR kanan — mode dengan masa tunggu (mis. spot) pakai timer; batal bila
+  // harga kembali masuk range. Mode lain (oorKananMinutes = 0) tutup langsung.
   if (activeBin != null && upperBin != null && activeBin > upperBin) {
+    if (rules.oorKananMinutes > 0) {
+      updateOOR(position.position, "kanan");
+      const oorState = getOORState(position.position);
+      const menit = oorState ? (Date.now() - oorState.sejak) / 60000 : 0;
+      if (menit >= rules.oorKananMinutes) {
+        resetOOR(position.position);
+        return { action: "close", reason: "oor_kanan" };
+      }
+      return { action: "hold", reason: `oor_kanan_${Math.floor(menit)}m` };
+    }
     resetOOR(position.position);
     return { action: "close", reason: "oor_kanan" };
   }

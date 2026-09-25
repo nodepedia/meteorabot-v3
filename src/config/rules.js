@@ -5,6 +5,9 @@ export const RULE_DEFAULTS = {
   stopLossPct: -90,
   enableOOR: false,
   oorKiriMinutes: 60,
+  // OOR kanan: 0 = tutup langsung; >0 = masa tunggu (menit) sebelum tutup,
+  // batal bila harga kembali masuk range.
+  oorKananMinutes: 0,
   enableIndicators: false,
   rsiPeriod: 2,
   macdFast: 12,
@@ -32,6 +35,7 @@ export function modeRules(e, prefix, overrides = {}) {
     stopLossPct: num(e[k("STOP_LOSS_PCT")], d.stopLossPct),
     enableOOR: bool(e[k("ENABLE_OOR")], d.enableOOR),
     oorKiriMinutes: num(e[k("OOR_KIRI_MINUTES")], d.oorKiriMinutes),
+    oorKananMinutes: Math.max(0, num(e[k("OOR_KANAN_MINUTES")], d.oorKananMinutes)),
     enableIndicators: bool(e[k("ENABLE_INDICATORS")], d.enableIndicators),
     rsiPeriod: num(e[k("RSI_PERIOD")], d.rsiPeriod),
     macdFast: num(e[k("MACD_FAST")], d.macdFast),
@@ -53,7 +57,10 @@ export function modeRules(e, prefix, overrides = {}) {
 // Pemetaan mode lama (state.json sebelumnya) -> mode composite baru.
 export const LEGACY_MODE = {
   bidask: "bidask:double",
-  spot: "spot:double",
   "token-only": "bidask:token",
   "sol-only": "bidask:sol",
+  spot: "spot",
+  "spot:double": "spot",
+  "spot:token": "spot",
+  "spot:sol": "spot",
 };

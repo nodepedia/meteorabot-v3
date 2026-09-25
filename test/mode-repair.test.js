@@ -20,7 +20,8 @@ function resetState() {
 
 test("isCompositeMode menolak mode legacy numerik dan menerima mode composite", () => {
   assert.equal(isCompositeMode("bidask:double"), true);
-  assert.equal(isCompositeMode("spot:sol"), true);
+  assert.equal(isCompositeMode("spot"), true);
+  assert.equal(isCompositeMode("spot:sol"), false);
   assert.equal(isCompositeMode(0), false);
   assert.equal(isCompositeMode(1), false);
   assert.equal(isCompositeMode(undefined), false);
@@ -57,8 +58,30 @@ test("classifyMode mengembalikan mode composite dari data posisi", () => {
     entryBaseAmount: 1,
     entrySolAmount: 1,
   });
-  assert.equal(spot, "spot:double");
+  assert.equal(spot, "spot");
   assert.equal(isCompositeMode(spot), true);
+});
+
+test("classifyMode: span >= 200 selalu spot, di bawahnya bidask", () => {
+  const spotSol = classifyMode({
+    hasX: false,
+    hasY: true,
+    binSpan: 231,
+    xIsSol: false,
+    entryBaseAmount: 0,
+    entrySolAmount: 1,
+  });
+  assert.equal(spotSol, "spot");
+
+  const bidaskEdge = classifyMode({
+    hasX: true,
+    hasY: true,
+    binSpan: 199,
+    xIsSol: false,
+    entryBaseAmount: 1,
+    entrySolAmount: 1,
+  });
+  assert.equal(bidaskEdge, "bidask:double");
 });
 
 test("entry/execute.js memanggil trackPosition dengan urutan argumen yang benar", () => {

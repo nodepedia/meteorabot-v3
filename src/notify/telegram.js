@@ -77,6 +77,18 @@ export function notifyDca({ pair, pool, pnlPct, sizeSol }) {
   );
 }
 
+// Fallback OOR kiri spot: beri tahu hasil konversi ke posisi token-only.
+export function notifyFallback({ pair, pool, success, amount, error }) {
+  const label = pair || pool?.slice(0, 8) || "";
+  if (success) {
+    send(`↩️ FALLBACK ${label}\nOOR kiri → posisi token-only dibuka\nToken: ${amount}\nPool: ${pool || "?"}`);
+  } else {
+    send(
+      `⚠️ FALLBACK ${label} GAGAL\nPosisi token-only tidak jadi dibuka${error ? `: ${error}` : ""}\nToken dibiarkan di wallet.\nPool: ${pool || "?"}`
+    );
+  }
+}
+
 function signedPct(v) {
   if (v == null || !Number.isFinite(Number(v))) return "?";
   const n = Number(v);

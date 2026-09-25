@@ -49,5 +49,5 @@ Gaya: Prettier `printWidth: 120`, kutip ganda. Sebelum selesai jalankan `npm run
 ## Alur domain singkat
 
 - **Entry**: Supertrend 15m native (GMGN) bullish + harga real-time Jupiter ≤ garis → masuk (`first_touch`). Bearish = pool tidak dipantau. Dua cadence terpisah (refresh kandidat vs poll harga Jupiter).
-- **Exit**: per mode komposit `<strategi>:<komposit>` (`bidask:double`, `bidask:token`, `bidask:sol`, `spot:double`, …) — stop loss, OOR, trailing TP, dll.
+- **Exit**: per mode `bidask:<komposit>` (`bidask:double`, `bidask:token`, `bidask:sol`) atau `spot` (satu mode, span ≥ `SPOT_MIN_BINS`, OOR kanan ber-timer) — stop loss, OOR, trailing TP, dll. OOR kiri `spot` → tutup tanpa swap lalu buka posisi `bidask:token` satu-sisi (jual saat naik) di pool yang sama; token dilindungi dari sweep selama proses (`spot-fallback.js`, `open-token-position.js`).
 - **DCA**: averaging-down saat PnL sentuh `DCA_ARM_PCT`, rebound dari trough, dibatasi per sesi (`state.dcaUsage`).

@@ -12,6 +12,7 @@ import {
   getTrackedPosition,
   updateCollectFeeMode,
   updateTrackedMode,
+  recordTrackedRange,
   getOpenTrackedPositions,
   registerMissedCycle,
   resetMissedCycle,
@@ -30,6 +31,7 @@ import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
 import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
+import { handleSpotOorKiri } from "./spot-fallback.js";
 
 let cycleCount = 0;
 let lastStatusSent = 0;
@@ -226,8 +228,13 @@ export async function mainLoop() {
           tracked = getTrackedPosition(pos.position);
         }
       }
-      pos.mode = tracked?.mode ?? "spot:double";
+      pos.mode = tracked?.mode ?? "spot";
       pos.ageMinutes = Math.floor((Date.now() - (tracked?.firstSeenAt || Date.now())) / 60000);
+
+      // Catat range bin sekali untuk posisi spot (lower/upper/span).
+      if (pos.mode === "spot") {
+        recordTrackedRange(pos.position, pos.lowerBin, pos.upperBin);
+      }
 
       // Track PnL peaks
       if (pos.pnlPct != null) updatePnlPeaks(pos.position, pos.pnlPct);
@@ -259,7 +266,12 @@ export async function mainLoop() {
       log.debug(`[detail] ${pairLabel}: ${exit.reason}${exit.action === "close" ? " → CLOSE" : ""}`);
 
       if (exit.action === "close") {
-        await handleClose(pos, exit.reason);
+        // OOR kiri spot: fallback konversi ke posisi token-only (close tanpa swap).
+        let handled = false;
+        if (exit.reason === "oor_kiri" && pos.mode === "spot") {
+          handled = await handleSpotOorKiri(pos);
+        }
+        if (!handled) await handleClose(pos, exit.reason);
       } else if (exit.action === "arm_indicator_trailing") {
         armIndicatorTrailing(pos.position, exit.reason, pos.pnlPct);
         log.info(`${pairLabel}: ${humanReason(exit.reason)} → trailing profit disiapkan`);

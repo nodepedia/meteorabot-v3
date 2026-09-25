@@ -12,14 +12,15 @@ function normalizeFeeMode(raw) {
 }
 
 // Mode = "<strategi>:<komposisi>".
-//   strategi   : bidask | spot
-//   komposisi  : double (token+SOL) | token | sol
+//   bidask : bidask:double | bidask:token | bidask:sol
+//   spot   : spot (satu mode, tanpa komposisi; span >= SPOT_MIN_BINS)
 const bidaskDouble = modeRules(e, "BIDASK_DOUBLE", {
   enableIndicators: true,
   trailingTakeProfit: true,
 });
 
 // Token-only: trailing TP OFF, indikator + trailing-dari-sinyal ON.
+// Dipakai juga oleh fallback OOR kiri spot (posisi token-only hasil konversi).
 const bidaskToken = modeRules(e, "BIDASK_TOKEN", {
   enableIndicators: true,
   trailingTakeProfit: false,
@@ -30,16 +31,28 @@ const bidaskSol = modeRules(e, "BIDASK_SOL", {
   trailingTakeProfit: true,
 });
 
-const spotDouble = modeRules(e, "SPOT_DOUBLE", {
+// Spot-quote (satu mode, isi SOL-only, span >= SPOT_MIN_BINS): indikator sama
+// seperti bidask:double, trailing TP trigger +20%, OOR kanan ber-timer 5 menit.
+// OOR kiri = tutup langsung (0 menit), lalu token dikonversi ke posisi
+// bidask:token oleh fallback (lihat spotFallback).
+const spot = modeRules(e, "SPOT", {
+  enableIndicators: true,
   trailingTakeProfit: true,
-  trailingTriggerPct: 15,
+  trailingTriggerPct: 20,
+  enableOOR: true,
+  oorKiriMinutes: 0,
+  oorKananMinutes: 5,
 });
 
-// Scaffold — rules diisi saat update spot token-only datang.
-const spotToken = modeRules(e, "SPOT_TOKEN", {});
-
-// Scaffold — rules diisi saat update spot sol-only datang.
-const spotSol = modeRules(e, "SPOT_SOL", {});
+// Fallback OOR kiri spot: tutup tanpa swap, lalu buka posisi token-only
+// satu-sisi di pool yang sama memakai seluruh saldo token.
+const spotFallback = {
+  enabled: bool(e.SPOT_FALLBACK_ENABLED, true),
+  binsAbove: Math.max(0, Math.floor(num(e.SPOT_FALLBACK_BINS_ABOVE, 70))),
+  binsBelow: Math.max(0, Math.floor(num(e.SPOT_FALLBACK_BINS_BELOW, 0))),
+  retry: Math.max(1, Math.floor(num(e.SPOT_FALLBACK_RETRY, 3))),
+  distribution: (e.SPOT_FALLBACK_DISTRIBUTION || "bid_ask").toLowerCase(),
+};
 
 const entry = {
   enabled: bool(e.ENTRY_ENABLED, true),
@@ -175,7 +188,8 @@ const config = {
 
   logRetentionDays: num(e.LOG_RETENTION_DAYS, 7),
 
-  binThreshold: num(e.BIN_THRESHOLD, 80),
+  // Ambang span bin minimum untuk mengenali posisi spot-quote.
+  spotMinBins: Math.max(1, Math.floor(num(e.SPOT_MIN_BINS, 200))),
   pollIntervalHold: num(e.POLL_INTERVAL_HOLD, 0.2),
   pollIntervalIdle: num(e.POLL_INTERVAL_IDLE, 5),
   trailingConfirmDelaySec: num(e.TRAILING_CONFIRM_DELAY_SEC, 10),
@@ -190,13 +204,12 @@ const config = {
   entry,
   swap,
   dca,
+  spotFallback,
 
   bidaskDouble,
   bidaskToken,
   bidaskSol,
-  spotDouble,
-  spotToken,
-  spotSol,
+  spot,
 
   rulesFor(mode) {
     switch (LEGACY_MODE[mode] || mode) {
@@ -204,12 +217,8 @@ const config = {
         return this.bidaskToken;
       case "bidask:sol":
         return this.bidaskSol;
-      case "spot:double":
-        return this.spotDouble;
-      case "spot:token":
-        return this.spotToken;
-      case "spot:sol":
-        return this.spotSol;
+      case "spot":
+        return this.spot;
       case "bidask:double":
       default:
         return this.bidaskDouble;

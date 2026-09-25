@@ -33,6 +33,7 @@ const MODULES = [
   "../src/meteora/sdk.js",
   "../src/meteora/positions.js",
   "../src/meteora/close.js",
+  "../src/meteora/open-token-position.js",
   "../src/notify/telegram.js",
   "../src/entry/index.js",
   "../src/entry/runtime.js",
@@ -48,6 +49,7 @@ const MODULES = [
   "../src/exit/bounce.js",
   "../src/exit/sweep.js",
   "../src/exit/close.js",
+  "../src/exit/spot-fallback.js",
 ];
 
 test("every module loads without import errors", async () => {

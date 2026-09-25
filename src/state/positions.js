@@ -13,7 +13,12 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       baseMint: baseMint || "",
       firstSeenAt: Date.now(),
       collectFeeMode: collectFeeMode ?? null,
-      mode: mode ?? "spot:double",
+      mode: mode ?? "spot",
+      // Range bin posisi (dicatat sekali saat pertama terlihat; tidak pernah
+      // ditulis ulang karena posisi tidak di-resize).
+      lowerBin: null,
+      upperBin: null,
+      binSpan: null,
       isDca: isDca === true,
       lastPnlPeak: null,
       lastPnlLowest: null,
@@ -73,6 +78,21 @@ export function updateCollectFeeMode(positionAddress, collectFeeMode) {
     p.collectFeeMode = collectFeeMode;
     writeState(state);
   }
+}
+
+// Catat range bin sekali saja (lower/upper/span). Tidak menimpa bila sudah ada.
+export function recordTrackedRange(positionAddress, lowerBin, upperBin) {
+  if (!positionAddress) return;
+  const lower = Number(lowerBin);
+  const upper = Number(upperBin);
+  if (!Number.isFinite(lower) || !Number.isFinite(upper)) return;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p || p.binSpan != null) return;
+  p.lowerBin = lower;
+  p.upperBin = upper;
+  p.binSpan = upper - lower;
+  writeState(state);
 }
 
 export function updatePnlPeaks(positionAddress, pnlPct) {

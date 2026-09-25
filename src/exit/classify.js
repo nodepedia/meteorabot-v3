@@ -6,27 +6,23 @@ const ENTRY_DUST_BASE = 1e-6;
 
 // Mode composite yang dikenal. Nilai lama (mis. angka 0/1) dianggap invalid
 // dan harus direklasifikasi ulang dari data posisi.
-export const COMPOSITE_MODES = new Set([
-  "bidask:double",
-  "bidask:token",
-  "bidask:sol",
-  "spot:double",
-  "spot:token",
-  "spot:sol",
-]);
+export const COMPOSITE_MODES = new Set(["bidask:double", "bidask:token", "bidask:sol", "spot"]);
 
 export function isCompositeMode(mode) {
   return typeof mode === "string" && COMPOSITE_MODES.has(mode);
 }
 
-// Mode composite "<strategi>:<komposisi>".
-// Komposisi diambil dari deposit awal entry (allTimeDeposits) bila tersedia;
-// fallback ke isi bin saat ini. Strategi diinferensi dari span bin.
+// Mode composite `<strategi>:<komposisi>`.
+// Spot-quote: span >= SPOT_MIN_BINS, satu mode tanpa komposisi.
+// Selain itu: bidask, komposisi dari deposit awal (allTimeDeposits) bila ada,
+// fallback ke isi bin saat ini.
 export function classifyMode(pos) {
   const { hasX, hasY, binSpan, xIsSol } = pos;
   const baseIsX = !xIsSol;
 
-  const strategy = binSpan < config.binThreshold ? "bidask" : "spot";
+  if (Number.isFinite(binSpan) && binSpan >= config.spotMinBins) {
+    return "spot";
+  }
 
   let composition = null;
   const entryBase = pos.entryBaseAmount;
@@ -47,5 +43,5 @@ export function classifyMode(pos) {
     else composition = "double";
   }
 
-  return `${strategy}:${composition}`;
+  return `bidask:${composition}`;
 }
