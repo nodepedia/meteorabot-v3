@@ -41,10 +41,11 @@ Gaya: Prettier `printWidth: 120`, kutip ganda. Sebelum selesai jalankan `npm run
 - **`npm install` menjalankan `postinstall`** (`scripts/patch-anchor.js`) yang mem-patch `@coral-xyz/anchor` + `@meteora-ag/dlmm` untuk ESM Node 24. Ganti/update dependency → jalankan `npm install` ulang, jika tidak bot gagal import.
 - **Bot menulis ke `pool.txt`**: mengomentari (`#`) pool yang sudah selesai. Jangan biarkan `pool.txt` terbuka di editor saat bot jalan (save akan menimpa mark bot).
 - File state runtime **git-ignored** dan tidak boleh di-commit: `state.json`, `pool.txt`, `decision-log.json`, `pnl-history.json`, `supertrend-cache.json`, `logs/`, `.env`.
+- **Default strategi ada di `strat.conf`** (di-commit). Tuning dilakukan di sini lalu `git commit`, bukan di `.env`. Bila key sama, `strat.conf` **menang** atas `.env` (`loadEnv` di `src/config/env.js`).
 - Tes memakai override env (`STATE_FILE`, `DECISION_LOG_FILE`, `PNL_HISTORY_FILE`) supaya tidak menyentuh file produksi — ikuti pola ini untuk tes baru.
 - `test/smoke.test.js` mengimpor semua modul; kalau pindah/ganti nama file, update daftar `MODULES` di file itu.
 - `scripts/pnl-report.js` **read-only** — tidak menyentuh `state.json`, tidak mengirim transaksi.
-- Rahasia ada di `.env` (jangan pernah di-commit; `chmod 600 .env`).
+- Rahasia & setelan instance (wallet, RPC, API key, telegram, `DRY_RUN`) ada di `.env` (jangan pernah di-commit; `chmod 600 .env`).
 
 ## Alur domain singkat
 

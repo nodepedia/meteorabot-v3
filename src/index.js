@@ -9,7 +9,7 @@ const STRATEGY_LABEL = { spot: "Spot", curve: "Curve", bid_ask: "BidAsk" };
 
 log.info("========================================");
 log.info("  Meteora Bot starting...");
-log.info(`  Mode: ${config.dryRun ? "DRY RUN" : "LIVE"} (dari .env) | SOL_MODE: ${config.solMode}`);
+log.info(`  Mode: ${config.dryRun ? "DRY RUN" : "LIVE"} (dari .env) | SOL_MODE: ${config.solMode} (strat.conf/.env)`);
 log.info(
   `  Entry: per-pool size from ${config.entry.poolListFile} | split ${config.entry.sizeSplit} | bins -34/+34 BidAsk | kandidat ${config.entry.scanIntervalSec}s | Jupiter poll ${config.jupiterPollIntervalSec}s`
 );

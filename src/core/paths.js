@@ -15,6 +15,8 @@ function resolveFile(envName, fallbackName) {
 }
 
 export const ENV_FILE = path.join(ROOT, ".env");
+// Default strategi yang di-commit ke git (menang atas .env).
+export const STRAT_FILE = resolveFile("STRAT_FILE", "strat.conf");
 export const LOG_DIR = path.join(ROOT, "logs");
 export const STATE_FILE = resolveFile("STATE_FILE", "state.json");
 export const DECISION_LOG_FILE = resolveFile("DECISION_LOG_FILE", "decision-log.json");

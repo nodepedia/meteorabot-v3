@@ -16,8 +16,9 @@
 
 ## File Penting
 
-- `.env` → tempat menyimpan API Key dan rahasia (jangan diubah sembarangan)
-- `.env.example` → contoh pengaturan
+- `strat.conf` → default strategi (entry/exit/DCA/swap, dll). Di-commit ke git; tuning di sini.
+- `.env` → rahasia & setelan instance saja (wallet, RPC, API Key, telegram, DRY_RUN). Jangan di-commit.
+- `.env.example` → contoh pengisian `.env`
 - `pool.txt` → daftar pool yang dipantau bot
 - `src/index.js` → file utama yang menjalankan bot
 - `src/config/env.js` → tempat memuat pengaturan dari .env

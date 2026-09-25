@@ -88,7 +88,7 @@ nano pool.txt ## fill pool token
 npm start              # foreground, or: npm run pm2
 ```
 
-`pool.txt`: one pool per line — bare address (uses `.env` defaults) or `pool_address,entry_size,max_position` to override.
+`pool.txt`: one pool per line — bare address (uses `strat.conf` defaults) or `pool_address,entry_size,max_position` to override.
 
 > Deploying to a VPS? See [VPS Installation](#vps-installation-ubuntu).
 
@@ -129,11 +129,16 @@ npm install
 `npm install` runs a `postinstall` step (`scripts/patch-anchor.js`) that patches
 `@coral-xyz/anchor` and `@meteora-ag/dlmm` for Node 24 ESM compatibility.
 
-### 4. Configure `.env`
+### 4. Configure `.env` (secrets) and `strat.conf` (strategy)
+
+Strategy defaults live in `strat.conf` and are committed to git. `.env` holds only
+secrets/instance values (wallet, RPC, API keys, Telegram, `DRY_RUN`) and is git-ignored.
+If a key exists in both, `strat.conf` wins.
 
 ```bash
 cp .env.example .env
-nano .env
+nano .env            # secrets only
+nano strat.conf      # strategy tuning (commit after changes)
 chmod 600 .env
 ```
 
@@ -150,7 +155,7 @@ Required values:
 
 ### 5. Create `pool.txt`
 
-One pool per line. A bare pool address uses the defaults from `.env`
+One pool per line. A bare pool address uses the defaults from `strat.conf`
 (`ENTRY_DEFAULT_SIZE_SOL`, `ENTRY_DEFAULT_MAX_POSITION`); add `,entry_size,max_position`
 to override per pool. This file is git-ignored.
 
@@ -194,8 +199,7 @@ npm run pm2:logrotate   # install pm2-logrotate (10M max, compress, retain 7)
 
 ## Configuration
 
-All settings live in `.env` (see `.env.example`).
-Groups: Shared (wallet/RPC/API/Telegram), Entry, **Data layer** (`CANDLE_15M_SOURCE`, `GMGN_*`, `METEORA_*`), **Entry signal** (`JUPITER_POLL_INTERVAL_SEC`, `ENTRY_TOUCH_TOLERANCE_PCT`, `SUPERTREND_CACHE_FILE`), Telegram, Swap, Exit general + per-mode (`BIDASK_DOUBLE_*`, `BIDASK_TOKEN_*`, `BIDASK_SOL_*`, `SPOT_*`).
+Strategy settings live in `strat.conf` (committed; e.g. Entry, **Data layer** (`CANDLE_15M_SOURCE`, `GMGN_*`, `METEORA_*`), **Entry signal** (`JUPITER_POLL_INTERVAL_SEC`, `ENTRY_TOUCH_TOLERANCE_PCT`, `SUPERTREND_CACHE_FILE`), Telegram, Swap, Exit general + per-mode (`BIDASK_DOUBLE_*`, `BIDASK_TOKEN_*`, `BIDASK_SOL_*`, `SPOT_*`)). Secrets/instance-only settings live in `.env` (see `.env.example`): wallet/RPC/API keys, Telegram token, `DRY_RUN`. When a key exists in both, `strat.conf` wins.
 
 ### Entry signal (GMGN 15m + Jupiter)
 
@@ -280,6 +284,6 @@ node scripts/pnl-report.js --wallet <alamat>            # override wallet
 
 ## Security
 
-`.env`, `state.json`, `pnl-history.json`, and logs are git-ignored. Never commit secrets.
+`.env`, `state.json`, `pnl-history.json`, and logs are git-ignored. Never commit secrets. `strat.conf` is the opposite: it is committed so strategy tuning survives a wiped/replaced VPS.
 
 Restrict permissions with `chmod 600 .env`, and always verify a configuration with `DRY_RUN=true` before running live.

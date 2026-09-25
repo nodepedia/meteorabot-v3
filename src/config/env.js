@@ -1,9 +1,9 @@
 import fs from "fs";
-import { ENV_FILE } from "../core/paths.js";
+import { ENV_FILE, STRAT_FILE } from "../core/paths.js";
 
-export function loadEnv() {
-  if (!fs.existsSync(ENV_FILE)) return {};
-  const raw = fs.readFileSync(ENV_FILE, "utf8");
+function parseEnvFile(file) {
+  if (!fs.existsSync(file)) return {};
+  const raw = fs.readFileSync(file, "utf8");
   const env = {};
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
@@ -18,6 +18,12 @@ export function loadEnv() {
     env[key] = value;
   }
   return env;
+}
+
+// strat.conf = default strategi (di-commit) MENANG atas .env (rahasia/instance)
+// bila key-nya sama, supaya default yang di-commit otoritatif.
+export function loadEnv(stratFile = STRAT_FILE, envFile = ENV_FILE) {
+  return { ...parseEnvFile(envFile), ...parseEnvFile(stratFile) };
 }
 
 export const bool = (val, def = true) => (val == null ? def : val !== "false");
