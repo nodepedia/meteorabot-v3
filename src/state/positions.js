@@ -28,6 +28,8 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       closePnlPct: null,
       oorSejak: null,
       oorArah: null,
+      // Mulai hitung yield rendah (mode spot): sejak kapan kondisi terpenuhi.
+      lowYieldSejak: null,
       trailingActive: false,
       trailingArmedBy: null,
       trailingAnchor: null,
@@ -170,6 +172,37 @@ export function getOORState(positionAddress) {
     return { sejak: p.oorSejak, arah: p.oorArah };
   }
   return null;
+}
+
+// --- Timer yield rendah (mode spot) ---
+
+// Set sekali saat kondisi low-yield pertama terpenuhi (tidak me-reset bila ada).
+export function setLowYieldSince(positionAddress) {
+  if (!positionAddress) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return null;
+  if (p.lowYieldSejak == null) {
+    p.lowYieldSejak = Date.now();
+    writeState(state);
+  }
+  return p.lowYieldSejak;
+}
+
+export function getLowYieldSince(positionAddress) {
+  if (!positionAddress) return null;
+  const state = readState();
+  return state.positions[positionAddress]?.lowYieldSejak ?? null;
+}
+
+export function clearLowYieldSince(positionAddress) {
+  if (!positionAddress) return;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (p && p.lowYieldSejak != null) {
+    p.lowYieldSejak = null;
+    writeState(state);
+  }
 }
 
 // --- Deteksi posisi hilang (ditutup manual) ---

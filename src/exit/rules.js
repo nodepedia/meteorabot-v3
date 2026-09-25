@@ -1,12 +1,26 @@
 import config from "../config/index.js";
 import { computeRSI, computeMACD, computeBB } from "../market/indicators.js";
-import { updateOOR, resetOOR, getOORState } from "../state/positions.js";
+import {
+  updateOOR,
+  resetOOR,
+  getOORState,
+  setLowYieldSince,
+  getLowYieldSince,
+  clearLowYieldSince,
+} from "../state/positions.js";
 import { isTrailingConfirmed } from "../state/trailing.js";
 import { getBounceRecoveryState } from "../state/bounce.js";
 
 export function evaluateExit(position, candles) {
   const rules = config.rulesFor(position.mode);
   const { activeBin, lowerBin, upperBin, pnlPct } = position;
+
+  const baseIsX = !position.xIsSol;
+  const hasBase = baseIsX ? position.hasX : position.hasY;
+  const inRange =
+    activeBin != null && lowerBin != null && upperBin != null && activeBin >= lowerBin && activeBin <= upperBin;
+  // Timer yield rendah hanya relevan saat in-range; keluar range = reset.
+  if (!inRange) clearLowYieldSince(position.position);
 
   // 1. Stop loss
   if (rules.enableStopLoss && pnlPct != null && pnlPct <= rules.stopLossPct) {
@@ -55,7 +69,27 @@ export function evaluateExit(position, candles) {
   // In-range: reset tracker
   resetOOR(position.position);
 
-  // 5. Bounce recovery trail stop (opsional)
+  // 5. Yield rendah (mode spot): in-range + sudah pegang token, yield <= ambang,
+  // dan PnL >= 0. Setelah `lowYieldDelayMinutes` kondisi bertahan → close + swap.
+  if (rules.lowYieldClosePct > 0 && inRange && hasBase === true) {
+    const hasYieldData = Number.isFinite(position.feePct24h);
+    const low = hasYieldData && position.feePct24h <= rules.lowYieldClosePct;
+    if (low && pnlPct != null && pnlPct >= 0) {
+      setLowYieldSince(position.position);
+      const sejak = getLowYieldSince(position.position);
+      const menit = sejak ? (Date.now() - sejak) / 60000 : 0;
+      if (menit >= rules.lowYieldDelayMinutes) {
+        clearLowYieldSince(position.position);
+        return { action: "close", reason: "low_yield" };
+      }
+      return { action: "hold", reason: `low_yield_${Math.floor(menit)}m` };
+    }
+    clearLowYieldSince(position.position);
+  } else {
+    clearLowYieldSince(position.position);
+  }
+
+  // 6. Bounce recovery trail stop (opsional)
   if (rules.enableBounceRecovery && pnlPct != null) {
     const brState = getBounceRecoveryState(position.position);
     if (brState?.state === "active" && brState.activePeak != null) {
@@ -69,7 +103,7 @@ export function evaluateExit(position, candles) {
     }
   }
 
-  // 6. Indikator — arm trailing saat RSI+MACD atau RSI+BB (exit via trailing drop)
+  // 7. Indikator — arm trailing saat RSI+MACD atau RSI+BB (exit via trailing drop)
   if (!rules.enableIndicators) {
     return { action: "hold", reason: "indicators_disabled" };
   }

@@ -267,8 +267,9 @@ async function enrichPnl(positions) {
 
       const pnl = pnlFromEntry(entry);
       p.pnlPct = pnl == null ? 0 : pnl;
-      p.feePct24h = parseFloat(entry.feePerTvl24h || "0");
-      if (!Number.isFinite(p.feePct24h)) p.feePct24h = 0;
+      // null = data yield tidak tersedia (dibedakan dari 0%).
+      const feeTvl = parseFloat(entry.feePerTvl24h);
+      p.feePct24h = Number.isFinite(feeTvl) ? feeTvl : null;
       const feeX = parseFloat(entry.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || "0");
       const feeY = parseFloat(entry.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || "0");
       p.unclaimedFee = Number.isFinite(feeX + feeY) ? feeX + feeY : 0;

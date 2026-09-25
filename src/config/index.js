@@ -42,6 +42,8 @@ const spot = modeRules(e, "SPOT", {
   enableOOR: true,
   oorKiriMinutes: 0,
   oorKananMinutes: 5,
+  lowYieldClosePct: 6,
+  lowYieldDelayMinutes: 10,
 });
 
 // Fallback OOR kiri spot: tutup tanpa swap, lalu buka posisi token-only

@@ -104,6 +104,7 @@ export function exitLabel(reason) {
   if (r === "stop_loss") return "Stop Loss";
   if (r === "oor_kanan") return "OOR Kanan";
   if (r === "oor_kiri") return "OOR Kiri";
+  if (r === "low_yield") return "Yield Rendah";
   if (r.startsWith("bounce_recovery")) return "Bounce Recovery";
   if (r === "not_detected") return "Tidak Terdeteksi";
   return r;

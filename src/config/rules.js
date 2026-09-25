@@ -25,6 +25,10 @@ export const RULE_DEFAULTS = {
   bounceRecoveryTrigger: -40,
   bounceRecoveryTarget: -10,
   bounceRecoveryTrailingPct: 2,
+  // Yield rendah: 0 = nonaktif. >0 = tutup (setelah delay) bila posisi
+  // in-range, yield <= nilai ini, dan PnL >= 0.
+  lowYieldClosePct: 0,
+  lowYieldDelayMinutes: 10,
 };
 
 export function modeRules(e, prefix, overrides = {}) {
@@ -51,6 +55,8 @@ export function modeRules(e, prefix, overrides = {}) {
     bounceRecoveryTrigger: num(e[k("BOUNCE_RECOVERY_TRIGGER")], d.bounceRecoveryTrigger),
     bounceRecoveryTarget: num(e[k("BOUNCE_RECOVERY_TARGET")], d.bounceRecoveryTarget),
     bounceRecoveryTrailingPct: num(e[k("BOUNCE_RECOVERY_TRAILING_PCT")], d.bounceRecoveryTrailingPct),
+    lowYieldClosePct: Math.max(0, num(e[k("LOW_YIELD_CLOSE_PCT")], d.lowYieldClosePct)),
+    lowYieldDelayMinutes: Math.max(0, num(e[k("LOW_YIELD_DELAY_MINUTES")], d.lowYieldDelayMinutes)),
   };
 }
 
