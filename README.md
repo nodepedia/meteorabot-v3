@@ -1,115 +1,34 @@
 # Meteora Bot
 
-Combined auto-entry and deterministic exit bot for Meteora DLMM pools on Solana.
+Bot trading live untuk pool **Meteora DLMM** di Solana: auto-entry + exit deterministik, DCA, dan auto-swap.
 
-## Features
+## Fitur
 
-- **Auto-entry** — Supertrend (ATR 10 × 3) **bullish** on **native 15m candles from GMGN**; entry fires on `first_touch` when the real-time **Jupiter** price drops to or below the Supertrend line. Candidate refresh (`ENTRY_SCAN_INTERVAL_SEC`) and Jupiter price polling (`JUPITER_POLL_INTERVAL_SEC`, `1` = 1 req/s, one batched request for all pools) run on separate cadences, so the slow RPC/pool refresh never throttles the signal. - Jupiter `price/v3` allows ~10 req/10s per key, so do not go below `1`. BidAsk two-sided, bins −34/+34; size per pool from `pool.txt` (default in `.env`, overridable per line). Bearish = the pool is not watched at all. Next entry only after the previous position closes (and while still bullish), up to `max_position`.
-- **Deterministic exit** per mode `bidask:<composition>` (`bidask:double`, `bidask:token`, `bidask:sol`) or `spot` (single mode, SOL-only, span ≥ `SPOT_MIN_BINS`) — stop loss, OOR, 2-phase trailing TP, indicator-armed trailing (RSI+MACD / RSI+BB), bounce recovery. Bidask composition is detected from the position's initial entry deposits (`allTimeDeposits`), falling back to current bin contents. `spot` is inferred from a wide bin span (≥ 200) and has no composition; its right-side OOR uses a grace timer (`SPOT_OOR_KANAN_MINUTES`, default 5 min) before closing, its left-side OOR closes immediately then converts the acquired token into a one-sided `bidask:token` position (sell ladder, `SPOT_FALLBACK_*`) — the token is protected from the periodic swap sweep during the handoff — and it closes + swaps to SOL when the in-range position holds token at yield ≤ `SPOT_LOW_YIELD_CLOSE_PCT` (6%) with PnL ≥ 0 for `SPOT_LOW_YIELD_DELAY_MINUTES` (10 min).
-- **DCA (averaging-down)** — trailing TP terbalik: saat posisi menyentuh `DCA_ARM_PCT` (−10%), bot melacak *trough* (titik terendah PnL), lalu membuka posisi baru di pool yang sama saat PnL rebound `DCA_REBOUND_PCT` dari trough, setelah konfirmasi `DCA_CONFIRM_DELAY_SEC`. Setiap posisi maksimal 1× DCA; total DCA aktif **per sesi** (sejak posisi pertama dibuka sampai semua posisi di pool close) dibatasi `DCA_MAX_ADDS` dan disimpan persisten di `state.json`, jadi tahan restart. Saat posisi hasil DCA ditutup profit lewat trailing TP, kuota dikembalikan (refund 1 slot) dan status DCA posisi lain di pool di-reset agar bisa DCA lagi; exit lain (indikator/stop/OOR) tidak me-refund. Size mengikuti `entry_size` `pool.txt`, tidak memakai kuota `max_position`, dan tidak butuh Supertrend bullish. Hanya mode yang terdaftar di `DCA_ELIGIBLE_MODES` (default `bidask:double`) yang di-DCA; `spot` dan `bidask:token` dikecualikan.
-- **Auto swap** — base token → SOL via Jupiter after close.
-- **Rate-limit safe GMGN** — one 15m fetch per token per bar, behind a shared queueing limiter (cap + min-gap + 429 backoff, no retry while banned), with a disk cache for Supertrend lines.
-- Telegram notifications, persistent state, `DRY_RUN`.
+- **Auto-entry** — masuk saat Supertrend 15m (GMGN) bullish dan harga real-time Jupiter ≤ garis.
+- **Exit deterministik** — stop loss, OOR, trailing TP, bounce recovery; mode `bidask:<komposit>` atau `spot`.
+- **DCA (averaging-down)** — tambah posisi saat PnL menyentuh `DCA_ARM_PCT` lalu rebound, dibatasi per sesi.
+- **Auto swap** — token → SOL via Jupiter setelah posisi close.
+- **Telegram + state persisten** — notifikasi dan status posisi tahan restart.
+- **`DRY_RUN`** — uji tanpa kirim transaksi nyata.
 
-## Project Structure
+Detail arsitektur & konfigurasi: lihat `PROJECT_STRUCTURE.md`.
 
-Modules are grouped by responsibility. Start at `src/index.js` (composition root) and
-follow the imports down each layer.
+## Instalasi VPS (Ubuntu)
 
-```
-src/
-  index.js            # startup: load config, notify, start entry scanner + exit loop
-  config/             # .env loading and per-mode rule resolution
-    env.js            #   loadEnv(), bool(), num()
-    rules.js          #   RULE_DEFAULTS, modeRules(), LEGACY_MODE
-    index.js          #   final config object + rulesFor(mode)
-  core/               # cross-cutting helpers
-    paths.js          #   ROOT, LOG_DIR, STATE_FILE, PNL_HISTORY_FILE...
-    logger.js         #   console + daily rotating file log
-    utils.js          #   sleep(), minutes(), clamp()
-    rate-limiter.js   #   sliding-window limiter (Meteora / GMGN)
-    constants.js      #   WSOL_MINT, USDC_MINT, TOKEN_PROGRAM_ID
-  solana/             # chain + exchange access
-    connection.js     #   getConnection() singleton
-    wallet.js         #   getWallet() singleton
-    balances.js       #   token/SOL balances, decimals, USD value
-    swap.js           #   Jupiter swap, swap-to-SOL, safety sweep
-  market/             # market data + indicators
-    candles.js        #   candle routing (15m->GMGN, native->Meteora) + volume
-    gmgn-client.js    #   async gmgn-cli wrapper (rate-limit aware)
-    gmgn-limiter.js   #   shared GMGN queue: cap, min-gap, 429 backoff
-    jupiter-price.js  #   batched real-time USD prices (price/v3)
-    supertrend-state.js #  per-mint bullish/bearish + line (disk-cached)
-    indicators.js     #   RSI, MACD, Bollinger Bands
-    supertrend.js     #   Supertrend + touch detection
-  meteora/            # DLMM SDK wrapper
-    sdk.js            #   lazy SDK loader
-    positions.js      #   open positions + PnL/metadata/market-cap enrichment
-    close.js          #   claim fees + remove liquidity + verify close
-  entry/              # entry scanner and execution
-    index.js          #   two cadences: slow candidate refresh + fast Jupiter price watch
-    candidates.js     #   pure candidate filter (in-flight/entered/cooldown)
-    pool-list.js      #   pool.txt parser
-    pool-info.js      #   pool mint orientation + pair name
-    price-watch.js    #   signal: bullish line (GMGN) + price <= line (Jupiter)
-    execute.js        #   swap + initializePositionAndAddLiquidity
-    runtime.js        #   in-flight entry / usage registry
-  exit/               # exit monitor and close flow
-    index.js          #   mainLoop()
-    rules.js          #   evaluateExit() decision rules
-    classify.js       #   infer <strategy>:<composition> per position
-    trailing.js       #   trailing TP state machine + confirmation timer
-    bounce.js         #   bounce recovery state machine
-    sweep.js          #   per-cycle safety sweep to SOL
-    close.js          #   handleClose(): close, swap back, notify
-  state/              # persistent JSON state
-    store.js          #   read/write helpers + file paths
-    positions.js      #   position lifecycle + OOR
-    trailing.js       #   trailing pending/confirmed state
-    bounce.js         #   bounce recovery state
-    history.js        #   PnL snapshots
-  notify/
-    telegram.js       # Telegram notifications
-test/                 # node:test unit + module-load smoke tests
-scripts/
-  patch-anchor.js     # Node 24 ESM patch (postinstall)
-  pnl-report.js       # Laporan PnL posisi (WIB, SOL + USD)
-  scan-pnl.js         # Scan PnL cepat per wallet (lama)
-```
+### Kebutuhan
 
-## Quick Start
+- Ubuntu dengan **Node.js 24.x** (wajib untuk patch ESM di `scripts/patch-anchor.js`)
+- `git`, `build-essential`, `python3`
+- `pm2` (opsional, untuk jalan sebagai service)
 
-```bash
-git clone https://github.com/nodepedia/meteorabot.git
-cd meteorabot
-npm install
-cp .env.example .env   # fill in values
-nano pool.txt ## fill pool token 
-npm start              # foreground, or: npm run pm2
-```
-
-`pool.txt`: one pool per line — bare address (uses `strat.conf` defaults) or `pool_address,entry_size,max_position` to override.
-
-> Deploying to a VPS? See [VPS Installation](#vps-installation-ubuntu).
-
-## VPS Installation (Ubuntu)
-
-### Requirements
-
-- Ubuntu (tested with Node.js 24.x — required for the ESM patch in `scripts/patch-anchor.js`)
-- `git`, `build-essential`, `python3` (transitive native deps: bigint-buffer, bufferutil, utf-8-validate)
-- Global `pm2` for running as a service
-- No database, web server, or Docker needed. The bot only makes outbound connections
-  (Solana RPC/Helius, Jupiter, GMGN, Telegram).
-
-### 1. Install system packages
+### 1. Paket sistem
 
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y curl git build-essential python3
 ```
 
-### 2. Install Node.js 24 and PM2
+### 2. Node.js 24 + PM2
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
@@ -118,135 +37,95 @@ sudo npm install -g pm2
 node -v && npm -v
 ```
 
-### 3. Clone and install the project
+### 3. Clone & install
 
 ```bash
 git clone https://github.com/nodepedia/meteorabot-v3
-cd meteorabot
+cd meteorabot-v3
 npm install
 ```
 
-`npm install` runs a `postinstall` step (`scripts/patch-anchor.js`) that patches
-`@coral-xyz/anchor` and `@meteora-ag/dlmm` for Node 24 ESM compatibility.
+`npm install` menjalankan `postinstall` (`scripts/patch-anchor.js`) yang mem-patch `@coral-xyz/anchor` dan `@meteora-ag/dlmm` untuk ESM Node 24.
 
-### 4. Configure `.env` (secrets) and `strat.conf` (strategy)
+### 4. Konfigurasi `.env` (rahasia) dan `strat.conf` (strategi)
 
-Strategy defaults live in `strat.conf` and are committed to git. `.env` holds only
-secrets/instance values (wallet, RPC, API keys, Telegram, `DRY_RUN`) and is git-ignored.
-If a key exists in both, `strat.conf` wins.
+Setelan strategi ada di `strat.conf` (di-commit ke git). `.env` hanya rahasia/setelan instance (wallet, RPC, API key, Telegram, `DRY_RUN`) dan git-ignored. Jika key sama ada di keduanya, `strat.conf` menang.
 
 ```bash
 cp .env.example .env
-nano .env            # secrets only
-nano strat.conf      # strategy tuning (commit after changes)
+nano .env             # rahasia saja
+nano strat.conf       # tuning strategi (commit setelah diubah)
 chmod 600 .env
 ```
 
-Required values:
+Nilai yang wajib diisi:
 
-| Variable | Description |
+| Variabel | Keterangan |
 |---|---|
-| `WALLET_PRIVATE_KEY` | Solana wallet secret key (base58 or JSON array) |
-| `RPC_URL` / `HELIUS_API_KEY` | Solana RPC endpoint |
-| `GMGN_API_KEY` | GMGN candles API key |
-| `JUPITER_API_KEY` | Jupiter swap API key |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram notifications |
-| `DRY_RUN` | Keep `true` for the first run; set `false` only when ready to trade live |
+| `WALLET_PRIVATE_KEY` | Secret key wallet Solana (base58 atau JSON array) |
+| `RPC_URL` / `HELIUS_API_KEY` | Endpoint Solana RPC |
+| `GMGN_API_KEY` | API key candle GMGN |
+| `JUPITER_API_KEY` | API key Jupiter (fallback price & swap) |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Notifikasi Telegram |
+| `DRY_RUN` | `true` untuk uji coba; `false` baru saat siap trading live |
 
-### 5. Create `pool.txt`
+### 5. Buat `pool.txt`
 
-One pool per line. A bare pool address uses the defaults from `strat.conf`
-(`ENTRY_DEFAULT_SIZE_SOL`, `ENTRY_DEFAULT_MAX_POSITION`); add `,entry_size,max_position`
-to override per pool. This file is git-ignored.
+Satu pool per baris. Alamat polos memakai default `strat.conf` (`ENTRY_DEFAULT_SIZE_SOL`, `ENTRY_DEFAULT_MAX_POSITION`); tambah `,entry_size,max_position` untuk override per pool. File ini git-ignored.
 
-The bot **comments out (`#`) a pool line automatically** once that pool is done:
-entry+exit complete (all positions closed), entry failed `ENTRY_MAX_FAILURES` times,
-pair is not SOL, or it expired without an entry. Remove the leading `#` to let the
-bot watch/enter that pool again. Do not keep `pool.txt` open in an editor while the
-bot runs — saving would overwrite the bot's marks.
+Bot otomatis mengomentari (`#`) baris pool yang sudah selesai: entry+exit tuntas, entry gagal `ENTRY_MAX_FAILURES` kali, pasangan bukan SOL, atau kedaluwarsa tanpa entry. Hapus `#` di depan untuk memantau pool itu lagi. Jangan buka `pool.txt` di editor saat bot jalan — save akan menimpa mark bot.
 
-### 6. Test in the foreground
+### 6. Uji di foreground
 
 ```bash
 npm start
 ```
 
-Confirm startup logs and Telegram notification, and verify `DRY_RUN=true` before going live.
+Pastikan log startup dan notifikasi Telegram muncul, dan `DRY_RUN=true` sebelum live.
 
-### 7. Run as a service (PM2)
+### 7. Jalan sebagai service (PM2)
 
 ```bash
 npm run pm2
 pm2 save
-pm2 startup
+pm2 startup   # salin & jalankan perintah yang dicetak untuk auto-start saat reboot
 ```
-
-`pm2 startup` prints a command — copy/paste and run it to enable auto-start on reboot.
 
 ### 8. Logs
 
 ```bash
 npm run pm2:logs
-npm run pm2:logrotate   # install pm2-logrotate (10M max, compress, retain 7)
+npm run pm2:logrotate   # install pm2-logrotate (max 10M, compress, retain 7)
 ```
 
 ### Troubleshooting
 
-- **Wrong Node version** — `node -v` must be 24.x, otherwise the ESM patch fails.
-- **Native module build errors** — ensure `build-essential` and `python3` are installed, then re-run `npm install`.
-- **No Telegram messages** — check `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and outbound access to `api.telegram.org`.
-- **RPC rate limits** — use a dedicated Helius RPC via `HELIUS_API_KEY`/`RPC_URL`.
+- **Node versi salah** — `node -v` harus 24.x, kalau tidak patch ESM gagal.
+- **Build native error** — pastikan `build-essential` & `python3` terpasang, lalu `npm install` ulang.
+- **Tidak ada pesan Telegram** — cek `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, dan akses keluar ke `api.telegram.org`.
+- **RPC kena rate limit** — pakai Helius RPC khusus via `HELIUS_API_KEY`/`RPC_URL`.
 
-## Configuration
+## Menjalankan
 
-Strategy settings live in `strat.conf` (committed; e.g. Entry, **Data layer** (`CANDLE_15M_SOURCE`, `GMGN_*`, `METEORA_*`), **Entry signal** (`JUPITER_POLL_INTERVAL_SEC`, `ENTRY_TOUCH_TOLERANCE_PCT`, `SUPERTREND_CACHE_FILE`), Telegram, Swap, Exit general + per-mode (`BIDASK_DOUBLE_*`, `BIDASK_TOKEN_*`, `BIDASK_SOL_*`, `SPOT_*`)). Secrets/instance-only settings live in `.env` (see `.env.example`): wallet/RPC/API keys, Telegram token, `DRY_RUN`. When a key exists in both, `strat.conf` wins.
-
-### Entry signal (GMGN 15m + Jupiter)
-
-- `pool.txt` pools are evaluated only when no position is open. A pool with no open position is watched only while its 15m Supertrend (**from closed candles**) is **bullish**.
-- The Supertrend line is computed from the **latest fully-closed** 15m candle (GMGN native; Meteora has no native 15m), refreshed **once per bar** through the existing per-mint GMGN kline request (in-flight + limiter de-duplicated, so no extra requests). Lines are cached to `supertrend-cache.json` (schema-versioned; stale/legacy entries are dropped on load).
-- During the brief bar transition, before the new line is ready, the **previous bar's line** is used as a fallback so entry evaluation is never skipped.
-- While bullish, the bot polls **Jupiter** `price/v3` (batched, one request for up to 50 mints). If `price <= line` the bot enters immediately (`first_touch`) — pullback or breakdown afterwards is ignored. The line is bar-based (updates ~4×/hour); the price watch stays real-time.
-- Bearish = the pool is not watched at all. The trend color only changes when a 15m candle closes.
-- GMGN calls go through a shared queue (cap `GMGN_MAX_PER_MIN`, min-gap `GMGN_MIN_GAP_SEC`, no retry during a 429 ban).
-
-### DCA (averaging-down)
-
-Mirror of trailing TP, inverted. Driven by a dedicated watcher on its own cadence `DCA_POLL_INTERVAL_SEC` (default `5s`), separate from the exit loop. Each tick fetches PnL once per pool and uses that same data for both the arm/trail scan and the rebound confirmation:
-
-1. **Arm** — `pnlPct <= DCA_ARM_PCT` (default `-10`) starts tracking; `dcaTrough` = current PnL.
-2. **Trail trough** — while armed, `dcaTrough` follows any lower PnL (deeper low).
-3. **Rebound** — when `pnlPct - dcaTrough >= DCA_REBOUND_PCT` (absolute points, default `1`), a pending DCA is queued.
-4. **Confirm** — on a later watcher tick, once `DCA_CONFIRM_DELAY_SEC` (default `5`) has elapsed, the same PnL fetch confirms the rebound. If it held, a new position opens in the same pool; otherwise the pending is cancelled and trailing continues (trough updated if deeper).
-
-- Size = `entry_size` from `pool.txt`; does not consume the `max_position`/entry-usage quota.
-- Each position can trigger at most once, and a session (from the first position opening until every position in the pool is closed) is capped by `DCA_MAX_ADDS` (default `1`). When a DCA-added position is closed at a profit via **pure trailing TP** (`trailing_tp`), the session counter is refunded by 1 and the DCA state of the other open positions in the pool is reset, so they can arm and DCA again (useful when the added position took profit while the original is still open). Any other exit reason (indicator trailing, stop loss, OOR, bounce recovery, manual/not-detected) does **not** refund — that session is done for DCA. The counter lives in `state.dcaUsage` and resets when the session ends (no open positions left), so a restart does not re-trigger DCA within a session, while a later re-entry in the same pool starts a fresh session.
-- The pool PnL response is cached and shared with the exit loop's `enrichPnl`, so both cadences stay at one Meteora PnL request per `DCA_POLL_INTERVAL_SEC` per pool.
-- `DCA_COOLDOWN_SEC` (default `300`) backs off a pool after a failed DCA execution. Guarded against in-flight entries, in-flight closes, dry-run, and gas reserve.
-
-## Running
-
-| Command | Mode |
+| Command | Fungsi |
 |---|---|
 | `npm start` | Foreground |
 | `npm run dev` | Foreground (dev) |
-| `npm run pm2` | PM2 background daemon |
+| `npm run pm2` | PM2 background |
 | `npm run pm2:stop` | Stop PM2 |
-| `npm run pm2:logs` | Tail PM2 logs |
-| `npm run pm2:logrotate` | Install/configure `pm2-logrotate` for PM2 logs |
-| `npm test` | Run unit + module-load tests (`node:test`) |
-| `npm run lint` | Run ESLint |
-| `npm run format` | Format with Prettier |
+| `npm run pm2:logs` | Tail log PM2 |
+| `npm run pm2:logrotate` | Install/konfigurasi `pm2-logrotate` |
+| `npm test` | Tes unit + module-load (`node:test`) |
+| `npm run lint` | ESLint |
+| `npm run format` | Prettier |
 
-## PnL Report
+## Laporan PnL
 
-`scripts/pnl-report.js` menarik PnL posisi dari Meteora datapi dan mencetak tabel (waktu WIB/UTC+7, SOL + USD) beserta ringkasan posisi closed/open dan total realized. Read-only — tidak menyentuh `state.json` dan tidak mengirim transaksi.
-
-Saat periode ≤ 2 hari, modal posisi ikut diverifikasi dari transaksi on-chain (perlu `RPC_URL` / `HELIUS_API_KEY`). Ini menangkap kasus Meteora salah menilai sisi token saat deposit (harga token ter-revaluasi ekstrem). Baris yang dikoreksi ditandai `⚠ koreksi`, dan ringkasan menampilkan angka Meteora asli sebagai pembanding. Bila tak bisa diverifikasi, dipakai angka Meteora dengan tanda `? tak terverifikasi`.
+`scripts/pnl-report.js` menarik PnL posisi dari Meteora datapi dan mencetak tabel (WIB, SOL + USD) beserta ringkasan posisi closed/open dan total realized. Read-only — tidak menyentuh `state.json` dan tidak mengirim transaksi.
 
 ```bash
 node scripts/pnl-report.js                              # hari ini 00:00 WIB → sekarang
-node scripts/pnl-report.js --days 1                     # 1 hari terakhir (verify otomatis)
+node scripts/pnl-report.js --days 1                     # 1 hari terakhir (verifikasi on-chain otomatis)
 node scripts/pnl-report.js --from "2026-09-21 08:30" --to "2026-09-21 17:00"
 node scripts/pnl-report.js --days 30 --no-verify        # periode panjang, tanpa on-chain
 node scripts/pnl-report.js --wallet <alamat>            # override wallet
@@ -262,28 +141,13 @@ node scripts/pnl-report.js --wallet <alamat>            # override wallet
 | `--reconcile-threshold PCT` | Ambang beda modal (%) agar dikoreksi (default 25) |
 | `-h`, `--help` | Tampilkan bantuan |
 
-`scripts/scan-pnl.js <alamat> [--days N] [--verify|--no-verify] [--reconcile-threshold PCT]` adalah scanner lama yang lebih sederhana (wallet wajib sebagai argumen); memakai verifikasi on-chain yang sama bila `--days ≤ 2`.
-
-## Development
-
-- `npm test` runs `node --test` with no extra test framework (Node 24 built-in). Tests cover
-  pure helpers (`indicators`, `supertrend`, `config/rules`) plus a smoke test that imports every
-  module to catch broken import paths.
-- `npm run lint` / `npm run format` use ESLint 9 (flat config in `eslint.config.js`) and Prettier
-  (`.prettierrc`). Run `npm run lint:fix` and `npm run format` before opening a PR.
-
 ## Logs
 
-- Foreground (`npm start`): logs go to the terminal and to `logs/meteorabot-YYYY-MM-DD.log`. The `logs/` directory is created automatically on startup.
-- PM2 (`npm run pm2`): stdout/stderr additionally go to `logs/out.log` and `logs/error.log`.
-- **Narrative summary**: every `TG_STATUS_INTERVAL` (default 5 min) the bot prints a human-readable block — mode, pools being watched (pair, trend, price vs line), open positions, DCA state, and recent entry/DCA/close actions.
-- **`LOG_LEVEL`** (default `info`): `info` shows the narrative summary, key events, and warnings/errors. `debug` additionally shows technical `[detail]` lines (GMGN/Meteora/Supertrend/cycle internals).
-- Daily files older than `LOG_RETENTION_DAYS` (default `7`, `0` disables) are pruned at startup.
-- Rotate PM2 logs with `npm run pm2:logrotate` (installs `pm2-logrotate`, max size 10M, compresses, retains 7).
-- Log files are git-ignored (`*.log`), so `logs/` is not part of the repo.
+- Foreground (`npm start`): ke terminal dan `logs/meteorabot-YYYY-MM-DD.log`.
+- PM2 (`npm run pm2`): tambahan `logs/out.log` dan `logs/error.log`.
+- `LOG_LEVEL` (default `info`): `debug` menampilkan baris `[detail]` teknis.
+- File lama (> `LOG_RETENTION_DAYS`, default 7) dihapus saat startup; `logs/` git-ignored.
 
 ## Security
 
-`.env`, `state.json`, `pnl-history.json`, and logs are git-ignored. Never commit secrets. `strat.conf` is the opposite: it is committed so strategy tuning survives a wiped/replaced VPS.
-
-Restrict permissions with `chmod 600 .env`, and always verify a configuration with `DRY_RUN=true` before running live.
+`.env`, `state.json`, `pnl-history.json`, dan logs git-ignored — jangan pernah commit rahasia. `strat.conf` justru di-commit agar tuning strategi tetap ada. Batasi izin dengan `chmod 600 .env` dan selalu uji dengan `DRY_RUN=true` sebelum live.
