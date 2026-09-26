@@ -1,7 +1,7 @@
-import config, { MAX_CONCURRENT_PER_POOL } from "../config/index.js";
+import config from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
-import { getOpenPositionCountsByPool } from "../meteora/positions.js";
+import { countOpenBotPositionsByPool } from "../state/positions.js";
 import { loadPoolList, commentPoolInList } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
@@ -42,6 +42,9 @@ const skipped = new Set();
 const dryRunNoted = new Set();
 const failureCooldownUntil = new Map();
 const failureCounts = new Map();
+// Mode entry yang selalu dibuka bot (lihat execute.js) — dipakai untuk kuota
+// posisi serentak per mode.
+const ENTRY_MODE = "bidask:double";
 // Dibagi dengan DCA agar entry sinyal & DCA tidak bentrok di pool yang sama.
 const inFlightPools = getEntryInProgressPools();
 const enteredPools = new Map(); // pool -> enteredAt (posisi baru dibuka / masih terbuka)
@@ -76,7 +79,7 @@ export function deactivatePool(pool, reason) {
   }
 }
 
-// Refresh lambat: pool list, posisi terbuka (RPC), expiry, kuota, dan pool info.
+// Refresh lambat: pool list, expiry, kuota serentak (dari state), dan pool info.
 // Hanya fungsi ini yang menyentuh RPC, sehingga aman dijalankan sesekali.
 export async function refreshCandidates() {
   if (!config.entry.enabled) return null;
@@ -91,7 +94,10 @@ export async function refreshCandidates() {
       return null;
     }
 
-    const openByPool = await getOpenPositionCountsByPool();
+    // Kuota serentak dihitung dari posisi bidask:double MILIK BOT (state),
+    // bukan hitungan on-chain, agar posisi mode lain (mis. spot manual) tidak
+    // memblokir entry.
+    const openBotByPool = countOpenBotPositionsByPool(ENTRY_MODE);
     const now = Date.now();
     const candidates = [];
     const stillOpen = new Set();
@@ -123,7 +129,7 @@ export async function refreshCandidates() {
         continue;
       }
 
-      if ((openByPool.get(poolAddress) || 0) >= MAX_CONCURRENT_PER_POOL) {
+      if ((openBotByPool.get(poolAddress) || 0) >= config.entry.maxConcurrentBidaskDouble) {
         stillOpen.add(poolAddress);
         continue;
       }

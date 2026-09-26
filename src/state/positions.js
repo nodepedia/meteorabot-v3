@@ -1,5 +1,6 @@
 import fs from "fs";
 import { DECISION_LOG_FILE } from "../core/paths.js";
+import { LEGACY_MODE } from "../config/rules.js";
 import { readState, writeState, readJsonArray } from "./store.js";
 
 export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeMode, mode, isDca = false) {
@@ -212,6 +213,24 @@ export function clearLowYieldSince(positionAddress) {
 export function getOpenTrackedPositions() {
   const state = readState();
   return Object.values(state.positions).filter((p) => p && p.closed !== true);
+}
+
+// Hitung posisi terbuka per pool untuk satu mode (murni, mudah diuji).
+// Label mode lama dinormalkan agar `bidask` tetap terhitung sebagai
+// `bidask:double`. Mode lain (mis. spot manual) tidak ikut dihitung.
+export function countOpenByPoolAndMode(positions, mode) {
+  const want = LEGACY_MODE[mode] || mode;
+  const counts = new Map();
+  for (const p of positions || []) {
+    if (!p || p.closed === true || !p.pool) continue;
+    if ((LEGACY_MODE[p.mode] || p.mode) !== want) continue;
+    counts.set(p.pool, (counts.get(p.pool) || 0) + 1);
+  }
+  return counts;
+}
+
+export function countOpenBotPositionsByPool(mode) {
+  return countOpenByPoolAndMode(getOpenTrackedPositions(), mode);
 }
 
 export function registerMissedCycle(positionAddress) {

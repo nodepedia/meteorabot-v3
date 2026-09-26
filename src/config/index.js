@@ -62,6 +62,10 @@ const entry = {
   // Default untuk baris pool.txt yang hanya berisi alamat (tanpa ,size,max).
   defaultSizeSol: num(e.ENTRY_DEFAULT_SIZE_SOL, 0),
   defaultMaxPositions: Math.max(1, Math.floor(num(e.ENTRY_DEFAULT_MAX_POSITION, 1))),
+  // Kuota posisi `bidask:double` milik bot yang boleh terbuka serentak di satu
+  // pool. Posisi mode lain (mis. spot manual) tidak dihitung, jadi tidak
+  // memblokir entry.
+  maxConcurrentBidaskDouble: Math.max(1, Math.floor(num(e.ENTRY_MAX_CONCURRENT_BIDASK_DOUBLE, 1))),
   // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
   scanIntervalSec: num(e.ENTRY_SCAN_INTERVAL_SEC, 30),
   timeframe: e.ENTRY_TIMEFRAME || "15m",
@@ -135,8 +139,6 @@ const dca = {
 export const BINS_BELOW = 34;
 export const BINS_ABOVE = 34;
 export const STRATEGY = "bid_ask";
-// One concurrent position per pool; total opens per pool come from pool.txt.
-export const MAX_CONCURRENT_PER_POOL = 1;
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
