@@ -1,27 +1,27 @@
 # Meteora Bot
 
-Bot trading live untuk pool **Meteora DLMM** di Solana: auto-entry + exit deterministik, DCA, dan auto-swap.
+Live trading bot for **Meteora DLMM** pools on Solana: auto-entry + deterministic exit, DCA, and auto-swap.
 
-## Fitur
+## Features
 
-- **Auto-entry** — masuk saat Supertrend 15m (GMGN) bullish dan harga real-time Jupiter ≤ garis.
-- **Exit deterministik** — stop loss, OOR, trailing TP, bounce recovery; mode `bidask:<komposit>` atau `spot`.
-- **DCA (averaging-down)** — tambah posisi saat PnL menyentuh `DCA_ARM_PCT` lalu rebound, dibatasi per sesi.
-- **Auto swap** — token → SOL via Jupiter setelah posisi close.
-- **Telegram + state persisten** — notifikasi dan status posisi tahan restart.
-- **`DRY_RUN`** — uji tanpa kirim transaksi nyata.
+- **Auto-entry** — enters when the 15m Supertrend (GMGN) is bullish and the real-time Jupiter price is ≤ the line.
+- **Deterministic exit** — stop loss, OOR, trailing TP, bounce recovery; `bidask:<composite>` or `spot` mode.
+- **DCA (averaging-down)** — adds to the position when PnL touches `DCA_ARM_PCT` then rebounds, capped per session.
+- **Auto swap** — token → SOL via Jupiter after the position closes.
+- **Telegram + persistent state** — notifications and position status survive restarts.
+- **`DRY_RUN`** — test without sending real transactions.
 
-Detail arsitektur & konfigurasi: lihat `PROJECT_STRUCTURE.md`.
+For architecture & configuration details, see `PROJECT_STRUCTURE.md`.
 
-## Instalasi VPS (Ubuntu)
+## VPS Setup (Ubuntu)
 
-### Kebutuhan
+### Requirements
 
-- Ubuntu dengan **Node.js 24.x** (wajib untuk patch ESM di `scripts/patch-anchor.js`)
+- Ubuntu with **Node.js 24.x** (required for the ESM patch in `scripts/patch-anchor.js`)
 - `git`, `build-essential`, `python3`
-- `pm2` (opsional, untuk jalan sebagai service)
+- `pm2` (optional, to run as a service)
 
-### 1. Paket sistem
+### 1. System packages
 
 ```bash
 sudo apt update && sudo apt upgrade -y
@@ -45,50 +45,50 @@ cd meteorabot-v3
 npm install
 ```
 
-`npm install` menjalankan `postinstall` (`scripts/patch-anchor.js`) yang mem-patch `@coral-xyz/anchor` dan `@meteora-ag/dlmm` untuk ESM Node 24.
+`npm install` runs `postinstall` (`scripts/patch-anchor.js`), which patches `@coral-xyz/anchor` and `@meteora-ag/dlmm` for ESM on Node 24.
 
-### 4. Konfigurasi `.env` (rahasia) dan `strat.conf` (strategi)
+### 4. Configure `.env` (secrets) and `strat.conf` (strategy)
 
-Setelan strategi ada di `strat.conf` (di-commit ke git). `.env` hanya rahasia/setelan instance (wallet, RPC, API key, Telegram, `DRY_RUN`) dan git-ignored. Jika key sama ada di keduanya, `strat.conf` menang.
+Strategy settings live in `strat.conf` (committed to git). `.env` only holds secrets/instance settings (wallet, RPC, API key, Telegram, `DRY_RUN`) and is git-ignored. If the same key exists in both, `strat.conf` wins.
 
 ```bash
 cp .env.example .env
-nano .env             # rahasia saja
-nano strat.conf       # tuning strategi (commit setelah diubah)
+nano .env             # secrets only
+nano strat.conf       # strategy tuning (commit after changes)
 chmod 600 .env
 ```
 
-Nilai yang wajib diisi:
+Required values:
 
-| Variabel | Keterangan |
+| Variable | Description |
 |---|---|
-| `WALLET_PRIVATE_KEY` | Secret key wallet Solana (base58 atau JSON array) |
-| `RPC_URL` / `HELIUS_API_KEY` | Endpoint Solana RPC |
-| `GMGN_API_KEY` | API key candle GMGN |
-| `JUPITER_API_KEY` | API key Jupiter (fallback price & swap) |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Notifikasi Telegram |
-| `DRY_RUN` | `true` untuk uji coba; `false` baru saat siap trading live |
+| `WALLET_PRIVATE_KEY` | Solana wallet secret key (base58 or JSON array) |
+| `RPC_URL` / `HELIUS_API_KEY` | Solana RPC endpoint |
+| `GMGN_API_KEY` | GMGN candle API key |
+| `JUPITER_API_KEY` | Jupiter API key (price fallback & swap) |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram notifications |
+| `DRY_RUN` | `true` for testing; `false` only when ready to trade live |
 
-### 5. Buat `pool.txt`
+### 5. Create `pool.txt`
 
-Satu pool per baris. Alamat polos memakai default `strat.conf` (`ENTRY_DEFAULT_SIZE_SOL`, `ENTRY_DEFAULT_MAX_POSITION`); tambah `,entry_size,max_position` untuk override per pool. File ini git-ignored.
+One pool per line. A bare address uses the `strat.conf` defaults (`ENTRY_DEFAULT_SIZE_SOL`, `ENTRY_DEFAULT_MAX_POSITION`); add `,entry_size,max_position` to override per pool. This file is git-ignored.
 
-Bot otomatis mengomentari (`#`) baris pool yang sudah selesai: entry+exit tuntas, entry gagal `ENTRY_MAX_FAILURES` kali, pasangan bukan SOL, atau kedaluwarsa tanpa entry. Hapus `#` di depan untuk memantau pool itu lagi. Jangan buka `pool.txt` di editor saat bot jalan — save akan menimpa mark bot.
+The bot automatically comments out (`#`) pool lines that are done: entry+exit completed, entry failed `ENTRY_MAX_FAILURES` times, not a SOL pair, or expired without entry. Remove the leading `#` to monitor that pool again. Don't open `pool.txt` in an editor while the bot is running — saving will overwrite the bot's marks.
 
-### 6. Uji di foreground
+### 6. Test in the foreground
 
 ```bash
 npm start
 ```
 
-Pastikan log startup dan notifikasi Telegram muncul, dan `DRY_RUN=true` sebelum live.
+Make sure the startup logs and Telegram notifications appear, and that `DRY_RUN=true` before going live.
 
-### 7. Jalan sebagai service (PM2)
+### 7. Run as a service (PM2)
 
 ```bash
 npm run pm2
 pm2 save
-pm2 startup   # salin & jalankan perintah yang dicetak untuk auto-start saat reboot
+pm2 startup   # copy & run the printed command to auto-start on reboot
 ```
 
 ### 8. Logs
@@ -100,54 +100,54 @@ npm run pm2:logrotate   # install pm2-logrotate (max 10M, compress, retain 7)
 
 ### Troubleshooting
 
-- **Node versi salah** — `node -v` harus 24.x, kalau tidak patch ESM gagal.
-- **Build native error** — pastikan `build-essential` & `python3` terpasang, lalu `npm install` ulang.
-- **Tidak ada pesan Telegram** — cek `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, dan akses keluar ke `api.telegram.org`.
-- **RPC kena rate limit** — pakai Helius RPC khusus via `HELIUS_API_KEY`/`RPC_URL`.
+- **Wrong Node version** — `node -v` must be 24.x, otherwise the ESM patch fails.
+- **Native build error** — make sure `build-essential` & `python3` are installed, then re-run `npm install`.
+- **No Telegram messages** — check `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and outbound access to `api.telegram.org`.
+- **RPC rate limited** — use a dedicated Helius RPC via `HELIUS_API_KEY`/`RPC_URL`.
 
-## Menjalankan
+## Running
 
-| Command | Fungsi |
+| Command | Function |
 |---|---|
 | `npm start` | Foreground |
 | `npm run dev` | Foreground (dev) |
 | `npm run pm2` | PM2 background |
 | `npm run pm2:stop` | Stop PM2 |
-| `npm run pm2:logs` | Tail log PM2 |
-| `npm run pm2:logrotate` | Install/konfigurasi `pm2-logrotate` |
-| `npm test` | Tes unit + module-load (`node:test`) |
+| `npm run pm2:logs` | Tail PM2 logs |
+| `npm run pm2:logrotate` | Install/configure `pm2-logrotate` |
+| `npm test` | Unit tests + module-load (`node:test`) |
 | `npm run lint` | ESLint |
 | `npm run format` | Prettier |
 
-## Laporan PnL
+## PnL Report
 
-`scripts/pnl-report.js` menarik PnL posisi dari Meteora datapi dan mencetak tabel (WIB, SOL + USD) beserta ringkasan posisi closed/open dan total realized. Read-only — tidak menyentuh `state.json` dan tidak mengirim transaksi.
+`scripts/pnl-report.js` pulls position PnL from the Meteora datapi and prints a table (WIB, SOL + USD) along with a summary of closed/open positions and total realized. Read-only — it doesn't touch `state.json` and doesn't send transactions.
 
 ```bash
-node scripts/pnl-report.js                              # hari ini 00:00 WIB → sekarang
-node scripts/pnl-report.js --days 1                     # 1 hari terakhir (verifikasi on-chain otomatis)
+node scripts/pnl-report.js                              # today 00:00 WIB → now
+node scripts/pnl-report.js --days 1                     # last 1 day (on-chain verification automatic)
 node scripts/pnl-report.js --from "2026-09-21 08:30" --to "2026-09-21 17:00"
-node scripts/pnl-report.js --days 30 --no-verify        # periode panjang, tanpa on-chain
-node scripts/pnl-report.js --wallet <alamat>            # override wallet
+node scripts/pnl-report.js --days 30 --no-verify        # long period, without on-chain
+node scripts/pnl-report.js --wallet <address>           # override wallet
 ```
 
-| Opsi | Keterangan |
+| Option | Description |
 |---|---|
-| `--from "YYYY-MM-DD HH:mm"` | Mulai (WIB). Default: hari ini 00:00 WIB |
-| `--to "YYYY-MM-DD HH:mm"` | Sampai (WIB). Default: sekarang |
-| `--days N` | `N` hari terakhir (menimpa `--from`) |
-| `--wallet <alamat>` | Wallet; default dari `WALLET_PRIVATE_KEY` di `.env` |
-| `--verify` / `--no-verify` | Paksa on/off verifikasi modal on-chain |
-| `--reconcile-threshold PCT` | Ambang beda modal (%) agar dikoreksi (default 25) |
-| `-h`, `--help` | Tampilkan bantuan |
+| `--from "YYYY-MM-DD HH:mm"` | Start (WIB). Default: today 00:00 WIB |
+| `--to "YYYY-MM-DD HH:mm"` | End (WIB). Default: now |
+| `--days N` | Last `N` days (overrides `--from`) |
+| `--wallet <address>` | Wallet; defaults to `WALLET_PRIVATE_KEY` in `.env` |
+| `--verify` / `--no-verify` | Force on/off on-chain capital verification |
+| `--reconcile-threshold PCT` | Capital difference threshold (%) to correct (default 25) |
+| `-h`, `--help` | Show help |
 
 ## Logs
 
-- Foreground (`npm start`): ke terminal dan `logs/meteorabot-YYYY-MM-DD.log`.
-- PM2 (`npm run pm2`): tambahan `logs/out.log` dan `logs/error.log`.
-- `LOG_LEVEL` (default `info`): `debug` menampilkan baris `[detail]` teknis.
-- File lama (> `LOG_RETENTION_DAYS`, default 7) dihapus saat startup; `logs/` git-ignored.
+- Foreground (`npm start`): to the terminal and `logs/meteorabot-YYYY-MM-DD.log`.
+- PM2 (`npm run pm2`): additionally `logs/out.log` and `logs/error.log`.
+- `LOG_LEVEL` (default `info`): `debug` shows technical `[detail]` lines.
+- Old files (> `LOG_RETENTION_DAYS`, default 7) are deleted on startup; `logs/` is git-ignored.
 
 ## Security
 
-`.env`, `state.json`, `pnl-history.json`, dan logs git-ignored — jangan pernah commit rahasia. `strat.conf` justru di-commit agar tuning strategi tetap ada. Batasi izin dengan `chmod 600 .env` dan selalu uji dengan `DRY_RUN=true` sebelum live.
+`.env`, `state.json`, `pnl-history.json`, and logs are git-ignored — never commit secrets. `strat.conf` is deliberately committed so strategy tuning persists. Restrict permissions with `chmod 600 .env` and always test with `DRY_RUN=true` before going live.
