@@ -218,6 +218,56 @@ export function pnlFromEntry(entry) {
   return Number.isFinite(pnl) ? pnl : null;
 }
 
+// Baca satu entri posisi dari endpoint `status=closed` (paginate sederhana).
+// `wallet` bisa diisi eksplisit untuk pengujian; default ambil dari wallet bot.
+async function fetchClosedEntry(poolAddress, positionAddress, wallet) {
+  try {
+    let page = 1;
+    for (;;) {
+      const url = `https://dlmm.datapi.meteora.ag/positions/${poolAddress}/pnl?user=${wallet}&status=closed&pageSize=100&page=${page}`;
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const data = await res.json();
+      for (const entry of data.positions || []) {
+        if ((entry.positionAddress || "") === positionAddress) return entry;
+      }
+      if (!data.hasNext || page >= 20) return null;
+      page++;
+    }
+  } catch (err) {
+    log.warn(`fetchClosedEntry failed: ${err.message}`);
+    return null;
+  }
+}
+
+// PnL final posisi dari Meteora (endpoint closed) agar alert close sama dengan
+// dashboard. Poll sampai entri muncul/ter-index; `null` bila timeout.
+export async function waitClosedPositionPnl(
+  poolAddress,
+  positionAddress,
+  { timeoutMs = 20000, intervalMs = 1500, wallet = null } = {}
+) {
+  if (!poolAddress || !positionAddress) return null;
+
+  let walletStr = wallet;
+  if (!walletStr) {
+    try {
+      walletStr = getWallet().publicKey.toString();
+    } catch (err) {
+      log.warn(`waitClosedPositionPnl: wallet tidak tersedia (${err.message})`);
+      return null;
+    }
+  }
+
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    const pnl = pnlFromEntry(await fetchClosedEntry(poolAddress, positionAddress, walletStr));
+    if (pnl != null) return pnl;
+    if (Date.now() >= deadline) return null;
+    await new Promise((r) => setTimeout(r, Math.max(0, intervalMs)));
+  }
+}
+
 // Satu request PnL ringan untuk seluruh posisi di pool. `force` = refresh
 // walaupun cache masih segar (dipakai watcher DCA).
 export async function fetchPoolPnl(poolAddress, { ttlSec = 5, force = false } = {}) {

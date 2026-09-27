@@ -112,7 +112,7 @@ export function exitLabel(reason) {
 
 export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = null) {
   const row = (label, value) => `${label.padEnd(16)}: ${value}`;
-  const lines = [`🔒 Closed ${pair}`, "", row("Trigger Exit", exitLabel(reason)), row("PnL", signedPct(pnlPct))];
+  const lines = [`🔒 Closed ${pair}`, "", row("Trigger Exit", exitLabel(reason)), row("Realized PnL", signedPct(pnlPct))];
   if (drawdownPnl != null) lines.push(row("Drawdown", signedPct(drawdownPnl)));
   if (swapInfo && swapInfo.success === false) {
     const detail = swapInfo.error ? `: ${swapInfo.error}` : " — perlu swap manual";

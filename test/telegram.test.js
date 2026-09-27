@@ -32,7 +32,7 @@ test("close: template trailing TP lengkap", () => {
       "🔒 Closed familiars-SOL",
       "",
       "Trigger Exit    : Trailing TP",
-      "PnL             : +9.42%",
+      "Realized PnL    : +9.42%",
       "Drawdown        : -3.50%",
     ].join("\n")
   );

@@ -2,6 +2,7 @@ import config from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
 import { closePosition } from "../meteora/close.js";
+import { waitClosedPositionPnl } from "../meteora/positions.js";
 import { getTokenBalance } from "../solana/balances.js";
 import { swapToSol } from "../solana/swap.js";
 import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
@@ -35,7 +36,9 @@ export async function handleClose(pos, reason, opts = {}) {
     const result = await closePosition(positionAddress);
 
     if (result?.success) {
-      recordClose(pos.position, reason, pos.pnlPct);
+      // PnL final dari endpoint closed Meteora (agar alert sama dengan dashboard).
+      // Dijalankan paralel dengan swap; fallback ke PnL live bila belum ter-index.
+      const realizedPnlPromise = result.dryRun ? Promise.resolve(null) : waitClosedPositionPnl(pos.pool, pos.position);
       // Ambil tracked sebelum clearTrailingState agar referensi trailing masih tersedia.
       const trackedClose = getTrackedPosition(pos.position);
       const wasDca = trackedClose?.isDca === true;
@@ -74,12 +77,17 @@ export async function handleClose(pos, reason, opts = {}) {
         }
       }
 
-      const swapTxt = swapInfo ? (swapInfo.success ? "token di-swap ke SOL" : "token GAGAL di-swap") : "tanpa swap";
-      log.info(`🔒 CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(pos.pnlPct)} | ${swapTxt}`);
-      log.debug(`[detail] reason=${reason} | position ${positionAddress} | peakRef=${peakPnl ?? "-"}`);
-      recordAction(`CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(pos.pnlPct)}`);
+      const finalPnl = await realizedPnlPromise;
+      const realizedPnl = finalPnl ?? pos.pnlPct;
+      if (finalPnl == null) log.warn(`${pairLabel}: PnL final Meteora belum tersedia — pakai PnL live`);
+      recordClose(pos.position, reason, realizedPnl);
 
-      tg.notifyClose(pairLabel, reason, pos.pnlPct, swapInfo, lowestPnl);
+      const swapTxt = swapInfo ? (swapInfo.success ? "token di-swap ke SOL" : "token GAGAL di-swap") : "tanpa swap";
+      log.info(`🔒 CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(realizedPnl)} | ${swapTxt}`);
+      log.debug(`[detail] reason=${reason} | position ${positionAddress} | peakRef=${peakPnl ?? "-"}`);
+      recordAction(`CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(realizedPnl)}`);
+
+      tg.notifyClose(pairLabel, reason, realizedPnl, swapInfo, lowestPnl);
 
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.
