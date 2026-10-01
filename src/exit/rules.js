@@ -126,7 +126,7 @@ export function evaluateExit(position, candles) {
 
   const reason = detectIndicatorSignal({
     rsiLatest,
-    macdGreenAfterDarkRed: macd.greenAfterDarkRed,
+    macdGreen: macd.macdGreen,
     bbUpper: bb.upper,
     highLatest,
   });
@@ -147,12 +147,12 @@ export function closedCandles(candles) {
 
 // Pure: pilih reason sinyal indikator dari nilai yang sudah dihitung.
 // Urutan dipertahankan: rsi_macd -> rsi_bb. Sinyal RSI+MACD = RSI(2) >= 90 dan
-// bar MACD hijau (hist > 0 dan naik) tepat setelah bar merah gelap (hist < 0
-// dan makin negatif), keduanya pada candle t yang sama.
+// bar MACD hijau (hist > 0), tanpa peduli warna bar sebelumnya, keduanya pada
+// candle t yang sama.
 // Sinyal RSI+BB = RSI(2) >= 90 dan high candle (yang sudah tutup) menembus BB upper.
-export function detectIndicatorSignal({ rsiLatest, macdGreenAfterDarkRed, bbUpper, highLatest }) {
+export function detectIndicatorSignal({ rsiLatest, macdGreen, bbUpper, highLatest }) {
   if (!(rsiLatest >= 90)) return null;
-  if (macdGreenAfterDarkRed) return "rsi_macd";
+  if (macdGreen) return "rsi_macd";
   if (bbUpper == null) return null;
   if (highLatest != null && highLatest >= bbUpper) return "rsi_bb";
   return null;

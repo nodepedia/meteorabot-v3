@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeRSI, computeMACD, computeBB, isGreenAfterDarkRed } from "../src/market/indicators.js";
+import { computeRSI, computeMACD, computeBB } from "../src/market/indicators.js";
 
 test("computeRSI returns 100 when there are only gains", () => {
   const rsi = computeRSI([1, 2, 3, 4, 5], 2);
@@ -32,34 +32,22 @@ test("computeBB returns nulls for insufficient data", () => {
 test("computeMACD signals insufficient data", () => {
   const macd = computeMACD([1, 2, 3], 12, 26, 9);
   assert.deepEqual(macd.macd, []);
-  assert.equal(macd.greenAfterDarkRed, false);
+  assert.equal(macd.macdGreen, false);
 });
 
-test("computeMACD returns a boolean greenAfterDarkRed with enough data", () => {
+test("computeMACD returns a boolean macdGreen with enough data", () => {
   const closes = Array.from({ length: 60 }, (_, i) => 100 + i);
   const macd = computeMACD(closes, 12, 26, 9);
-  assert.equal(typeof macd.greenAfterDarkRed, "boolean");
+  assert.equal(typeof macd.macdGreen, "boolean");
   assert.ok(Array.isArray(macd.histogram));
 });
 
-test("greenAfterDarkRed true saat merah makin gelap lalu hijau naik", () => {
-  assert.equal(isGreenAfterDarkRed([-3, -4, 0.5]), true);
+test("computeMACD macdGreen true saat histogram terakhir positif", () => {
+  const up = Array.from({ length: 60 }, (_, i) => 100 + i * i * 0.1);
+  assert.equal(computeMACD(up, 12, 26, 9).macdGreen, true);
 });
 
-test("greenAfterDarkRed false saat bar sebelumnya merah terang (RED LIGHT)", () => {
-  assert.equal(isGreenAfterDarkRed([-3, -2, 0.5]), false);
-});
-
-test("greenAfterDarkRed false saat bar sebelumnya sudah hijau", () => {
-  assert.equal(isGreenAfterDarkRed([0.5, 0.2, 0.8]), false);
-});
-
-test("greenAfterDarkRed false saat bar terakhir belum hijau", () => {
-  assert.equal(isGreenAfterDarkRed([-3, -4, -1]), false);
-});
-
-test("greenAfterDarkRed false untuk data kurang dari 3 bar", () => {
-  assert.equal(isGreenAfterDarkRed([-2, 0.5]), false);
-  assert.equal(isGreenAfterDarkRed([]), false);
-  assert.equal(isGreenAfterDarkRed(null), false);
+test("computeMACD macdGreen false saat histogram terakhir negatif", () => {
+  const down = Array.from({ length: 60 }, (_, i) => 1000 - i * i * 0.1);
+  assert.equal(computeMACD(down, 12, 26, 9).macdGreen, false);
 });

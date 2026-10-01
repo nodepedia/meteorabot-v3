@@ -4,7 +4,7 @@ import { detectIndicatorSignal, closedCandles } from "../src/exit/rules.js";
 
 const BASE = {
   rsiLatest: 95,
-  macdGreenAfterDarkRed: false,
+  macdGreen: false,
   bbUpper: 100,
   highLatest: 101,
 };
@@ -17,8 +17,12 @@ test("rsi_bb trigger saat high tepat di BB upper", () => {
   assert.equal(detectIndicatorSignal({ ...BASE, highLatest: 100 }), "rsi_bb");
 });
 
-test("rsi_macd menang duluan saat hijau setelah merah gelap", () => {
-  assert.equal(detectIndicatorSignal({ ...BASE, macdGreenAfterDarkRed: true }), "rsi_macd");
+test("rsi_macd menang duluan saat bar MACD hijau", () => {
+  assert.equal(detectIndicatorSignal({ ...BASE, macdGreen: true }), "rsi_macd");
+});
+
+test("rsi_macd menang walau bar sebelumnya bukan merah gelap", () => {
+  assert.equal(detectIndicatorSignal({ ...BASE, macdGreen: true, highLatest: 99 }), "rsi_macd");
 });
 
 test("trigger saat RSI tepat 90", () => {
