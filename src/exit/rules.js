@@ -11,7 +11,15 @@ import {
 import { isTrailingConfirmed } from "../state/trailing.js";
 import { getBounceRecoveryState } from "../state/bounce.js";
 
-export function evaluateExit(position, candles) {
+// Pure: masih dalam masa warmup exit? (trailing & arm indikator ditahan)
+export function isExitWarmup(firstSeenAt, warmupMinutes, now = Date.now()) {
+  const min = Number(warmupMinutes);
+  if (!Number.isFinite(min) || min <= 0) return false;
+  if (!Number.isFinite(Number(firstSeenAt))) return false;
+  return now - Number(firstSeenAt) < min * 60000;
+}
+
+export function evaluateExit(position, candles, { warmup = false } = {}) {
   const rules = config.rulesFor(position.mode);
   const { activeBin, lowerBin, upperBin, pnlPct } = position;
 
@@ -103,9 +111,11 @@ export function evaluateExit(position, candles) {
     }
   }
 
-  // 7. Indikator — arm trailing saat RSI+MACD atau RSI+BB (exit via trailing drop)
-  if (!rules.enableIndicators) {
-    return { action: "hold", reason: "indicators_disabled" };
+  // 7. Indikator — arm trailing saat RSI+MACD atau RSI+BB (exit via trailing drop).
+  // Selama warmup, sinyal indikator diabaikan agar posisi yang baru dibuka
+  // (mis. di puncak) tidak langsung ter-arm.
+  if (!rules.enableIndicators || warmup) {
+    return { action: "hold", reason: warmup ? "warmup" : "indicators_disabled" };
   }
 
   // Selalu pakai candle yang sudah tutup. GMGN/Meteora menyertakan bar

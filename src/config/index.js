@@ -37,6 +37,9 @@ const bidaskSol = modeRules(e, "BIDASK_SOL", {
 // bidask:token oleh fallback (lihat spotFallback).
 const spot = modeRules(e, "SPOT", {
   enableIndicators: true,
+  // Tahan trailing & arm indikator 30 menit pertama (2 candle 15m) agar posisi
+  // yang dibuka di puncak tidak langsung kena trailing.
+  exitWarmupMinutes: 30,
   trailingTakeProfit: true,
   trailingTriggerPct: 20,
   enableOOR: true,

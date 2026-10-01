@@ -20,7 +20,7 @@ import {
 } from "../state/positions.js";
 import { recordPnlSnapshot } from "../state/history.js";
 import { armIndicatorTrailing, clearTrailingState } from "../state/trailing.js";
-import { evaluateExit } from "./rules.js";
+import { evaluateExit, isExitWarmup } from "./rules.js";
 import { classifyMode, isCompositeMode } from "./classify.js";
 import { processTrailing, clearTrailingTimer } from "./trailing.js";
 import { processBounceRecovery } from "./bounce.js";
@@ -251,19 +251,24 @@ export async function mainLoop() {
         recordPnlSnapshot(pos.position, pairLabel, pos.pnlPct, pos.marketCap, pos.feePct24h, volumeData);
       }
 
+      // Evaluasi exit by mode. Warmup (khusus mode yang diatur): tahan trailing
+      // & arm indikator beberapa menit pertama; stop loss/OOR/yield tetap jalan.
+      const rules = config.rulesFor(pos.mode);
+      const warmup = isExitWarmup(tracked?.firstSeenAt, rules.exitWarmupMinutes);
+
       // Trailing TP + bounce recovery state machines
-      processTrailing(pos, tracked, pairLabel, handleClose);
+      if (!warmup) processTrailing(pos, tracked, pairLabel, handleClose);
       processBounceRecovery(pos, pairLabel);
 
-      // Evaluate exit by mode
-      const rules = config.rulesFor(pos.mode);
-      let exit = evaluateExit(pos, null);
-      if (exit.action === "hold" && rules.enableIndicators && pos.baseMint) {
+      let exit = evaluateExit(pos, null, { warmup });
+      if (exit.action === "hold" && rules.enableIndicators && pos.baseMint && !warmup) {
         const candles = await fetchCandles(pos.baseMint, pos.pool);
-        exit = evaluateExit(pos, candles);
+        exit = evaluateExit(pos, candles, { warmup });
       }
 
-      log.debug(`[detail] ${pairLabel}: ${exit.reason}${exit.action === "close" ? " → CLOSE" : ""}`);
+      log.debug(
+        `[detail] ${pairLabel}: ${exit.reason}${exit.action === "close" ? " → CLOSE" : ""}${warmup ? " [warmup]" : ""}`
+      );
 
       if (exit.action === "close") {
         // OOR kiri spot: fallback konversi ke posisi token-only (close tanpa swap).

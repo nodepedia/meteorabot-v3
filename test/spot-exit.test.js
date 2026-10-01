@@ -9,7 +9,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "meteorabot-spot-"));
 process.env.STATE_FILE = path.join(TMP, "state.json");
 
 const { trackPosition, getTrackedPosition, recordTrackedRange } = await import("../src/state/positions.js");
-const { evaluateExit } = await import("../src/exit/rules.js");
+const { evaluateExit, isExitWarmup } = await import("../src/exit/rules.js");
 const { fallbackBinRange } = await import("../src/meteora/open-token-position.js");
 const config = (await import("../src/config/index.js")).default;
 
@@ -54,6 +54,37 @@ test("recordTrackedRange mencatat lower/upper/span sekali saja", () => {
   p = getTrackedPosition(POS);
   assert.equal(p.lowerBin, LOWER);
   assert.equal(p.binSpan, UPPER - LOWER);
+});
+
+test("isExitWarmup: aktif di bawah ambang, berhenti tepat di ambang", () => {
+  const now = 1_700_000_000_000;
+  assert.equal(isExitWarmup(now, 30, now), true);
+  assert.equal(isExitWarmup(now - 29 * 60000, 30, now), true);
+  assert.equal(isExitWarmup(now - 30 * 60000, 30, now), false);
+  assert.equal(isExitWarmup(now - 31 * 60000, 30, now), false);
+});
+
+test("isExitWarmup: nonaktif bila menit 0 atau data tidak valid", () => {
+  const now = 1_700_000_000_000;
+  assert.equal(isExitWarmup(now, 0, now), false);
+  assert.equal(isExitWarmup(null, 30, now), false);
+  assert.equal(isExitWarmup(undefined, 30, now), false);
+});
+
+test("warmup spot: sinyal indikator tidak di-arm selama warmup", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+  const res = evaluateExit(makePosition(LOWER + 10), null, { warmup: true });
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "warmup");
+});
+
+test("warmup spot: OOR kiri tetap menutup saat warmup", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+  const res = evaluateExit(makePosition(LOWER - 1), null, { warmup: true });
+  assert.equal(res.action, "close");
+  assert.equal(res.reason, "oor_kiri");
 });
 
 test("OOR kanan spot: tunggu dulu, tutup setelah lewat masa tunggu", () => {
