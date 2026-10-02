@@ -50,6 +50,7 @@ const MODULES = [
   "../src/exit/sweep.js",
   "../src/exit/close.js",
   "../src/exit/spot-fallback.js",
+  "../src/exit/spot-reentry.js",
 ];
 
 test("every module loads without import errors", async () => {

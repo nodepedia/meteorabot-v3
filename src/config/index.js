@@ -59,6 +59,14 @@ const spotFallback = {
   distribution: (e.SPOT_FALLBACK_DISTRIBUTION || "bid_ask").toLowerCase(),
 };
 
+// Re-entry spot saat OOR kanan: buka posisi spot SOL-only baru di harga aktif
+// dengan jumlah bin ke bawah sama seperti posisi yang barusan ditutup.
+const spotReentry = {
+  enabled: bool(e.SPOT_REENTRY_ENABLED, false),
+  sizeSol: Math.max(0, num(e.SPOT_REENTRY_SIZE_SOL, 0)),
+  maxReentries: Math.max(0, Math.floor(num(e.SPOT_REENTRY_MAX, 10))),
+};
+
 const entry = {
   enabled: bool(e.ENTRY_ENABLED, true),
   poolListFile: e.POOL_LIST_FILE || "pool.txt",
@@ -219,6 +227,7 @@ const config = {
   swap,
   dca,
   spotFallback,
+  spotReentry,
 
   bidaskDouble,
   bidaskToken,

@@ -89,6 +89,20 @@ export function notifyFallback({ pair, pool, success, amount, error }) {
   }
 }
 
+// Re-entry spot OOR kanan: beri tahu hasil membuka posisi spot baru.
+export function notifySpotReentry({ pair, pool, sizeSol, attempt, max, bins, success, error }) {
+  const label = pair || pool?.slice(0, 8) || "";
+  if (success) {
+    send(
+      `🔁 RE-ENTRY ${label}\nOOR kanan → posisi spot dibuka lagi (${attempt}/${max})\nSize: ${sizeSol} SOL | Range: ${bins} bin ke bawah\nPool: ${pool || "?"}`
+    );
+  } else {
+    send(
+      `⚠️ RE-ENTRY ${label} GAGAL (${attempt}/${max})\n${error ? `${error}\n` : ""}Rantai re-entry dihentikan.\nPool: ${pool || "?"}`
+    );
+  }
+}
+
 function signedPct(v) {
   if (v == null || !Number.isFinite(Number(v))) return "?";
   const n = Number(v);

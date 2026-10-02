@@ -32,6 +32,7 @@ import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
 import { handleSpotOorKiri } from "./spot-fallback.js";
+import { handleSpotOorKananReentry, canSpotReenter } from "./spot-reentry.js";
 
 let cycleCount = 0;
 let lastStatusSent = 0;
@@ -276,7 +277,13 @@ export async function mainLoop() {
         if (exit.reason === "oor_kiri" && pos.mode === "spot") {
           handled = await handleSpotOorKiri(pos);
         }
-        if (!handled) await handleClose(pos, exit.reason);
+        // OOR kanan spot: rencanakan re-entry sebelum close supaya pool tidak
+        // ditandai '#' saat kita mau langsung membuka posisi lagi.
+        const willReenter = !handled && canSpotReenter(pos, exit.reason);
+        if (!handled) {
+          const closeRes = await handleClose(pos, exit.reason, { skipDeactivate: willReenter });
+          if (closeRes?.success && willReenter) await handleSpotOorKananReentry(pos);
+        }
       } else if (exit.action === "arm_indicator_trailing") {
         armIndicatorTrailing(pos.position, exit.reason, pos.pnlPct);
         log.info(`${pairLabel}: ${humanReason(exit.reason)} → trailing profit disiapkan`);

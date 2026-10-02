@@ -52,6 +52,9 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       pendingDcaCurrent: null,
       pendingDcaStartedAt: null,
       missedCycles: 0,
+      // Berapa kali posisi ini adalah hasil re-entry spot OOR kanan (diwariskan
+      // ke posisi berikutnya supaya rantai berhenti di SPOT_REENTRY_MAX).
+      spotReentryCount: 0,
     };
     writeState(state);
   }
@@ -95,6 +98,24 @@ export function recordTrackedRange(positionAddress, lowerBin, upperBin) {
   p.lowerBin = lower;
   p.upperBin = upper;
   p.binSpan = upper - lower;
+  writeState(state);
+}
+
+// --- Counter re-entry spot (OOR kanan) ---
+
+export function getSpotReentryCount(positionAddress) {
+  if (!positionAddress) return 0;
+  const state = readState();
+  return Number(state.positions[positionAddress]?.spotReentryCount) || 0;
+}
+
+export function setSpotReentryCount(positionAddress, count) {
+  if (!positionAddress) return;
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return;
+  p.spotReentryCount = n;
   writeState(state);
 }
 
