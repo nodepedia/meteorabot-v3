@@ -29,6 +29,21 @@ export function reentryBinRange(activeBinId, binSpan) {
   return { minBinId: active - span, maxBinId: active };
 }
 
+// Pure: total biaya NON-REFUNDABLE dari quoteCreatePosition (SOL). Sewa bin
+// array / bitmap extension hangus; sewa akun posisi (refundable) tidak dihitung.
+export function nonRefundableCost(quote) {
+  const binArray = Number(quote?.binArrayCost) || 0;
+  const bitmap = Number(quote?.bitmapExtensionCost) || 0;
+  return binArray + bitmap;
+}
+
+// Pure: apakah biaya non-refundable melewati batas yang diizinkan.
+export function exceedsNonRefundable(cost, maxSol) {
+  const c = Number(cost) || 0;
+  const m = Number.isFinite(Number(maxSol)) ? Math.max(0, Number(maxSol)) : 0;
+  return c > m;
+}
+
 // Pure: putuskan apakah posisi yang mau ditutup layak di-re-entry.
 export function shouldReenter({ mode, reason, span, count, cfg }) {
   if (!cfg?.enabled || !(cfg.sizeSol > 0)) return false;
@@ -97,6 +112,37 @@ export async function handleSpotOorKananReentry(pos) {
       return fail(pair, pos.pool, cfg, nextCount, "pool bukan pair SOL / tidak didukung");
     }
 
+    const { StrategyType } = await getDlmmSdk();
+    const strategyType = StrategyType?.Spot;
+    if (strategyType === undefined) {
+      return fail(pair, pos.pool, cfg, nextCount, "StrategyType.Spot tidak tersedia");
+    }
+
+    const activeBin = await pool.getActiveBin();
+    const { minBinId, maxBinId } = reentryBinRange(activeBin.binId, span);
+
+    // Cek biaya NON-REFUNDABLE (sewa bin array/bitmap baru) sebelum keluar SOL.
+    // Gagal cek = fail-closed (batal), agar tidak kena biaya hangus.
+    if (cfg.skipNonRefundable) {
+      let quote;
+      try {
+        quote = await pool.quoteCreatePosition({ strategy: { minBinId, maxBinId } });
+      } catch (err) {
+        const brief = String(err.message || err).split("\n")[0];
+        return fail(pair, pos.pool, cfg, nextCount, `gagal cek biaya non-refundable: ${brief}`);
+      }
+      const cost = nonRefundableCost(quote);
+      if (exceedsNonRefundable(cost, cfg.maxNonRefundableSol)) {
+        return fail(
+          pair,
+          pos.pool,
+          cfg,
+          nextCount,
+          `biaya non-refundable ${cost.toFixed(6)} SOL (${quote?.binArraysCount || 0} bin array)`
+        );
+      }
+    }
+
     const connection = getConnection();
     const wallet = getWallet();
 
@@ -123,15 +169,6 @@ export async function handleSpotOorKananReentry(pos) {
         `estimasi fee ${feeCap.totalSol.toFixed(6)} SOL > cap ${feeCap.cap} SOL (mode ${feePlan.mode})`
       );
     }
-
-    const { StrategyType } = await getDlmmSdk();
-    const strategyType = StrategyType?.Spot;
-    if (strategyType === undefined) {
-      return fail(pair, pos.pool, cfg, nextCount, "StrategyType.Spot tidak tersedia");
-    }
-
-    const activeBin = await pool.getActiveBin();
-    const { minBinId, maxBinId } = reentryBinRange(activeBin.binId, span);
 
     const lamports = new BN(Math.floor(cfg.sizeSol * 1e9));
     const totalXAmount = baseIsX ? new BN(0) : lamports;

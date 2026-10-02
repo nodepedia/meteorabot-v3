@@ -10,7 +10,8 @@ process.env.STATE_FILE = path.join(TMP, "state.json");
 
 const { trackPosition, getTrackedPosition, recordTrackedRange, getSpotReentryCount, setSpotReentryCount } =
   await import("../src/state/positions.js");
-const { reentryBinRange, shouldReenter, canSpotReenter } = await import("../src/exit/spot-reentry.js");
+const { reentryBinRange, shouldReenter, canSpotReenter, nonRefundableCost, exceedsNonRefundable } =
+  await import("../src/exit/spot-reentry.js");
 
 const POOL = "PoolReentry11111111111111111111111111111111";
 const POS = "PosReentry111111111111111111111111111111111";
@@ -41,6 +42,22 @@ test("shouldReenter: butuh enabled, size>0, mode spot, reason oor_kanan, span va
     shouldReenter({ mode: "spot", reason: "oor_kanan", span: 244, count: 0, cfg: { ...cfg, sizeSol: 0 } }),
     false
   );
+});
+
+test("nonRefundableCost: jumlahkan binArray + bitmap, abaikan sewa refundable", () => {
+  assert.equal(nonRefundableCost({ binArrayCost: 0.07143744, bitmapExtensionCost: 0 }), 0.07143744);
+  assert.ok(Math.abs(nonRefundableCost({ binArrayCost: 0.07143744, bitmapExtensionCost: 0.05 }) - 0.12143744) < 1e-12);
+  assert.equal(nonRefundableCost({ binArrayCost: 0, bitmapExtensionCost: 0, positionCost: 0.0574 }), 0);
+  assert.equal(nonRefundableCost({}), 0);
+  assert.equal(nonRefundableCost(null), 0);
+});
+
+test("exceedsNonRefundable: 0 = tolak bila ada, batas custom, nilai invalid = 0", () => {
+  assert.equal(exceedsNonRefundable(0, 0), false);
+  assert.equal(exceedsNonRefundable(0.07143744, 0), true);
+  assert.equal(exceedsNonRefundable(0.07143744, 0.1), false);
+  assert.equal(exceedsNonRefundable(0.12143744, 0.1), true);
+  assert.equal(exceedsNonRefundable(0.07143744, undefined), true);
 });
 
 test("counter re-entry tersimpan per posisi", () => {

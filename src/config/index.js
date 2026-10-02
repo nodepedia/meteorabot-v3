@@ -65,6 +65,9 @@ const spotReentry = {
   enabled: bool(e.SPOT_REENTRY_ENABLED, false),
   sizeSol: Math.max(0, num(e.SPOT_REENTRY_SIZE_SOL, 0)),
   maxReentries: Math.max(0, Math.floor(num(e.SPOT_REENTRY_MAX, 10))),
+  // Tolak re-entry bila akan kena biaya non-refundable (sewa bin array/bitmap).
+  skipNonRefundable: bool(e.SPOT_REENTRY_SKIP_NONREFUNDABLE, true),
+  maxNonRefundableSol: Math.max(0, num(e.SPOT_REENTRY_MAX_NONREFUNDABLE_SOL, 0)),
 };
 
 const entry = {
