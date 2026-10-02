@@ -42,8 +42,7 @@ export async function handleClose(pos, reason, opts = {}) {
       // Ambil tracked sebelum clearTrailingState agar referensi trailing masih tersedia.
       const trackedClose = getTrackedPosition(pos.position);
       const wasDca = trackedClose?.isDca === true;
-      const refPnl = trackedClose?.trailingArmedBy ? trackedClose?.trailingAnchor : trackedClose?.lastPnlPeak;
-      const peakPnl = reason?.includes("trailing") ? (refPnl ?? null) : null;
+      const peakPnl = trackedClose?.lastPnlPeak ?? null;
       const lowestPnl = trackedClose?.lastPnlLowest ?? null;
       clearTrailingTimer(pos.position);
       clearTrailingState(pos.position);
@@ -87,7 +86,7 @@ export async function handleClose(pos, reason, opts = {}) {
       log.debug(`[detail] reason=${reason} | position ${positionAddress} | peakRef=${peakPnl ?? "-"}`);
       recordAction(`CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(realizedPnl)}`);
 
-      tg.notifyClose(pairLabel, reason, realizedPnl, swapInfo, lowestPnl);
+      tg.notifyClose(pairLabel, reason, realizedPnl, swapInfo, lowestPnl, peakPnl);
 
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.

@@ -124,10 +124,12 @@ export function exitLabel(reason) {
   return r;
 }
 
-export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = null) {
+export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null) {
   const row = (label, value) => `${label.padEnd(16)}: ${value}`;
-  const lines = [`🔒 Closed ${pair}`, "", row("Trigger Exit", exitLabel(reason)), row("Realized PnL", signedPct(pnlPct))];
+  const lines = [`🔒 Closed ${pair}`, "", row("Trigger Exit", exitLabel(reason))];
+  if (peakPnl != null) lines.push(row("Peak", signedPct(peakPnl)));
   if (drawdownPnl != null) lines.push(row("Drawdown", signedPct(drawdownPnl)));
+  lines.push("", row("Realized PnL", signedPct(pnlPct)));
   if (swapInfo && swapInfo.success === false) {
     const detail = swapInfo.error ? `: ${swapInfo.error}` : " — perlu swap manual";
     lines.push(`⚠️ Swap GAGAL${detail}`);
@@ -135,8 +137,8 @@ export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = 
   return lines.join("\n");
 }
 
-export function notifyClose(pair, reason, pnlPct, swapInfo, drawdownPnl = null) {
-  send(buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl));
+export function notifyClose(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null) {
+  send(buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl, peakPnl));
 }
 
 export function notifyError(msg) {

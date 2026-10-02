@@ -25,26 +25,51 @@ function resetState() {
 // --- Closed ---
 
 test("close: template trailing TP lengkap", () => {
-  const msg = buildCloseMessage("familiars-SOL", "trailing_tp: peak 11.40% -> 9.42%", 9.42, { success: true }, -3.5);
+  const msg = buildCloseMessage(
+    "familiars-SOL",
+    "trailing_tp: peak 11.40% -> 9.42%",
+    9.42,
+    { success: true },
+    -3.5,
+    11.4
+  );
   assert.equal(
     msg,
     [
       "🔒 Closed familiars-SOL",
       "",
       "Trigger Exit    : Trailing TP",
-      "Realized PnL    : +9.42%",
+      "Peak            : +11.40%",
       "Drawdown        : -3.50%",
+      "",
+      "Realized PnL    : +9.42%",
+    ].join("\n")
+  );
+});
+
+test("close: OOR kanan menampilkan Peak dan PnL di bawah", () => {
+  const msg = buildCloseMessage("Agency-SOL", "oor_kanan", 0.01, { success: true }, -0.0042, 5.67);
+  assert.equal(
+    msg,
+    [
+      "🔒 Closed Agency-SOL",
+      "",
+      "Trigger Exit    : OOR Kanan",
+      "Peak            : +5.67%",
+      "Drawdown        : -0.00%",
+      "",
+      "Realized PnL    : +0.01%",
     ].join("\n")
   );
 });
 
 test("close: swap sukses tidak menampilkan baris swap", () => {
-  const msg = buildCloseMessage("X-SOL", "stop_loss", -12.3, { success: true }, -15.1);
+  const msg = buildCloseMessage("X-SOL", "stop_loss", -12.3, { success: true }, -15.1, 2);
   assert.doesNotMatch(msg, /Swap/);
 });
 
 test("close: swap gagal menampilkan alasan", () => {
-  const msg = buildCloseMessage("X-SOL", "stop_loss", -12.3, { success: false, error: "slippage too high" }, -15.1);
+  const msg = buildCloseMessage("X-SOL", "stop_loss", -12.3, { success: false, error: "slippage too high" }, -15.1, 2);
   assert.match(msg, /⚠️ Swap GAGAL: slippage too high/);
 });
 
