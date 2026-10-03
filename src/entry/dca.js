@@ -18,6 +18,7 @@ import {
   getPoolDcaCount,
   incrementPoolDca,
   decrementPoolDca,
+  effectiveDcaArmPct,
 } from "../state/dca.js";
 import {
   isEntryInProgressPool,
@@ -55,6 +56,11 @@ export async function tickDca() {
   for (const [pool, list] of byPool) {
     const pnlMap = await fetchPoolPnl(pool, { force: true, ttlSec: cfg.pollIntervalSec });
     const now = Date.now();
+    // Ambang arm efektif: DCA#2 pakai armPct2 (posisi utama) hanya jika DCA#1
+    // sudah close; selama DCA#1 masih open, pakai armPct dari posisi DCA#1.
+    const count = getPoolDcaCount(pool);
+    const dcaOpen = list.some((t) => t.isDca === true);
+    const poolCfg = { ...cfg, armPct: effectiveDcaArmPct(count, dcaOpen, cfg) };
 
     for (const tracked of list) {
       const entry = pnlMap.get(tracked.position);
@@ -85,7 +91,7 @@ export async function tickDca() {
         continue;
       }
 
-      processDca(pos, tracked, pairLabel);
+      processDca(pos, tracked, pairLabel, poolCfg);
     }
   }
 }
@@ -99,7 +105,7 @@ export function startDcaWatcher() {
   const sec = Math.max(1, Number(cfg.pollIntervalSec) || 5);
 
   log.info(
-    `DCA watcher started — PnL poll ${sec}s | arm ${cfg.armPct}% | rebound ${cfg.reboundPct}pt | konfirmasi ${cfg.confirmDelaySec}s | max ${cfg.maxAdds}/sesi`
+    `DCA watcher started — PnL poll ${sec}s | arm ${cfg.armPct}%/${cfg.armPct2}% | rebound ${cfg.reboundPct}pt | konfirmasi ${cfg.confirmDelaySec}s | max ${cfg.maxAdds}/sesi`
   );
 
   tickDca().catch((e) => log.error(`DCA watcher error: ${e.message}`));
@@ -111,8 +117,8 @@ export function startDcaWatcher() {
 }
 
 // Arm / trail / queue rebound dari PnL hasil fetch.
-export function processDca(pos, tracked, pairLabel) {
-  const cfg = config.dca;
+export function processDca(pos, tracked, pairLabel, cfgOverride) {
+  const cfg = cfgOverride || config.dca;
   if (!cfg.enabled || !pos?.position || pos.pnlPct == null) return;
 
   tracked = getTrackedPosition(pos.position);

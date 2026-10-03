@@ -8,6 +8,19 @@ export function isDcaEligible(tracked) {
   return true;
 }
 
+// Ambang arm efektif untuk DCA berikutnya di sebuah pool.
+// - count 0 -> DCA#1 dari posisi utama, pakai armPct.
+// - count 1 -> DCA#2: kalau DCA#1 masih open, acuan posisi DCA#1 pakai armPct;
+//   kalau DCA#1 sudah close, acuan posisi utama pakai armPct2.
+// - count >= maxAdds ditangani pemanggil (tidak ada DCA lagi).
+export function effectiveDcaArmPct(count, dcaOpen, cfg) {
+  const armPct = cfg?.armPct;
+  if (count === 1 && !dcaOpen) {
+    return Number.isFinite(cfg?.armPct2) ? cfg.armPct2 : armPct;
+  }
+  return armPct;
+}
+
 // --- Pure decision (dipakai processDca + test) ---
 
 // evaluateDca memutuskan aksi DCA dari PnL saat ini + state tracking.
@@ -149,9 +162,9 @@ export function clearDcaState(positionAddress) {
   writeState(state);
 }
 
-// Setelah posisi DCA ditutup profit (trailing TP murni), buka lagi kesempatan
-// DCA untuk posisi lain yang masih terbuka di pool yang sama. Reset penuh agar
-// mereka harus arm ulang (menyentuh DCA_ARM_PCT) sebelum memicu DCA berikutnya.
+// Setelah posisi DCA ditutup, buka lagi kesempatan DCA berikutnya untuk posisi
+// lain yang masih terbuka di pool yang sama (mis. posisi utama arm ulang untuk
+// DCA#2). Reset penuh agar mereka harus arm ulang sebelum memicu DCA berikutnya.
 export function resetPoolDcaState(pool, exceptPosition) {
   if (!pool) return;
   const state = readState();
@@ -165,18 +178,12 @@ export function resetPoolDcaState(pool, exceptPosition) {
   if (changed) writeState(state);
 }
 
-// Alasan close yang me-refund kuota DCA: trailing TP murni (peak-based).
-// Sinyal indikator (indicator_trailing), stop loss, OOR, dll bukan refund.
-export function isDcaRefundReason(reason) {
-  return typeof reason === "string" && reason.startsWith("trailing_tp");
-}
-
 // --- Counter DCA per sesi (persisten di state.dcaUsage) ---
 // Sesi = rentang saat pool punya >=1 posisi terbuka. Counter naik saat trigger
-// DCA (sebelum eksekusi, jadi aman crash), turun 1 saat posisi DCA close profit
-// (trailing TP, lihat isDcaRefundReason), dan di-reset saat sesi berakhir
+// DCA (sebelum eksekusi, jadi aman crash) dan di-reset saat sesi berakhir
 // (pool tidak lagi punya posisi terbuka). Inilah yang membatasi DCA_MAX_ADDS
-// per sesi sekaligus tahan restart.
+// per sesi sekaligus tahan restart. Tanpa refund: slot DCA yang sudah dipakai
+// tidak bisa dibuka ulang.
 
 export function getPoolDcaCount(pool) {
   if (!pool) return 0;

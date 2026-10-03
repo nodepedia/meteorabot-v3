@@ -8,7 +8,7 @@ import { swapToSol } from "../solana/swap.js";
 import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
 import { clearTrailingState } from "../state/trailing.js";
 import { clearBounceRecovery } from "../state/bounce.js";
-import { clearDcaState, decrementPoolDca, resetPoolDcaState, isDcaRefundReason } from "../state/dca.js";
+import { clearDcaState, resetPoolDcaState } from "../state/dca.js";
 import { clearTrailingTimer } from "./trailing.js";
 import { addClosingPool, removeClosingPool, recordAction } from "../entry/runtime.js";
 import { deactivatePool } from "../entry/index.js";
@@ -49,11 +49,11 @@ export async function handleClose(pos, reason, opts = {}) {
       clearBounceRecovery(pos.position);
       clearDcaState(pos.position);
 
-      // Posisi DCA ditutup profit (trailing TP murni): kembalikan slot kuota
-      // sesi + reset posisi sisa di pool ini agar bisa DCA lagi. Exit lain
-      // (indikator/stop/OOR) tidak me-refund — sesi dianggap selesai.
-      if (wasDca && isDcaRefundReason(reason)) {
-        decrementPoolDca(pos.pool);
+      // Posisi DCA ditutup: buka lagi kesempatan DCA berikutnya untuk posisi
+      // sisa di pool (mis. posisi utama arm ulang untuk DCA#2 pada ambang lebih
+      // dalam). Kuota sesi TIDAK dikembalikan — slot DCA yang sudah dipakai
+      // hangus, total tetap dibatasi DCA_MAX_ADDS.
+      if (wasDca) {
         resetPoolDcaState(pos.pool, pos.position);
       }
 

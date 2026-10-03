@@ -132,6 +132,9 @@ const entry = {
 const dca = {
   enabled: bool(e.DCA_ENABLED, false),
   armPct: num(e.DCA_ARM_PCT, -10),
+  // Ambang arm DCA#2 saat DCA#1 SUDAH close (acuan posisi utama). Saat DCA#1
+  // masih open, DCA#2 tetap memakai armPct dari posisi DCA#1.
+  armPct2: num(e.DCA_ARM_PCT_2, -35),
   reboundPct: Math.max(0, num(e.DCA_REBOUND_PCT, 1)),
   maxAdds: Math.max(0, Math.floor(num(e.DCA_MAX_ADDS, 1))),
   // Cadence watcher DCA (detik) — scan arm/trail + konfirmasi rebound dari

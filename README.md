@@ -6,7 +6,7 @@ Live trading bot for **Meteora DLMM** pools on Solana: auto-entry + deterministi
 
 - **Auto-entry** — enters when the 15m Supertrend (GMGN) is bullish and the real-time Jupiter price is ≤ the line.
 - **Deterministic exit** — stop loss, OOR, trailing TP, bounce recovery; `bidask:<composite>` or `spot` mode.
-- **DCA (averaging-down)** — adds to the position when PnL touches `DCA_ARM_PCT` then rebounds, capped per session.
+- **DCA (averaging-down)** — adds when PnL touches `DCA_ARM_PCT` then rebounds; the second add uses `DCA_ARM_PCT_2` on the main position if the first add already closed, capped at 2 per session (no refund).
 - **Auto swap** — token → SOL via Jupiter after the position closes.
 - **Telegram + persistent state** — notifications and position status survive restarts.
 - **`DRY_RUN`** — test without sending real transactions.

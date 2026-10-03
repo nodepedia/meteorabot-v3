@@ -25,7 +25,7 @@ import { classifyMode, isCompositeMode } from "./classify.js";
 import { processTrailing, clearTrailingTimer } from "./trailing.js";
 import { processBounceRecovery } from "./bounce.js";
 import { clearBounceRecovery } from "../state/bounce.js";
-import { clearDcaState, resetStaleDcaPools, getPoolDcaCount } from "../state/dca.js";
+import { clearDcaState, resetStaleDcaPools, getPoolDcaCount, effectiveDcaArmPct } from "../state/dca.js";
 import { getEntryInProgressPools, getClosingPools, takeRecentActions } from "../entry/runtime.js";
 import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
 import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
@@ -117,6 +117,8 @@ function buildDcaLines(positions) {
     const triggered = list.find((t) => t.dcaTriggered);
     const armed = list.find((t) => t.dcaArmed && !t.dcaTriggered);
     const count = getPoolDcaCount(pool);
+    const dcaOpen = list.some((t) => t.isDca === true);
+    const armPct = effectiveDcaArmPct(count, dcaOpen, config.dca);
 
     if (triggered) {
       lines.push(`${name} : sudah DCA (${count}/${config.dca.maxAdds} sesi ini)`);
@@ -127,7 +129,7 @@ function buildDcaLines(positions) {
         `${name} : sudah di-arm, titik terendah ${fmtPct(armed.dcaTrough)}, menunggu pantulan +${config.dca.reboundPct}pt`
       );
     } else {
-      lines.push(`${name} : belum menyentuh ${config.dca.armPct}%`);
+      lines.push(`${name} : belum menyentuh ${armPct}%`);
     }
   }
   return lines;

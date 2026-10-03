@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateDca, isDcaEligible, isDcaRefundReason } from "../src/state/dca.js";
+import { evaluateDca, isDcaEligible, effectiveDcaArmPct } from "../src/state/dca.js";
 import { isDcaModeEligible } from "../src/entry/dca.js";
 
 const cfg = { enabled: true, armPct: -10, reboundPct: 1 };
@@ -75,13 +75,15 @@ test("isDcaModeEligible hanya bidask:double (default)", () => {
   assert.equal(isDcaModeEligible("bidask:sol"), false);
 });
 
-test("isDcaRefundReason hanya trailing TP murni", () => {
-  assert.equal(isDcaRefundReason("trailing_tp: peak 12.00% -> 10.00%"), true);
-  assert.equal(isDcaRefundReason("indicator_trailing(rsi_macd): peak 12.00% -> 10.00%"), false);
-  assert.equal(isDcaRefundReason("stop_loss"), false);
-  assert.equal(isDcaRefundReason("oor_kanan"), false);
-  assert.equal(isDcaRefundReason("oor_kiri"), false);
-  assert.equal(isDcaRefundReason("bounce_recovery: peak 5.00% -> 3.00%"), false);
-  assert.equal(isDcaRefundReason(null), false);
-  assert.equal(isDcaRefundReason(undefined), false);
+test("effectiveDcaArmPct: DCA#2 pakai -35 hanya saat DCA#1 sudah close", () => {
+  const c = { armPct: -10, armPct2: -35 };
+  assert.equal(effectiveDcaArmPct(0, false, c), -10, "DCA#1 dari posisi utama");
+  assert.equal(effectiveDcaArmPct(1, true, c), -10, "DCA#1 masih open -> acuan DCA#1");
+  assert.equal(effectiveDcaArmPct(1, false, c), -35, "DCA#1 close -> acuan posisi utama");
+  assert.equal(effectiveDcaArmPct(2, false, c), -10, "kuota habis ditangani pemanggil");
+});
+
+test("effectiveDcaArmPct fallback ke armPct bila armPct2 tidak valid", () => {
+  assert.equal(effectiveDcaArmPct(1, false, { armPct: -10 }), -10);
+  assert.equal(effectiveDcaArmPct(1, false, { armPct: -10, armPct2: NaN }), -10);
 });
