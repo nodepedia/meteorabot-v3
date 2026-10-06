@@ -254,6 +254,13 @@ export async function mainLoop() {
         recordPnlSnapshot(pos.position, pairLabel, pos.pnlPct, pos.marketCap, pos.feePct24h, volumeData);
       }
 
+      // Safeguard: posisi asli ditandai agar ikut close setelah DCA terakhir
+      // exit karena trailing TP (lihat exit/close.js).
+      if (config.dca.enabled && tracked?.dcaCloseSafeguard) {
+        await handleClose(pos, "dca_close_safeguard");
+        continue;
+      }
+
       // Evaluasi exit by mode. Warmup (khusus mode yang diatur): tahan trailing
       // & arm indikator beberapa menit pertama; stop loss/OOR/yield tetap jalan.
       const rules = config.rulesFor(pos.mode);

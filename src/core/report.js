@@ -42,6 +42,7 @@ export function humanReason(reason) {
   if (r === "low_yield") return "yield rendah, PnL tidak minus";
   if (r.startsWith("bounce_recovery")) return "pemulihan gagal (turun dari pantulan)";
   if (r === "not_detected") return "posisi tidak terdeteksi (kemungkinan ditutup manual)";
+  if (r === "dca_close_safeguard") return "safeguard: DCA terakhir profit (trailing TP), posisi asli ikut ditutup";
   if (r === "rsi_macd") return "sinyal indikator RSI+MACD";
   if (r === "rsi_bb") return "sinyal indikator RSI+Bollinger";
   if (r === "rsi_bb_wick") return "sinyal indikator RSI+Bollinger (wick)";

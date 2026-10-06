@@ -134,9 +134,12 @@ const dca = {
   armPct: num(e.DCA_ARM_PCT, -10),
   // Ambang arm DCA#2 saat DCA#1 SUDAH close (acuan posisi utama). Saat DCA#1
   // masih open, DCA#2 tetap memakai armPct dari posisi DCA#1.
-  armPct2: num(e.DCA_ARM_PCT_2, -35),
+  armPct2: num(e.DCA_ARM_PCT_2, -30),
   reboundPct: Math.max(0, num(e.DCA_REBOUND_PCT, 1)),
   maxAdds: Math.max(0, Math.floor(num(e.DCA_MAX_ADDS, 1))),
+  // Safeguard: saat DCA terakhir (kuota sesi habis) exit karena trailing TP,
+  // posisi asli (non-DCA) di pool yang sama ikut ditutup.
+  closeSafeguard: bool(e.DCA_CLOSE_SAFEGUARD, false),
   // Cadence watcher DCA (detik) — scan arm/trail + konfirmasi rebound dari
   // satu request PnL yang sama.
   pollIntervalSec: Math.max(1, num(e.DCA_POLL_INTERVAL_SEC, 5)),

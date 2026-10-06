@@ -8,7 +8,7 @@ import { swapToSol } from "../solana/swap.js";
 import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
 import { clearTrailingState } from "../state/trailing.js";
 import { clearBounceRecovery } from "../state/bounce.js";
-import { clearDcaState, resetPoolDcaState } from "../state/dca.js";
+import { clearDcaState, resetPoolDcaState, getPoolDcaCount, markPoolDcaCloseSafeguard, isTrailingTpReason } from "../state/dca.js";
 import { clearTrailingTimer } from "./trailing.js";
 import { addClosingPool, removeClosingPool, recordAction } from "../entry/runtime.js";
 import { deactivatePool } from "../entry/index.js";
@@ -55,6 +55,22 @@ export async function handleClose(pos, reason, opts = {}) {
       // hangus, total tetap dibatasi DCA_MAX_ADDS.
       if (wasDca) {
         resetPoolDcaState(pos.pool, pos.position);
+
+        // Safeguard: DCA terakhir exit karena trailing TP → posisi asli ikut
+        // ditutup (loop exit akan memprosesnya). Hanya saat kuota sesi sudah
+        // habis dan tak ada DCA lain yang masih terbuka.
+        if (config.dca.enabled && config.dca.closeSafeguard && isTrailingTpReason(reason)) {
+          const quotaReached = getPoolDcaCount(pos.pool) >= config.dca.maxAdds;
+          const otherDcaOpen = getOpenTrackedPositions().some(
+            (p) => p.pool === pos.pool && p.position !== pos.position && p.isDca === true
+          );
+          if (quotaReached && !otherDcaOpen) {
+            const marked = markPoolDcaCloseSafeguard(pos.pool, pos.position);
+            if (marked > 0) {
+              log.info(`${pairLabel}: DCA terakhir profit (trailing TP) — safeguard menutup ${marked} posisi asli`);
+            }
+          }
+        }
       }
 
       // Auto-swap base token to SOL (Jupiter V2, with retries)

@@ -75,11 +75,11 @@ test("isDcaModeEligible hanya bidask:double (default)", () => {
   assert.equal(isDcaModeEligible("bidask:sol"), false);
 });
 
-test("effectiveDcaArmPct: DCA#2 pakai -35 hanya saat DCA#1 sudah close", () => {
-  const c = { armPct: -10, armPct2: -35 };
+test("effectiveDcaArmPct: DCA#2 pakai -30 hanya saat DCA#1 sudah close", () => {
+  const c = { armPct: -10, armPct2: -30 };
   assert.equal(effectiveDcaArmPct(0, false, c), -10, "DCA#1 dari posisi utama");
   assert.equal(effectiveDcaArmPct(1, true, c), -10, "DCA#1 masih open -> acuan DCA#1");
-  assert.equal(effectiveDcaArmPct(1, false, c), -35, "DCA#1 close -> acuan posisi utama");
+  assert.equal(effectiveDcaArmPct(1, false, c), -30, "DCA#1 close -> acuan posisi utama");
   assert.equal(effectiveDcaArmPct(2, false, c), -10, "kuota habis ditangani pemanggil");
 });
 

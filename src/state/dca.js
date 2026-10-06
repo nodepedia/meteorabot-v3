@@ -178,6 +178,30 @@ export function resetPoolDcaState(pool, exceptPosition) {
   if (changed) writeState(state);
 }
 
+// --- Safeguard: close posisi asli saat DCA terakhir exit karena trailing TP ---
+
+// Pure: apakah alasan close berasal dari trailing TP peak (bukan indikator)?
+export function isTrailingTpReason(reason) {
+  return typeof reason === "string" && reason.startsWith("trailing_tp");
+}
+
+// Tandai posisi asli (non-DCA) di pool agar ikut ditutup oleh loop exit.
+// Mengembalikan jumlah posisi yang ditandai.
+export function markPoolDcaCloseSafeguard(pool, exceptPosition) {
+  if (!pool) return 0;
+  const state = readState();
+  let marked = 0;
+  for (const p of Object.values(state.positions)) {
+    if (!p || p.closed === true) continue;
+    if (p.pool !== pool || p.position === exceptPosition) continue;
+    if (p.isDca === true) continue;
+    p.dcaCloseSafeguard = true;
+    marked++;
+  }
+  if (marked > 0) writeState(state);
+  return marked;
+}
+
 // --- Counter DCA per sesi (persisten di state.dcaUsage) ---
 // Sesi = rentang saat pool punya >=1 posisi terbuka. Counter naik saat trigger
 // DCA (sebelum eksekusi, jadi aman crash) dan di-reset saat sesi berakhir

@@ -51,6 +51,9 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       pendingDcaTrough: null,
       pendingDcaCurrent: null,
       pendingDcaStartedAt: null,
+      // Safeguard: posisi asli ditandai untuk ikut close setelah DCA terakhir
+      // exit karena trailing TP.
+      dcaCloseSafeguard: false,
       missedCycles: 0,
       // Berapa kali posisi ini adalah hasil re-entry spot OOR kanan (diwariskan
       // ke posisi berikutnya supaya rantai berhenti di SPOT_REENTRY_MAX).

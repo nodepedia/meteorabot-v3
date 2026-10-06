@@ -17,6 +17,8 @@ const {
   clearDcaTriggered,
   clearDcaState,
   resetPoolDcaState,
+  markPoolDcaCloseSafeguard,
+  isTrailingTpReason,
   getPoolDcaCount,
   incrementPoolDca,
   decrementPoolDca,
@@ -168,4 +170,29 @@ test("resetPoolDcaState melewati posisi yang sudah closed", () => {
   resetPoolDcaState(POOL, p2);
 
   assert.equal(getTrackedPosition(p1).dcaTriggered, true, "posisi closed tidak direset");
+});
+
+test("isTrailingTpReason hanya cocok untuk reason trailing TP peak", () => {
+  assert.equal(isTrailingTpReason("trailing_tp: peak 12.00% -> 3.10%"), true);
+  assert.equal(isTrailingTpReason("indicator_trailing(rsi_macd): peak 5.00% -> 1.00%"), false);
+  assert.equal(isTrailingTpReason("stop_loss"), false);
+  assert.equal(isTrailingTpReason(null), false);
+  assert.equal(isTrailingTpReason(undefined), false);
+});
+
+test("markPoolDcaCloseSafeguard menandai posisi asli saja di pool yang sama", () => {
+  resetState();
+  const original = newPos(POOL, false);
+  const dcaClosed = newPos(POOL, true);
+  const dcaOpen = newPos(POOL, true);
+  const otherPool = newPos("PoolOther111111111111111111111111111111111", false);
+  setClosed(dcaClosed);
+
+  const marked = markPoolDcaCloseSafeguard(POOL, dcaClosed);
+
+  assert.equal(marked, 1, "hanya posisi asli yang ditandai");
+  assert.equal(getTrackedPosition(original).dcaCloseSafeguard, true);
+  assert.equal(getTrackedPosition(dcaOpen).dcaCloseSafeguard, false, "DCA lain tidak ditandai");
+  assert.equal(getTrackedPosition(dcaClosed).dcaCloseSafeguard, false, "posisi yang dikecualikan tidak ditandai");
+  assert.equal(getTrackedPosition(otherPool).dcaCloseSafeguard, false, "pool lain tidak ditandai");
 });
