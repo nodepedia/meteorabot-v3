@@ -11,8 +11,8 @@ import { buildFeePlan, checkFeeCap } from "../solana/fees.js";
 import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { getPoolInfo } from "./pool-info.js";
-import { guardPoolPrice } from "./price-guard.js";
-import { trackPosition } from "../state/positions.js";
+import { guardPoolPrice, poolPriceSolPerToken } from "./price-guard.js";
+import { trackPosition, setEntryPoolPrice } from "../state/positions.js";
 import { incrementEntryUsage, getEntryUsage, recordAction } from "./runtime.js";
 
 const STRATEGY_ENUM = { spot: "Spot", curve: "Curve", bid_ask: "BidAsk" };
@@ -209,6 +209,7 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
   const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
 
   trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode, "bidask:double", isDca);
+  setEntryPoolPrice(positionAddress, poolPriceSolPerToken(activeBin, baseIsX));
   const uses = countUsage ? incrementEntryUsage(poolAddress) : getEntryUsage(poolAddress);
 
   if (isDca) {

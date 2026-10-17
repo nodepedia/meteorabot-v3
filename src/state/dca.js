@@ -50,6 +50,18 @@ export function evaluateDca(position, tracked, cfg) {
   return { action: "hold", trough, rebound };
 }
 
+// Cross-check harga pool saat arm: pastikan PnL turun karena harga memang
+// turun, bukan spike PnL palsu dari datapi. `priceChangePct` = perubahan harga
+// pool sekarang vs harga saat posisi dibuka. Bila harga turun kurang dari
+// `flatPct` (mis. -1%), penurunan PnL dianggap tidak wajar -> tahan arm.
+// Nilai tidak valid -> false (fail-open, arm tetap boleh).
+export function shouldSkipDcaArm({ priceChangePct, flatPct } = {}) {
+  const flat = Number(flatPct);
+  const change = Number(priceChangePct);
+  if (!Number.isFinite(flat) || !Number.isFinite(change)) return false;
+  return change > flat;
+}
+
 // --- State mutations (persisten) ---
 
 export function setDcaArmedAndTrough(positionAddress, trough) {

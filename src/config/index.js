@@ -137,6 +137,11 @@ const dca = {
   armPct2: num(e.DCA_ARM_PCT_2, -30),
   reboundPct: Math.max(0, num(e.DCA_REBOUND_PCT, 1)),
   maxAdds: Math.max(0, Math.floor(num(e.DCA_MAX_ADDS, 1))),
+  // Cross-check harga pool saat arm: tahan arm bila PnL <= armPct tapi harga
+  // pool tidak turun sepadan (penurunan kurang dari priceFlatPct%). Mencegah
+  // spike PnL palsu dari datapi memicu DCA.
+  priceConfirm: bool(e.DCA_PRICE_CONFIRM, true),
+  priceFlatPct: num(e.DCA_PRICE_FLAT_PCT, -1),
   // Safeguard: saat DCA terakhir (kuota sesi habis) exit karena trailing TP,
   // posisi asli (non-DCA) di pool yang sama ikut ditutup.
   closeSafeguard: bool(e.DCA_CLOSE_SAFEGUARD, false),

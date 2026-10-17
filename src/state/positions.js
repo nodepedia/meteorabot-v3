@@ -20,6 +20,9 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       lowerBin: null,
       upperBin: null,
       binSpan: null,
+      // Harga pool (SOL per token base) saat posisi dibuka; dipakai untuk
+      // cross-check DCA (pastikan penurunan harga nyata, bukan glitch PnL).
+      entryPoolPrice: null,
       isDca: isDca === true,
       lastPnlPeak: null,
       lastPnlLowest: null,
@@ -61,6 +64,18 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
     };
     writeState(state);
   }
+}
+
+// Simpan harga pool saat posisi dibuka (hanya bila belum ada nilainya).
+export function setEntryPoolPrice(positionAddress, price) {
+  const value = Number(price);
+  if (!positionAddress || !Number.isFinite(value) || value <= 0) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p || p.entryPoolPrice != null) return p?.entryPoolPrice ?? null;
+  p.entryPoolPrice = value;
+  writeState(state);
+  return value;
 }
 
 export function getTrackedPosition(positionAddress) {

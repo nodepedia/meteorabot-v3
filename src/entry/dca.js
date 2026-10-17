@@ -5,10 +5,13 @@ import * as tg from "../notify/telegram.js";
 import { getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
 import { fetchPoolPnl, pnlFromEntry } from "../meteora/positions.js";
 import { loadPoolList } from "./pool-list.js";
+import { getPoolInfo } from "./pool-info.js";
+import { poolPriceSolPerToken } from "./price-guard.js";
 import { executeEntry } from "./execute.js";
 import {
   isDcaEligible,
   evaluateDca,
+  shouldSkipDcaArm,
   setDcaArmedAndTrough,
   queueDcaRebound,
   resolvePendingDca,
@@ -91,7 +94,7 @@ export async function tickDca() {
         continue;
       }
 
-      processDca(pos, tracked, pairLabel, poolCfg);
+      await processDca(pos, tracked, pairLabel, poolCfg);
     }
   }
 }
@@ -116,8 +119,34 @@ export function startDcaWatcher() {
   return { timer };
 }
 
+// Cross-check harga pool sebelum arm: tolak spike PnL palsu yang tidak diikuti
+// penurunan harga pool. Fail-open bila data tidak tersedia.
+async function priceConfirmsDcaArm(pos, tracked) {
+  const cfg = config.dca;
+  if (!cfg.priceConfirm) return true;
+  const entryPrice = Number(tracked.entryPoolPrice);
+  if (!Number.isFinite(entryPrice) || entryPrice <= 0) return true;
+  try {
+    const { pool, baseIsX } = await getPoolInfo(pos.pool);
+    const activeBin = await pool.getActiveBin();
+    const nowPrice = poolPriceSolPerToken(activeBin, baseIsX);
+    if (nowPrice == null) return true;
+    const priceChangePct = (nowPrice / entryPrice - 1) * 100;
+    if (shouldSkipDcaArm({ priceChangePct, flatPct: cfg.priceFlatPct })) {
+      log.warn(
+        `DCA ${pos.pair || pos.pool.slice(0, 8)}: arm ditahan — PnL ${pos.pnlPct.toFixed(2)}% tapi harga pool hanya ${priceChangePct.toFixed(2)}% dari entry (batas ${cfg.priceFlatPct}%)`
+      );
+      return false;
+    }
+    return true;
+  } catch (err) {
+    log.debug(`[detail] DCA price-confirm gagal (fail-open): ${err.message}`);
+    return true;
+  }
+}
+
 // Arm / trail / queue rebound dari PnL hasil fetch.
-export function processDca(pos, tracked, pairLabel, cfgOverride) {
+export async function processDca(pos, tracked, pairLabel, cfgOverride) {
   const cfg = cfgOverride || config.dca;
   if (!cfg.enabled || !pos?.position || pos.pnlPct == null) return;
 
@@ -130,6 +159,7 @@ export function processDca(pos, tracked, pairLabel, cfgOverride) {
   const decision = evaluateDca(pos, tracked, cfg);
   switch (decision.action) {
     case "arm":
+      if (!(await priceConfirmsDcaArm(pos, tracked))) break;
       setDcaArmedAndTrough(pos.position, decision.trough);
       log.debug(`[detail] ${pairLabel}: DCA armed @ ${decision.trough.toFixed(2)}% (trough awal)`);
       break;

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateDca, isDcaEligible, effectiveDcaArmPct } from "../src/state/dca.js";
+import { evaluateDca, isDcaEligible, shouldSkipDcaArm, effectiveDcaArmPct } from "../src/state/dca.js";
 import { isDcaModeEligible } from "../src/entry/dca.js";
 
 const cfg = { enabled: true, armPct: -10, reboundPct: 1 };
@@ -86,4 +86,17 @@ test("effectiveDcaArmPct: DCA#2 pakai -30 hanya saat DCA#1 sudah close", () => {
 test("effectiveDcaArmPct fallback ke armPct bila armPct2 tidak valid", () => {
   assert.equal(effectiveDcaArmPct(1, false, { armPct: -10 }), -10);
   assert.equal(effectiveDcaArmPct(1, false, { armPct: -10, armPct2: NaN }), -10);
+});
+
+test("shouldSkipDcaArm: tahan arm saat harga pool nyaris flat", () => {
+  assert.equal(shouldSkipDcaArm({ priceChangePct: -0.3, flatPct: -1 }), true);
+  assert.equal(shouldSkipDcaArm({ priceChangePct: 0.5, flatPct: -1 }), true);
+  assert.equal(shouldSkipDcaArm({ priceChangePct: -1, flatPct: -1 }), false);
+  assert.equal(shouldSkipDcaArm({ priceChangePct: -5, flatPct: -1 }), false);
+});
+
+test("shouldSkipDcaArm: nilai tidak valid -> fail-open (jangan skip)", () => {
+  assert.equal(shouldSkipDcaArm({ priceChangePct: NaN, flatPct: -1 }), false);
+  assert.equal(shouldSkipDcaArm({ priceChangePct: -0.3, flatPct: NaN }), false);
+  assert.equal(shouldSkipDcaArm({}), false);
 });
