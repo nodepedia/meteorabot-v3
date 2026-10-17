@@ -72,6 +72,22 @@ test("getProgramAccounts memakai V2 ber-paginasi dan menggabungkan halaman", asy
   assert.equal(calls[1].params[1].paginationKey, "next-key");
 });
 
+test("fallback ke metode lama saat V2 mengembalikan kosong", async () => {
+  await withOldMethod(
+    async () => "FALLBACK",
+    async () => {
+      await withFetch(
+        async () => ({ json: async () => ({ result: { accounts: [], paginationKey: null } }) }),
+        async () => {
+          const conn = new PagedConnection("http://127.0.0.1:8899");
+          const res = await conn.getProgramAccounts(new PublicKey(PROGRAM), { filters: FILTERS });
+          assert.equal(res, "FALLBACK");
+        }
+      );
+    }
+  );
+});
+
 test("fallback ke metode lama saat V2 tidak didukung", async () => {
   await withOldMethod(
     async () => "FALLBACK",

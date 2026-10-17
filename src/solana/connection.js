@@ -37,7 +37,11 @@ export class PagedConnection extends Connection {
       return super.getProgramAccounts(programId, configOrCommitment);
     }
     try {
-      return await this._getProgramAccountsV2(programId, cfg);
+      const accounts = await this._getProgramAccountsV2(programId, cfg);
+      if (accounts.length === 0) {
+        return super.getProgramAccounts(programId, configOrCommitment);
+      }
+      return accounts;
     } catch (err) {
       if (isMethodUnsupported(err)) {
         return super.getProgramAccounts(programId, configOrCommitment);
