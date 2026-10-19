@@ -96,6 +96,10 @@ const entry = {
   // pasar (Jupiter) melebihi ambang ini. Gagal ambil harga = lanjut (fail-open).
   poolPriceCheck: bool(e.ENTRY_POOL_PRICE_CHECK, true),
   maxPoolPriceDeviationPct: Math.max(0, num(e.ENTRY_MAX_POOL_PRICE_DEVIATION_PCT, 15)),
+  // Toleransi harga aktif pool terhadap garis Supertrend saat entry (persen).
+  // Mencegah entry hanya karena harga Jupiter yang turun, sementara pool belum
+  // menyentuh garis. Sedikit toleransi menutup pembulatan bin.
+  poolLineTolerancePct: Math.max(0, num(e.ENTRY_POOL_LINE_TOLERANCE_PCT, 3)),
   // Saat deviasi di atas ambang, coba ulang (baca ulang harga tiap percobaan).
   poolPriceMaxAttempts: Math.max(1, Math.floor(num(e.ENTRY_POOL_PRICE_MAX_ATTEMPTS, 3))),
   poolPriceRetryDelaySec: Math.max(0, num(e.ENTRY_POOL_PRICE_RETRY_DELAY_SEC, 10)),

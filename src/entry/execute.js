@@ -57,6 +57,8 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
       thresholdPct: limit,
       signalTokenUsd: signal?.price,
       signalSolUsd: signal?.solPrice,
+      lineUsd: signal?.line,
+      lineTolerancePct: config.entry.poolLineTolerancePct,
       attempts: config.entry.poolPriceMaxAttempts,
       delayMs,
       onUnavailable: (guard) =>
@@ -67,6 +69,17 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
         ),
     });
     activeBin = result.activeBin;
+    if (result.lineMiss) {
+      const poolUsd = Number(result.guard.poolPriceUsd);
+      const lineUsd = Number(result.guard.lineLimitUsd);
+      return {
+        success: false,
+        skipped: true,
+        lineMiss: true,
+        reason: `harga pool ${poolUsd.toFixed(8)} > garis ${lineUsd.toFixed(8)} (hanya harga Jupiter yang turun)`,
+        baseMint,
+      };
+    }
     if (result.exhausted) {
       const dev = result.guard.deviationPct.toFixed(1);
       log.warn(

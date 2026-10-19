@@ -21,6 +21,8 @@ export async function checkPoolPriceDeviation({
   thresholdPct,
   tokenUsd,
   solUsd,
+  lineUsd,
+  lineTolerancePct = 0,
   fetchPrices = getPrices,
 } = {}) {
   const poolSolPerToken = poolPriceSolPerToken(activeBin, baseIsX);
@@ -51,9 +53,27 @@ export async function checkPoolPriceDeviation({
   const marketSolPerToken = t / s;
   const deviationPct = (poolSolPerToken / marketSolPerToken - 1) * 100;
   const limit = Math.max(0, Number(thresholdPct) || 0);
-  const ok = Math.abs(deviationPct) <= limit;
+  const devOk = Math.abs(deviationPct) <= limit;
 
-  return { ok, unavailable: false, deviationPct, poolSolPerToken, marketSolPerToken };
+  // Harga pool sendiri (USD) juga harus sudah menyentuh garis Supertrend.
+  // Tanpa ini, satu tick Jupiter yang salah bisa memicu entry padahal pool
+  // yang dipantau masih jauh di atas garis.
+  const line = Number(lineUsd);
+  const hasLine = lineUsd != null && Number.isFinite(line) && line > 0;
+  const lineLimitUsd = hasLine ? line * (1 + Math.max(0, Number(lineTolerancePct) || 0) / 100) : null;
+  const poolPriceUsd = poolSolPerToken * s;
+  const lineMiss = lineLimitUsd != null && poolPriceUsd > lineLimitUsd;
+
+  return {
+    ok: devOk && !lineMiss,
+    unavailable: false,
+    deviationPct,
+    poolSolPerToken,
+    marketSolPerToken,
+    poolPriceUsd,
+    lineLimitUsd,
+    lineMiss,
+  };
 }
 
 // Baca bin aktif + cek deviasi, dengan percobaan ulang saat masih menyimpang.
@@ -66,6 +86,8 @@ export async function guardPoolPrice({
   thresholdPct,
   signalTokenUsd,
   signalSolUsd,
+  lineUsd,
+  lineTolerancePct = 0,
   attempts = 1,
   delayMs = 0,
   onRetry,
@@ -84,6 +106,8 @@ export async function guardPoolPrice({
       baseIsX,
       activeBin,
       thresholdPct,
+      lineUsd,
+      lineTolerancePct,
       // Percobaan pertama boleh pakai snapshot sinyal; retry pakai harga segar.
       tokenUsd: attempt === 1 ? signalTokenUsd : undefined,
       solUsd: attempt === 1 ? signalSolUsd : undefined,
@@ -92,6 +116,11 @@ export async function guardPoolPrice({
     if (guard.unavailable) {
       onUnavailable?.(guard);
       return { activeBin, guard, exhausted: false, attempts: attempt, delayMs: delay };
+    }
+    // Harga pool belum menyentuh garis: bukan deviasi pasar, jadi jangan
+    // di-retry / jangan nonaktifkan pool. Cukup lewati sinyal ini.
+    if (guard.lineMiss) {
+      return { activeBin, guard, exhausted: false, lineMiss: true, attempts: attempt, delayMs: delay };
     }
     if (guard.ok) return { activeBin, guard, exhausted: false, attempts: attempt, delayMs: delay };
     if (attempt >= max) return { activeBin, guard, exhausted: true, attempts: attempt, delayMs: delay };

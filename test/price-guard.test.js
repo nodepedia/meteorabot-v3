@@ -34,6 +34,48 @@ test("lolos bila deviasi dalam ambang (kasus CkLA +8.5%)", async () => {
   assert.ok(Math.abs(r.deviationPct - 8.5) < 0.5);
 });
 
+test("tolak entry bila harga pool belum menyentuh garis (kasus SAPLING)", async () => {
+  const r = await checkPoolPriceDeviation({
+    activeBin: { pricePerToken: 3.11009e-5 },
+    baseIsX: true,
+    tokenUsd: 0.002797,
+    solUsd: 100,
+    lineUsd: 0.0028087,
+    lineTolerancePct: 3,
+    thresholdPct: 15,
+  });
+  assert.equal(r.lineMiss, true);
+  assert.equal(r.ok, false);
+  // Deviasi pool vs pasar hanya ~11%, jadi rem 15% tetap lolos.
+  assert.ok(Math.abs(r.deviationPct - 11.2) < 0.5);
+});
+
+test("lolos bila harga pool sendiri sudah <= garis", async () => {
+  const r = await checkPoolPriceDeviation({
+    activeBin: { pricePerToken: 2.85e-5 },
+    baseIsX: true,
+    tokenUsd: 0.00285,
+    solUsd: 100,
+    lineUsd: 0.0028087,
+    lineTolerancePct: 3,
+    thresholdPct: 15,
+  });
+  assert.equal(r.lineMiss, false);
+  assert.equal(r.ok, true);
+});
+
+test("tanpa lineUsd (DCA) tidak mengecek garis", async () => {
+  const r = await checkPoolPriceDeviation({
+    activeBin: { pricePerToken: 1e-4 },
+    baseIsX: true,
+    tokenUsd: 0.01,
+    solUsd: 100,
+    thresholdPct: 15,
+  });
+  assert.equal(r.lineMiss, false);
+  assert.equal(r.ok, true);
+});
+
 test("harga token null memicu fetch (kasus DCA price:null)", async () => {
   let called = false;
   const r = await checkPoolPriceDeviation({
@@ -159,6 +201,31 @@ test("guardPoolPrice: harga tak tersedia -> berhenti (fail-open)", async () => {
   assert.equal(r.exhausted, false);
   assert.equal(check.calls.length, 2);
   assert.equal(unavailable, 1);
+});
+
+test("guardPoolPrice: lineMiss langsung berhenti tanpa retry", async () => {
+  let reads = 0;
+  const check = seqCheck([{ ok: false, unavailable: false, deviationPct: 11, lineMiss: true }]);
+  const r = await guardPoolPrice({
+    getActiveBin: async () => {
+      reads++;
+      return { binId: 1, pricePerToken: 3.11e-5 };
+    },
+    lineUsd: 0.0028087,
+    lineTolerancePct: 3,
+    attempts: 3,
+    delayMs: 1000,
+    sleepFn: async () => {
+      throw new Error("tidak boleh tidur");
+    },
+    check,
+  });
+  assert.equal(r.lineMiss, true);
+  assert.equal(r.exhausted, false);
+  assert.equal(reads, 1);
+  assert.equal(check.calls.length, 1);
+  assert.equal(check.calls[0].lineUsd, 0.0028087);
+  assert.equal(check.calls[0].lineTolerancePct, 3);
 });
 
 test("guardPoolPrice: retry pakai harga pasar segar (signal hanya percobaan 1)", async () => {
