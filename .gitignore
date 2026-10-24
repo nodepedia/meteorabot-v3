@@ -15,3 +15,6 @@ updatelist.txt
 runtime-state.json
 *.tmp
 logs/
+gmgn-kline-cache.json
+gmgn-rate-state.json
+*.lock

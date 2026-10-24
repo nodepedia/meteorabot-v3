@@ -279,7 +279,7 @@ export async function mainLoop(opts = {}) {
 
       let exit = evaluateExit(pos, null, { warmup });
       if (exit.action === "hold" && rules.enableIndicators && pos.baseMint && !warmup) {
-        const candles = await fetchCandles(pos.baseMint, pos.pool);
+        const candles = await fetchCandles(pos.baseMint, pos.pool, { priority: "exit" });
         exit = evaluateExit(pos, candles, { warmup });
       }
 

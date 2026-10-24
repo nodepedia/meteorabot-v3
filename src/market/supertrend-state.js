@@ -47,8 +47,10 @@ function load() {
 
 function save() {
   try {
+    const file = cacheFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     const obj = { schema: SCHEMA, savedAt: Date.now(), state: Object.fromEntries(state) };
-    fs.writeFileSync(cacheFile(), JSON.stringify(obj));
+    fs.writeFileSync(file, JSON.stringify(obj));
   } catch (err) {
     log.warn(`saveSupertrendCache: ${err.message}`);
   }
@@ -107,7 +109,7 @@ export async function refreshSupertrend(mint, { force = false, now = Date.now(),
   if (inflight.has(mint)) return null;
   inflight.add(mint);
   try {
-    const candles = await fetchCandlesFn(mint, null, { resolution: "15m", limit: 90, allowStale: false });
+    const candles = await fetchCandlesFn(mint, null, { resolution: "15m", limit: 90, allowStale: false, priority: "entry" });
     if (!candles || candles.length < config.entry.stAtrPeriod + 2) return null;
     const st = supertrendFromClosed(candles, config.entry.stAtrPeriod, config.entry.stMultiplier, now);
     if (!st) return null;

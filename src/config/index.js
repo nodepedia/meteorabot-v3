@@ -221,8 +221,11 @@ const config = {
   // baru sudah terbentuk dan bar yang baru tutup sudah final.
   candleCloseDelaySec: Math.max(0, num(e.CANDLE_CLOSE_DELAY_SEC, 3)),
   candle15mSource: (e.CANDLE_15M_SOURCE || "gmgn").toLowerCase() === "meteora" ? "meteora" : "gmgn",
-  gmgnMaxPerMin: num(e.GMGN_MAX_PER_MIN, 4),
-  gmgnMinGapSec: num(e.GMGN_MIN_GAP_SEC, 15),
+  gmgnCentralCollector: bool(e.GMGN_CENTRAL_COLLECTOR, true),
+  gmgnKlineCacheFile: e.GMGN_KLINE_CACHE_FILE || "gmgn-kline-cache.json",
+  gmgnRateStateFile: e.GMGN_RATE_STATE_FILE || "gmgn-rate-state.json",
+  gmgnMaxPerMin: num(e.GMGN_MAX_PER_MIN, 45),
+  gmgnMinGapSec: num(e.GMGN_MIN_GAP_SEC, 1.2),
   gmgnMaxStaleMin: num(e.GMGN_MAX_STALE_MIN, 30),
   gmgnFallbackToMeteora: bool(e.GMGN_FALLBACK_TO_METEORA, false),
   meteoraMaxPerMin: num(e.METEORA_MAX_PER_MIN, 120),

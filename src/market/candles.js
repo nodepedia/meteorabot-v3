@@ -1,5 +1,8 @@
+import fs from "fs";
+import path from "path";
 import log from "../core/logger.js";
 import config from "../config/index.js";
+import { ROOT } from "../core/paths.js";
 import { makeLimiter } from "../core/rate-limiter.js";
 import { clamp } from "../core/utils.js";
 import { fetchGmgnKline } from "./gmgn-client.js";
@@ -22,10 +25,81 @@ const METEORA_MAP = {
 };
 
 const CANDLE_15M_SEC = 900;
+const DISK_CACHE_SCHEMA = 1;
+const DISK_CACHE_MAX_AGE_MS = 2 * 3600 * 1000;
 
 const candleCache = new Map(); // key -> { at, candles } (TF native)
 const gmgn15mCache = new Map(); // mint -> { at, barStart, candles }
 const gmgn15mInflight = new Map(); // mint -> Promise
+
+function klineCacheFile() {
+  if (process.env.GMGN_KLINE_CACHE_FILE && process.env.GMGN_KLINE_CACHE_FILE.trim()) {
+    return path.resolve(process.env.GMGN_KLINE_CACHE_FILE.trim());
+  }
+  return path.resolve(ROOT, config.gmgnKlineCacheFile || "gmgn-kline-cache.json");
+}
+
+function readDiskKlineAll() {
+  if (!config.gmgnCentralCollector) return {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(klineCacheFile(), "utf8"));
+    if (raw?.schema !== DISK_CACHE_SCHEMA || !raw?.mints || typeof raw.mints !== "object") return {};
+    return raw.mints;
+  } catch {
+    return {};
+  }
+}
+
+function readDiskKlineEntry(mint) {
+  if (!mint || !config.gmgnCentralCollector) return null;
+  const mints = readDiskKlineAll();
+  const entry = mints[mint];
+  if (!entry || !Array.isArray(entry.candles) || !Number.isFinite(entry.barStart)) return null;
+  return entry;
+}
+
+function writeDiskKlineEntry(mint, entry) {
+  if (!mint || !entry || !config.gmgnCentralCollector) return;
+  const file = klineCacheFile();
+  const now = Date.now();
+  const current = readDiskKlineAll();
+  const nextMints = {};
+  for (const [k, v] of Object.entries(current)) {
+    if (v && Array.isArray(v.candles) && now - (Number(v.at) || 0) <= DISK_CACHE_MAX_AGE_MS) {
+      nextMints[k] = v;
+    }
+  }
+  nextMints[mint] = entry;
+  const payload = JSON.stringify({
+    schema: DISK_CACHE_SCHEMA,
+    updatedAt: now,
+    mints: nextMints,
+  });
+  const tmpFile = `${file}.${process.pid}.${now}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(tmpFile, payload);
+    fs.renameSync(tmpFile, file);
+  } catch {
+    try {
+      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    } catch {}
+    try {
+      fs.writeFileSync(file, payload);
+    } catch {}
+  }
+}
+
+export function clearGmgn15mCache({ includeDisk = true } = {}) {
+  gmgn15mCache.clear();
+  gmgn15mInflight.clear();
+  if (includeDisk) {
+    try {
+      const file = klineCacheFile();
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch {}
+  }
+}
 
 function cacheKey(mint, pool, resolution) {
   return `${pool || mint || "?"}:${resolution}`;
@@ -47,8 +121,8 @@ function setCached(key, candles) {
 
 const meteoraLimiter = makeLimiter(Math.max(1, Number(config.meteoraMaxPerMin) || 0));
 
-function current15mBarStart() {
-  return Math.floor(Date.now() / 1000 / CANDLE_15M_SEC) * CANDLE_15M_SEC;
+function current15mBarStart(nowMs = Date.now()) {
+  return Math.floor(nowMs / 1000 / CANDLE_15M_SEC) * CANDLE_15M_SEC;
 }
 
 function dedupeSort(candles) {
@@ -63,38 +137,71 @@ function dedupeSort(candles) {
 }
 
 // Bar tertutup terakhir yang seharusnya sudah tersedia pada data 15m.
-function latestClosed15mBarStart() {
-  return current15mBarStart() - CANDLE_15M_SEC;
+function latestClosed15mBarStart(nowMs = Date.now()) {
+  return current15mBarStart(nowMs) - CANDLE_15M_SEC;
+}
+
+function isFresh15mHit(hit, nowMs = Date.now()) {
+  if (!hit || !Array.isArray(hit.candles) || hit.candles.length === 0) return false;
+  if (hit.barStart !== current15mBarStart(nowMs)) return false;
+  const last = hit.candles[hit.candles.length - 1];
+  if (!last) return false;
+  const lastBar = Math.floor(last.time / CANDLE_15M_SEC) * CANDLE_15M_SEC;
+  if (lastBar < latestClosed15mBarStart(nowMs)) return false;
+  return true;
 }
 
 // Cache 15m GMGN valid untuk seluruh bar berjalan; ganti saat bar berikutnya.
 // Cache juga harus benar-benar memuat bar yang baru tutup, supaya data yang
 // belum lengkap (mis. GMGN telat) tidak dianggap final.
-function getFreshGmgn15m(mint) {
-  const hit = gmgn15mCache.get(mint);
-  if (!hit) return null;
-  if (hit.barStart !== current15mBarStart()) return null;
-  const last = hit.candles[hit.candles.length - 1];
-  if (!last) return null;
-  const lastBar = Math.floor(last.time / CANDLE_15M_SEC) * CANDLE_15M_SEC;
-  if (lastBar < latestClosed15mBarStart()) return null;
-  return hit;
+// Jika Central Data Collector aktif, cek memori dulu lalu shared disk cache
+// agar worker entry & exit berbagi hasil fetch yang sama (0 duplikat request).
+export function getFreshGmgn15m(mint, nowMs = Date.now()) {
+  const memHit = gmgn15mCache.get(mint);
+  if (isFresh15mHit(memHit, nowMs)) return memHit;
+
+  const diskHit = readDiskKlineEntry(mint);
+  if (diskHit) {
+    if (!memHit || (Number(diskHit.at) || 0) >= (Number(memHit.at) || 0)) {
+      gmgn15mCache.set(mint, diskHit);
+    }
+    if (isFresh15mHit(diskHit, nowMs)) return diskHit;
+  }
+
+  return null;
 }
 
-// Ambil ulang kline 15m dari GMGN (native), lalu simpan ke cache bar-aligned.
-async function refreshGmgn15m(mint, { limit = 90 } = {}) {
+function getStaleGmgn15m(mint) {
+  const memHit = gmgn15mCache.get(mint);
+  const diskHit = readDiskKlineEntry(mint);
+  if (diskHit && (!memHit || (Number(diskHit.at) || 0) > (Number(memHit.at) || 0))) {
+    gmgn15mCache.set(mint, diskHit);
+    return diskHit;
+  }
+  return memHit || null;
+}
+
+// Ambil ulang kline 15m dari GMGN (native), lalu simpan ke cache bar-aligned (memori + disk).
+async function refreshGmgn15m(mint, { limit = 90, priority = "normal", nowMs, deps = {} } = {}) {
   if (gmgn15mInflight.has(mint)) return gmgn15mInflight.get(mint);
+  const fetchKlineFn = deps.fetchGmgnKline || fetchGmgnKline;
   const p = (async () => {
     try {
-      const list = await fetchGmgnKline(mint, { resolution: "15m", limit });
+      const precheck = getFreshGmgn15m(mint, nowMs);
+      if (precheck) return precheck.candles;
+
+      const list = await fetchKlineFn(mint, { resolution: "15m", limit, priority });
       if (!list || list.length < 2) return null;
       const candles = dedupeSort(list);
-      const barStart = current15mBarStart();
-      gmgn15mCache.set(mint, { at: Date.now(), barStart, candles });
+      const now = nowMs ?? Date.now();
+      const barStart = current15mBarStart(now);
+      const entry = { at: now, barStart, candles };
+      gmgn15mCache.set(mint, entry);
+      writeDiskKlineEntry(mint, entry);
       log.debug(
         `[detail] GMGN 15m ${mint.slice(0, 8)}: ${candles.length} candle (bar ${new Date(barStart * 1000)
           .toISOString()
-          .slice(11, 16)})`
+          .slice(11, 16)}, prio=${priority})`
       );
       return candles;
     } finally {
@@ -121,9 +228,13 @@ export async function fetchVolume(mint, pool, { resolution, limit = 5 } = {}) {
 }
 
 // Routing sumber data:
-// - 15m (tidak native di Meteora) -> GMGN native, cache bar-aligned per mint.
+// - 15m (tidak native di Meteora) -> GMGN native, cache bar-aligned per mint (shared lintas worker).
 // - TF native (5m/1h/4h/24h)      -> Meteora (fallback GMGN bila kurang).
-export async function fetchCandles(mint, pool, { resolution, limit = 100, allowStale = true } = {}) {
+export async function fetchCandles(
+  mint,
+  pool,
+  { resolution, limit = 100, allowStale = true, priority = "normal", nowMs, deps = {} } = {}
+) {
   const res = resolution || config.timeframe || "15m";
   if (!mint && !pool) {
     log.warn("fetchCandles: no mint/pool");
@@ -131,7 +242,7 @@ export async function fetchCandles(mint, pool, { resolution, limit = 100, allowS
   }
 
   if (res === "15m" && config.candle15mSource === "gmgn" && mint) {
-    return fetchCandlesGmgn15m(mint, pool, { limit, allowStale });
+    return fetchCandlesGmgn15m(mint, pool, { limit, allowStale, priority, nowMs, deps });
   }
 
   const key = cacheKey(mint, pool, res);
@@ -149,7 +260,7 @@ export async function fetchCandles(mint, pool, { resolution, limit = 100, allowS
   // GMGN hanya dipanggil kalau Meteora tidak memberi cukup data.
   const minNeeded = Math.min(15, Math.max(2, limit));
   if ((!candles || candles.length < minNeeded) && mint) {
-    const gmgn = await fetchCandlesGMGN(mint, { resolution: res, limit });
+    const gmgn = await fetchCandlesGMGN(mint, { resolution: res, limit, priority, deps });
     if (gmgn && (!candles || gmgn.length > candles.length)) candles = gmgn;
   }
 
@@ -160,14 +271,19 @@ export async function fetchCandles(mint, pool, { resolution, limit = 100, allowS
   return candles;
 }
 
-// Khusus 15m GMGN: pakai cache bar berjalan; saat bar berganti, tahan request
-// sampai candleCloseDelaySec lalu refresh (blocking) agar candle yang baru
-// tutup langsung final. Cache benar-benar kosong juga blocking.
-async function fetchCandlesGmgn15m(mint, pool, { limit = 100, allowStale = true } = {}) {
-  const fresh = getFreshGmgn15m(mint);
+// Khusus 15m GMGN: pakai cache bar berjalan (memori / shared disk); saat bar
+// berganti, tahan request sampai candleCloseDelaySec lalu refresh (blocking) agar
+// candle yang baru tutup langsung final. Cache benar-benar kosong juga blocking.
+export async function fetchCandlesGmgn15m(
+  mint,
+  pool,
+  { limit = 100, allowStale = true, priority = "normal", nowMs, deps = {} } = {}
+) {
+  const now = nowMs ?? Date.now();
+  const fresh = getFreshGmgn15m(mint, now);
   if (fresh) return fresh.candles.slice(-limit);
 
-  const stale = gmgn15mCache.get(mint);
+  const stale = getStaleGmgn15m(mint);
 
   // Bar sudah berganti tetapi bar baru belum tentu terbentuk/final. Selama
   // candleCloseDelaySec setelah pergantian bar, tahan request dan sajikan
@@ -175,13 +291,18 @@ async function fetchCandlesGmgn15m(mint, pool, { limit = 100, allowStale = true 
   // - allowStale=true  : sajikan cache lama (perilaku lama).
   // - allowStale=false : kembalikan null agar pemanggil (mis. Supertrend)
   //   mencoba lagi pada tick berikutnya, bukan menghitung dari data stale.
-  const sinceBarStart = Date.now() / 1000 - current15mBarStart();
+  const sinceBarStart = now / 1000 - current15mBarStart(now);
   if (sinceBarStart < config.candleCloseDelaySec) {
     return allowStale && stale ? stale.candles.slice(-limit) : null;
   }
 
   try {
-    const candles = await refreshGmgn15m(mint, { limit: Math.max(limit, 90) });
+    const candles = await refreshGmgn15m(mint, {
+      limit: Math.max(limit, 90),
+      priority,
+      nowMs: now,
+      deps,
+    });
     if (candles) return candles.slice(-limit);
     return allowStale && stale ? stale.candles.slice(-limit) : null;
   } catch (err) {
@@ -263,12 +384,13 @@ async function fetchCandlesMeteora(pool, { resolution, limit = 100 } = {}) {
   return candles;
 }
 
-async function fetchCandlesGMGN(mint, { resolution, limit = 100 } = {}) {
+async function fetchCandlesGMGN(mint, { resolution, limit = 100, priority = "normal", deps = {} } = {}) {
   const res = resolution || config.timeframe || "15m";
   const minNeeded = Math.min(30, Math.max(2, limit));
+  const fetchKlineFn = deps.fetchGmgnKline || fetchGmgnKline;
 
   try {
-    const candles = await fetchGmgnKline(mint, { resolution: res, limit });
+    const candles = await fetchKlineFn(mint, { resolution: res, limit, priority });
     if (!candles || candles.length === 0) {
       log.warn(`GMGN: data kosong untuk ${mint.slice(0, 8)}`);
       return null;
