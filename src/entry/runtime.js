@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { RUNTIME_STATE_FILE } from "../core/paths.js";
+import { recordImportantFromAction } from "../core/important-log.js";
 
 // Runtime state shared across the 3 independent workers (entry, exit, wallet)
 // via an atomic JSON file on disk, while keeping in-memory Set/Map semantics
@@ -311,15 +312,23 @@ export function incrementEntryUsage(pool) {
   return uses;
 }
 
-// Buffer aksi terakhir (entry/DCA/close/sweep) untuk baris "AKSI" di ringkasan log.
+// Buffer aksi terakhir (entry/DCA/close/sweep) untuk baris "AKSI" di ringkasan log
+// sekaligus mencatat otomatis ke logs/important.log & logs/important-events.jsonl.
 export function recordAction(text) {
   if (!text) return;
+  let recordedAt = Date.now();
   mutateRuntimeState((state, now) => {
+    recordedAt = now;
     state.recentActions.push({ at: now, text: String(text) });
     if (state.recentActions.length > 200) {
       state.recentActions.splice(0, state.recentActions.length - 200);
     }
   });
+  try {
+    recordImportantFromAction(String(text), recordedAt);
+  } catch {
+    // silent
+  }
 }
 
 export function takeRecentActions(sinceMs) {

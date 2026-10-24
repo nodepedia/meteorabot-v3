@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { LOG_DIR } from "./paths.js";
+import { recordImportantFromLogger } from "./important-log.js";
 import config from "../config/index.js";
 
 const LOG_RETENTION_MS = Math.max(0, Number(config.logRetentionDays) || 0) * 24 * 60 * 60 * 1000;
@@ -51,10 +52,19 @@ function format(level, msg) {
 function write(level, msg) {
   const line = format(level, msg);
   console.log(line);
-  try {
-    fs.appendFileSync(logFile(), line + "\n");
-  } catch {
-    // silent
+  if (!process.env.NODE_TEST_CONTEXT) {
+    try {
+      fs.appendFileSync(logFile(), line + "\n");
+    } catch {
+      // silent
+    }
+  }
+  if (level === "ERROR" || level === "WARN") {
+    try {
+      recordImportantFromLogger(level, msg);
+    } catch {
+      // silent
+    }
   }
 }
 

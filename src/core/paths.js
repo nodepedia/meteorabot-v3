@@ -18,6 +18,8 @@ export const ENV_FILE = path.join(ROOT, ".env");
 // Default strategi yang di-commit ke git (menang atas .env).
 export const STRAT_FILE = resolveFile("STRAT_FILE", "strat.conf");
 export const LOG_DIR = path.join(ROOT, "logs");
+export const IMPORTANT_LOG_FILE = resolveFile("IMPORTANT_LOG_FILE", path.join("logs", "important.log"));
+export const IMPORTANT_EVENTS_FILE = resolveFile("IMPORTANT_EVENTS_FILE", path.join("logs", "important-events.jsonl"));
 export const STATE_FILE = resolveFile("STATE_FILE", "state.json");
 export const DECISION_LOG_FILE = resolveFile("DECISION_LOG_FILE", "decision-log.json");
 export const PNL_HISTORY_FILE = resolveFile("PNL_HISTORY_FILE", "pnl-history.json");

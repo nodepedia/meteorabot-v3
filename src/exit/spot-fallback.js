@@ -4,7 +4,7 @@ import { sleep } from "../core/utils.js";
 import * as tg from "../notify/telegram.js";
 import { getTokenBalance } from "../solana/balances.js";
 import { openTokenOnlyPosition } from "../meteora/open-token-position.js";
-import { addEntryInProgressMint, removeEntryInProgressMint } from "../entry/runtime.js";
+import { addEntryInProgressMint, removeEntryInProgressMint, recordAction } from "../entry/runtime.js";
 import { handleClose } from "./close.js";
 
 // Guard per-posisi: cegah fallback jalan dobel untuk posisi yang sama.
@@ -60,6 +60,7 @@ export async function handleSpotOorKiri(pos) {
       });
       if (res.success) {
         log.info(`Fallback ${pair}: posisi token-only dibuka (${balance} token)`);
+        recordAction(`FALLBACK ${pair} — posisi token-only dibuka (${balance} token)`);
         tg.notifyFallback({ pair, pool, success: true, amount: balance });
         return true;
       }
@@ -69,10 +70,12 @@ export async function handleSpotOorKiri(pos) {
     }
 
     log.error(`Fallback ${pair}: gagal buka token-only setelah ${cfg.retry}x — token dilepas (bisa di-sweep)`);
+    recordAction(`FALLBACK ${pair} GAGAL — ${lastErr || `gagal buka token-only ${cfg.retry}x`}`);
     tg.notifyFallback({ pair, pool, success: false, error: lastErr });
     return true;
   } catch (err) {
     log.error(`Fallback ${pair} error: ${err.message}`);
+    recordAction(`FALLBACK ${pair} GAGAL — ${err.message}`);
     tg.notifyFallback({ pair, pool, success: false, error: err.message });
     return true;
   } finally {

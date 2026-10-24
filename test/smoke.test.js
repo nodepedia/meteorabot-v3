@@ -7,6 +7,8 @@ const MODULES = [
   "../src/config/rules.js",
   "../src/core/constants.js",
   "../src/core/logger.js",
+  "../src/core/important-log.js",
+  "../src/tools/important-logs.js",
   "../src/core/paths.js",
   "../src/core/rate-limiter.js",
   "../src/core/utils.js",

@@ -26,7 +26,7 @@ import { processTrailing, clearTrailingTimer } from "./trailing.js";
 import { processBounceRecovery } from "./bounce.js";
 import { clearBounceRecovery } from "../state/bounce.js";
 import { clearDcaState, resetStaleDcaPools, getPoolDcaCount, effectiveDcaArmPct } from "../state/dca.js";
-import { getEntryInProgressPools, getClosingPools, takeRecentActions } from "../entry/runtime.js";
+import { getEntryInProgressPools, getClosingPools, takeRecentActions, recordAction } from "../entry/runtime.js";
 import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
 import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
@@ -71,6 +71,7 @@ function handleMissingPositions(seen) {
     clearBounceRecovery(p.position);
     clearDcaState(p.position);
     log.warn(`${label}: position tidak terbaca ${count} cycle — dianggap ditutup manual`);
+    recordAction(`CLOSE ${label} — ${humanReason("not_detected")} | PnL puncak ${fmtPct(p.lastPnlPeak)}`);
     tg.notifyPositionMissing(p.position, p.pair, count);
     sweepClosedPosition(p.baseMint, label);
     if (!getOpenTrackedPositions().some((t) => t.pool === p.pool)) {
@@ -221,6 +222,8 @@ export async function mainLoop(opts = {}) {
         const mode = classifyMode(pos);
         trackPosition(pos.position, pos.pool, pos.pair, pos.baseMint, pos.collectFeeMode, mode);
         tracked = getTrackedPosition(pos.position);
+        log.info(`📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+        recordAction(`ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
         log.debug(
           `[detail] ${pairLabel}: mode=${tracked?.mode || mode} (entry base=${pos.entryBaseAmount ?? "?"} sol=${pos.entrySolAmount ?? "?"} span=${pos.binSpan})`
         );

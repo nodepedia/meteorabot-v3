@@ -22,7 +22,8 @@
     "pm2:logs:wallet": "pm2 logs meteorabot-wallet",
     "pm2:monit": "pm2 monit",
     "pm2:logrotate": "pm2 install pm2-logrotate && pm2 set pm2-logrotate:max_size 10M && pm2 set pm2-logrotate:retain 7 && pm2 set pm2-logrotate:compress true",
-    "postinstall": "node scripts/patch-anchor.js"
+    "postinstall": "node scripts/patch-anchor.js",
+    "logs:important": "node src/tools/important-logs.js"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.0",
