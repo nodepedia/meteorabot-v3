@@ -117,6 +117,35 @@ export function notifySpotTokenBidask({
   }
 }
 
+// Rebalance sisi SOL posisi spot kembali ke distribusi Spot murni saat harga naik +step%.
+export function notifySpotSolRebalance({
+  pair,
+  pool,
+  position,
+  lastPct,
+  stepPct,
+  fromBinId,
+  toBinId,
+  amountSol,
+  amount,
+  success,
+  error,
+}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
+  const solVal = amountSol ?? amount;
+  const solStr = Number.isFinite(Number(solVal)) ? `${Number(solVal).toFixed(4)} SOL` : `${solVal ?? "?"} SOL`;
+  if (success) {
+    send(
+      `🔄 SPOT SOL REBALANCE ${label}\nRecover: ${lastPct ?? "?"}% → ${stepPct ?? 0}%\nRange SOL: ${rangeStr}\nSOL: ${solStr} (mode Spot)\nPosition: ${position || "?"}\nPool: ${pool || "?"}`
+    );
+  } else {
+    send(
+      `⚠️ SPOT SOL REBALANCE ${label} GAGAL (recover ${lastPct ?? "?"}% → ${stepPct ?? 0}%)\n${error ? `Alasan: ${error}\n` : ""}Range SOL: ${rangeStr}\nPool: ${pool || "?"}`
+    );
+  }
+}
+
 export function notifySpotReentry({ pair, pool, sizeSol, attempt, max, bins, success, error, reason }) {
   const label = pair || pool?.slice(0, 8) || "";
   if (success) {

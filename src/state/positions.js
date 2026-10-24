@@ -64,6 +64,7 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       // Level persentase bin token terakhir yang sudah di-rebalance ke BidAsk (mis. 15, 30, 45).
       lastSpotTokenBidaskPct: 0,
       lastSpotTokenBidaskAt: null,
+      lastSpotTokenBidaskBin: null,
     };
     writeState(state);
   }
@@ -143,23 +144,33 @@ export function setSpotReentryCount(positionAddress, count) {
 // --- State rebalance token-side spot → BidAsk ---
 
 export function getSpotTokenBidaskState(positionAddress) {
-  if (!positionAddress) return { lastPct: 0, lastAt: null };
+  if (!positionAddress) return { lastPct: 0, lastAt: null, lastBin: null };
   const state = readState();
   const p = state.positions[positionAddress];
   return {
     lastPct: Math.max(0, Number(p?.lastSpotTokenBidaskPct) || 0),
     lastAt: p?.lastSpotTokenBidaskAt ?? null,
+    lastBin:
+      p?.lastSpotTokenBidaskBin != null && Number.isFinite(Number(p.lastSpotTokenBidaskBin))
+        ? Number(p.lastSpotTokenBidaskBin)
+        : null,
   };
 }
 
-export function updateSpotTokenBidaskState(positionAddress, pct, at = Date.now()) {
+export function updateSpotTokenBidaskState(positionAddress, pct, at = Date.now(), bin = undefined) {
   if (!positionAddress) return;
   const state = readState();
   const p = state.positions[positionAddress];
   if (!p) return;
-  p.lastSpotTokenBidaskPct = Math.max(0, Number(pct) || 0);
+  const nextPct = Math.max(0, Number(pct) || 0);
+  p.lastSpotTokenBidaskPct = nextPct;
   if (at !== undefined) {
     p.lastSpotTokenBidaskAt = at;
+  }
+  if (bin !== undefined) {
+    p.lastSpotTokenBidaskBin = bin != null && Number.isFinite(Number(bin)) ? Number(bin) : null;
+  } else if (nextPct === 0) {
+    p.lastSpotTokenBidaskBin = null;
   }
   writeState(state);
 }

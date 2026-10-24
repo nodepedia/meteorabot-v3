@@ -23,7 +23,7 @@ import { getTrackedPosition, updateSpotTokenBidaskState } from "../state/positio
 const DEFAULT_MAX_BINS_PER_TX = 70;
 const rebalanceInProgress = new Set();
 
-// Pure: hitung metrik bin token di atas activeBin untuk posisi spot.
+// Pure: hitung metrik bin token (di atas activeBin) & bin SOL (<= activeBin) untuk posisi spot.
 // Ketika harga turun di dalam rentang (lowerBin <= activeBin < upperBin),
 // bin di (activeBin + 1 .. upperBin) berisi token base, sedangkan bin <= activeBin berisi SOL.
 export function calcSpotTokenBinMetrics({ activeBin, lowerBin, upperBin, stepPct = 15 }) {
@@ -41,6 +41,10 @@ export function calcSpotTokenBinMetrics({ activeBin, lowerBin, upperBin, stepPct
       stepLevel: 0,
       fromBinId: null,
       toBinId: null,
+      solBins: 0,
+      solBinPct: 0,
+      solFromBinId: null,
+      solToBinId: null,
     };
   }
 
@@ -54,6 +58,10 @@ export function calcSpotTokenBinMetrics({ activeBin, lowerBin, upperBin, stepPct
       stepLevel: 0,
       fromBinId: null,
       toBinId: null,
+      solBins: 0,
+      solBinPct: 0,
+      solFromBinId: null,
+      solToBinId: null,
     };
   }
 
@@ -66,6 +74,10 @@ export function calcSpotTokenBinMetrics({ activeBin, lowerBin, upperBin, stepPct
       stepLevel: 0,
       fromBinId: null,
       toBinId: null,
+      solBins: active - lower + 1,
+      solBinPct: 100,
+      solFromBinId: lower,
+      solToBinId: active,
     };
   }
 
@@ -81,11 +93,17 @@ export function calcSpotTokenBinMetrics({ activeBin, lowerBin, upperBin, stepPct
     stepLevel,
     fromBinId: active + 1,
     toBinId: upper,
+    solBins: active - lower + 1,
+    solBinPct: 100 - tokenBinPct,
+    solFromBinId: lower,
+    solToBinId: active,
   };
 }
 
-// Pure: evaluasi apakah posisi spot perlu di-rebalance sisi tokennya ke BidAsk,
-// ditahan karena cooldown, atau di-reset level step-nya saat harga kembali naik.
+// Pure: evaluasi apakah posisi spot perlu:
+// - di-rebalance sisi tokennya ke BidAsk saat harga turun -15% bin (`action: "rebalance"`),
+// - di-rebalance sisi SOL-nya kembali ke Spot murni saat harga naik +15% bin sejak rebalance (`action: "rebalance_sol_spot"`),
+// - atau ditahan karena cooldown / belum mencapai step berikutnya.
 export function evaluateSpotTokenBidaskTrigger({
   pos,
   tracked,
@@ -103,7 +121,9 @@ export function evaluateSpotTokenBidaskTrigger({
   const lowerBin = Number.isFinite(Number(pos.lowerBin)) ? Number(pos.lowerBin) : Number(tracked?.lowerBin);
   const upperBin = Number.isFinite(Number(pos.upperBin)) ? Number(pos.upperBin) : Number(tracked?.upperBin);
   const binSpan =
-    Number.isFinite(lowerBin) && Number.isFinite(upperBin) ? upperBin - lowerBin : Number(pos.binSpan ?? tracked?.binSpan);
+    Number.isFinite(lowerBin) && Number.isFinite(upperBin)
+      ? upperBin - lowerBin
+      : Number(pos.binSpan ?? tracked?.binSpan);
 
   const minBins = Math.max(1, Number(spotMinBins) || 200);
   if (!Number.isFinite(binSpan) || binSpan < minBins) {
@@ -124,8 +144,13 @@ export function evaluateSpotTokenBidaskTrigger({
 
   const lastPct = Math.max(0, Number(tracked?.lastSpotTokenBidaskPct) || 0);
   const lastAt = Number(tracked?.lastSpotTokenBidaskAt) || 0;
+  const lastBin =
+    tracked?.lastSpotTokenBidaskBin != null && Number.isFinite(Number(tracked.lastSpotTokenBidaskBin))
+      ? Number(tracked.lastSpotTokenBidaskBin)
+      : null;
   const cooldownMs = Math.max(0, Number(cfg.cooldownSec) || 0) * 1000;
 
+  // 1. Harga turun mencapai step +15% berikutnya: rebalance token di atas activeBin ke BidAsk.
   if (metrics.stepLevel >= lastPct + step && metrics.stepLevel >= step) {
     if (lastAt > 0 && cooldownMs > 0 && now - lastAt < cooldownMs) {
       return {
@@ -144,9 +169,28 @@ export function evaluateSpotTokenBidaskTrigger({
     };
   }
 
-  if (metrics.stepLevel < lastPct) {
+  // 2. Harga naik kembali >= +step% sejak posisi rebalance:
+  //    bin yang tadinya BidAsk token berubah jadi BidAsk SOL (bercampur dengan Spot SOL di bawahnya).
+  //    Tarik seluruh SOL di posisi lalu deposit ulang dengan mode Spot agar seluruh SOL kembali berbentuk Spot murni.
+  const risePctFromLastBin = lastBin != null ? ((Number(pos.activeBin) - lastBin) * 100) / binSpan : null;
+  const risePctFromLastStep = lastPct - metrics.tokenBinPct;
+  const recoveredEnough =
+    lastPct >= step &&
+    metrics.stepLevel <= lastPct - step &&
+    (risePctFromLastStep + 1e-9 >= step || (risePctFromLastBin != null && risePctFromLastBin + 1e-9 >= step));
+
+  if (recoveredEnough) {
+    if (lastAt > 0 && cooldownMs > 0 && now - lastAt < cooldownMs) {
+      return {
+        action: "cooldown",
+        reason: "cooldown",
+        remainingMs: cooldownMs - (now - lastAt),
+        lastPct,
+        ...metrics,
+      };
+    }
     return {
-      action: "reset_down",
+      action: "rebalance_sol_spot",
       reason: `recover_${lastPct}_to_${metrics.stepLevel}pct`,
       lastPct,
       ...metrics,
@@ -194,15 +238,67 @@ export function chunkBidAskRanges(fromBinId, toBinId, totalAmountRaw, maxBinsPer
   const totalWeightBn = new BN(String(Math.round(totalWeight)));
   let allocated = new BN(0);
 
-  return ranges.map((r, idx) => {
-    if (idx === ranges.length - 1) {
-      const rem = total.sub(allocated);
-      return { minBinId: r.minBinId, maxBinId: r.maxBinId, amountRaw: BN.max(rem, new BN(0)) };
-    }
-    const part = total.mul(new BN(String(Math.round(r.weight)))).div(totalWeightBn);
-    allocated = allocated.add(part);
-    return { minBinId: r.minBinId, maxBinId: r.maxBinId, amountRaw: part };
-  }).filter((c) => c.amountRaw.gt(new BN(0)));
+  return ranges
+    .map((r, idx) => {
+      if (idx === ranges.length - 1) {
+        const rem = total.sub(allocated);
+        return { minBinId: r.minBinId, maxBinId: r.maxBinId, amountRaw: BN.max(rem, new BN(0)) };
+      }
+      const part = total.mul(new BN(String(Math.round(r.weight)))).div(totalWeightBn);
+      allocated = allocated.add(part);
+      return { minBinId: r.minBinId, maxBinId: r.maxBinId, amountRaw: part };
+    })
+    .filter((c) => c.amountRaw.gt(new BN(0)));
+}
+
+// Pure: bagi rentang [fromBinId, toBinId] ke chunk <= maxBinsPerChunk (70 bin)
+// dengan bobot merata (Spot) proporsional terhadap jumlah bin di tiap chunk,
+// sehingga setiap bin di seluruh rentang menerima jumlah SOL yang sama.
+export function chunkSpotRanges(fromBinId, toBinId, totalAmountRaw, maxBinsPerChunk = DEFAULT_MAX_BINS_PER_TX) {
+  const from = Math.floor(Number(fromBinId));
+  const to = Math.floor(Number(toBinId));
+  const total = BN.isBN(totalAmountRaw) ? totalAmountRaw : new BN(String(totalAmountRaw || 0));
+  const maxChunk = Math.max(1, Math.floor(Number(maxBinsPerChunk) || DEFAULT_MAX_BINS_PER_TX));
+
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from > to || total.lte(new BN(0))) {
+    return [];
+  }
+
+  const totalBins = to - from + 1;
+  if (totalBins <= maxChunk) {
+    return [{ minBinId: from, maxBinId: to, amountRaw: total }];
+  }
+
+  const ranges = [];
+  for (let cur = from; cur <= to; cur += maxChunk) {
+    const end = Math.min(cur + maxChunk - 1, to);
+    const binCount = end - cur + 1;
+    ranges.push({ minBinId: cur, maxBinId: end, binCount });
+  }
+
+  const totalBinsBn = new BN(String(totalBins));
+  let allocated = new BN(0);
+
+  return ranges
+    .map((r, idx) => {
+      if (idx === ranges.length - 1) {
+        const rem = total.sub(allocated);
+        return { minBinId: r.minBinId, maxBinId: r.maxBinId, amountRaw: BN.max(rem, new BN(0)) };
+      }
+      const part = total.mul(new BN(String(r.binCount))).div(totalBinsBn);
+      allocated = allocated.add(part);
+      return { minBinId: r.minBinId, maxBinId: r.maxBinId, amountRaw: part };
+    })
+    .filter((c) => c.amountRaw.gt(new BN(0)));
+}
+
+function parseRawBn(rawVal) {
+  const cleanStr = String(rawVal ?? "0").split(".")[0] || "0";
+  try {
+    return new BN(cleanStr);
+  } catch {
+    return new BN(0);
+  }
 }
 
 // Pure: periksa apakah ada likuiditas token base non-zero pada bin [fromBinId .. toBinId].
@@ -218,13 +314,7 @@ export function extractTokenSideLiquidity(positionData, fromBinId, toBinId, base
     const binId = Number(bin.binId);
     if (!Number.isFinite(binId) || binId < fromBinId || binId > toBinId) continue;
     const rawVal = baseIsX ? bin.positionXAmount : bin.positionYAmount;
-    const cleanStr = String(rawVal ?? "0").split(".")[0] || "0";
-    let amtBn;
-    try {
-      amtBn = new BN(cleanStr);
-    } catch {
-      amtBn = new BN(0);
-    }
+    const amtBn = parseRawBn(rawVal);
     if (amtBn.gt(new BN(0))) {
       totalTokenRaw = totalTokenRaw.add(amtBn);
       tokenBinsCount++;
@@ -239,6 +329,75 @@ export function extractTokenSideLiquidity(positionData, fromBinId, toBinId, base
   };
 }
 
+// Pure: tentukan rentang bin sisi SOL [fromBinId .. toBinId] dan jumlah exact SOL (lamports)
+// yang ada di dalam posisi. Jika activeBinId mengandung base token > 0, kecualikan activeBinId
+// (pakai toBinId = activeBinId - 1) agar kita hanya menarik SOL dan tidak menarik base token.
+export function extractSolSideLiquidity(positionData, lowerBinId, activeBinId, baseIsX) {
+  const lower = Math.floor(Number(lowerBinId));
+  const active = Math.floor(Number(activeBinId));
+  const bins = positionData?.positionBinData;
+
+  if (!Array.isArray(bins) || bins.length === 0) {
+    return {
+      hasBinData: false,
+      hasSolLiquidity: false,
+      solBinsCount: 0,
+      totalSolLamports: new BN(0),
+      fromBinId: lower,
+      toBinId: active,
+      activeBinHasBase: false,
+    };
+  }
+
+  let activeBinHasBase = false;
+  for (const bin of bins) {
+    if (Number(bin.binId) === active) {
+      const baseRaw = baseIsX ? bin.positionXAmount : bin.positionYAmount;
+      if (parseRawBn(baseRaw).gt(new BN(0))) {
+        activeBinHasBase = true;
+      }
+      break;
+    }
+  }
+
+  const fromBinId = lower;
+  const toBinId = activeBinHasBase ? active - 1 : active;
+  if (toBinId < fromBinId) {
+    return {
+      hasBinData: true,
+      hasSolLiquidity: false,
+      solBinsCount: 0,
+      totalSolLamports: new BN(0),
+      fromBinId,
+      toBinId,
+      activeBinHasBase,
+    };
+  }
+
+  let totalSolLamports = new BN(0);
+  let solBinsCount = 0;
+  for (const bin of bins) {
+    const binId = Number(bin.binId);
+    if (!Number.isFinite(binId) || binId < fromBinId || binId > toBinId) continue;
+    const solRaw = baseIsX ? bin.positionYAmount : bin.positionXAmount;
+    const amtBn = parseRawBn(solRaw);
+    if (amtBn.gt(new BN(0))) {
+      totalSolLamports = totalSolLamports.add(amtBn);
+      solBinsCount++;
+    }
+  }
+
+  return {
+    hasBinData: true,
+    hasSolLiquidity: totalSolLamports.gt(new BN(0)),
+    solBinsCount,
+    totalSolLamports,
+    fromBinId,
+    toBinId,
+    activeBinHasBase,
+  };
+}
+
 async function fetchPositionOnChain(pool, positionPubKey, walletPubKey) {
   if (typeof pool.getPosition === "function") {
     return await pool.getPosition(positionPubKey);
@@ -246,12 +405,16 @@ async function fetchPositionOnChain(pool, positionPubKey, walletPubKey) {
   if (typeof pool.getPositionsByUserAndLbPair === "function") {
     const { userPositions } = await pool.getPositionsByUserAndLbPair(walletPubKey);
     const target = positionPubKey.toBase58();
-    return (userPositions || []).find((p) => p.publicKey?.toBase58?.() === target || String(p.publicKey) === target) || null;
+    return (
+      (userPositions || []).find((p) => p.publicKey?.toBase58?.() === target || String(p.publicKey) === target) || null
+    );
   }
   return null;
 }
 
-// Eksekusi rebalance sisi token posisi spot ke distribusi BidAsk saat mencapai step 15% berikutnya.
+// Eksekusi rebalance posisi spot:
+// - Saat harga turun tiap step 15% bin (`action === "rebalance"`): tarik token di atas activeBin -> deposit ulang BidAsk.
+// - Saat harga naik kembali +15% bin sejak rebalance (`action === "rebalance_sol_spot"`): tarik semua SOL di posisi -> catat jumlahnya -> deposit ulang Spot.
 export async function handleSpotTokenBidask(pos, deps = {}) {
   const cfg = deps.cfg || config.spotTokenBidask;
   const now = deps.now ? deps.now() : Date.now();
@@ -267,15 +430,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
 
   const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
 
-  if (decision.action === "reset_down") {
-    updateSpotTokenBidaskState(pos.position, decision.stepLevel, tracked?.lastSpotTokenBidaskAt ?? null);
-    log.debug(
-      `[detail] ${pair}: harga naik kembali (${decision.tokenBinPct.toFixed(1)}% bin token) — reset step BidAsk ${decision.lastPct}% → ${decision.stepLevel}%`
-    );
-    return { triggered: false, resetDown: true, stepLevel: decision.stepLevel, decision };
-  }
-
-  if (decision.action !== "rebalance") {
+  if (decision.action !== "rebalance" && decision.action !== "rebalance_sol_spot") {
     return { triggered: false, reason: decision.reason, decision };
   }
 
@@ -284,13 +439,29 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
   }
 
   if (rebalanceInProgress.has(pos.position)) {
-    log.info(`Spot Token BidAsk ${pair}: sedang diproses, lewati`);
+    log.info(`Spot Rebalance ${pair}: sedang diproses, lewati`);
     return { triggered: false, reason: "in_progress", decision };
   }
 
+  const isSolSpotRebalance = decision.action === "rebalance_sol_spot";
   const isDryRun = deps.dryRun !== undefined ? deps.dryRun : config.dryRun;
   if (isDryRun) {
-    updateSpotTokenBidaskState(pos.position, decision.stepLevel, now);
+    const nextBin = decision.stepLevel > 0 ? Number(pos.activeBin) : null;
+    updateSpotTokenBidaskState(pos.position, decision.stepLevel, now, nextBin);
+    if (isSolSpotRebalance) {
+      log.info(
+        `[DRY RUN] Would rebalance spot SOL-side → Spot ${pair} (recover ${decision.lastPct}% → ${decision.stepLevel}%, bin ${decision.solFromBinId}→${decision.solToBinId})`
+      );
+      return {
+        triggered: true,
+        success: true,
+        dryRun: true,
+        rebalanceType: "sol_spot",
+        stepLevel: decision.stepLevel,
+        fromBinId: decision.solFromBinId,
+        toBinId: decision.solToBinId,
+      };
+    }
     log.info(
       `[DRY RUN] Would rebalance spot token-side → BidAsk ${pair} (step ${decision.stepLevel}%, ${decision.tokenBinPct.toFixed(1)}% bin token, bin ${decision.fromBinId}→${decision.toBinId})`
     );
@@ -298,6 +469,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       triggered: true,
       success: true,
       dryRun: true,
+      rebalanceType: "token_bidask",
       stepLevel: decision.stepLevel,
       fromBinId: decision.fromBinId,
       toBinId: decision.toBinId,
@@ -314,7 +486,8 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
   const checkFeeCapFn = deps.checkFeeCap || checkFeeCap;
   const sendAndConfirmFn = deps.sendAndConfirmRobust || sendAndConfirmRobust;
   const sleepFn = deps.sleep || sleep;
-  const notifyFn = deps.notifySpotTokenBidask || tg.notifySpotTokenBidask;
+  const notifyTokenFn = deps.notifySpotTokenBidask || tg.notifySpotTokenBidask;
+  const notifySolFn = deps.notifySpotSolRebalance || deps.notifySpotTokenBidask || tg.notifySpotSolRebalance;
 
   const baseMint = pos.baseMint;
   const poolAddress = pos.pool;
@@ -333,15 +506,13 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     }
 
     const { StrategyType } = await getDlmmSdkFn();
-    const strategyType = StrategyType?.BidAsk ?? 2;
-
     const connection = getConnectionFn();
     const wallet = getWalletFn();
     const positionPubKey = new PublicKey(positionAddress);
 
     const onChainPos = await fetchPositionOnChain(pool, positionPubKey, wallet.publicKey);
     if (!onChainPos) {
-      log.warn(`Spot Token BidAsk ${pair}: posisi ${positionAddress.slice(0, 8)} tidak ditemukan on-chain`);
+      log.warn(`Spot Rebalance ${pair}: posisi ${positionAddress.slice(0, 8)} tidak ditemukan on-chain`);
       return { triggered: false, success: false, error: "position_not_found" };
     }
 
@@ -362,8 +533,248 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       ? Number(onChainPos.positionData.upperBinId)
       : Number(pos.upperBin);
 
+    // --- JALUR A: Rebalance sisi SOL kembali ke Spot murni saat harga naik +15% dari posisi rebalance ---
+    if (isSolSpotRebalance) {
+      if (activeBinId < lowerBinId || activeBinId > upperBinId) {
+        log.info(
+          `Spot SOL Rebalance ${pair}: activeBin ${activeBinId} di luar rentang ${lowerBinId}→${upperBinId} — batal`
+        );
+        return { triggered: false, skipped: true, reason: "active_bin_moved" };
+      }
+
+      const solCheck = extractSolSideLiquidity(onChainPos.positionData, lowerBinId, activeBinId, baseIsX);
+      const fromBinId = solCheck.fromBinId;
+      const toBinId = solCheck.toBinId;
+
+      if (toBinId < fromBinId || (solCheck.hasBinData && !solCheck.hasSolLiquidity)) {
+        log.info(`Spot SOL Rebalance ${pair}: tidak ada likuiditas SOL di bin ${fromBinId}→${toBinId} — dilewati`);
+        updateSpotTokenBidaskState(
+          positionAddress,
+          decision.stepLevel,
+          Date.now(),
+          decision.stepLevel > 0 ? activeBinId : null
+        );
+        return { triggered: false, skipped: true, reason: "no_sol_liquidity" };
+      }
+
+      const feePlan = buildFeePlanFn();
+      const feeCap = checkFeeCapFn(feePlan);
+      if (!feeCap.ok) {
+        const errMsg = `estimasi fee ${feeCap.totalSol.toFixed(6)} SOL > cap ${feeCap.cap} SOL (mode ${feePlan.mode})`;
+        log.warn(`Spot SOL Rebalance ${pair} ditunda: ${errMsg}`);
+        return { triggered: false, success: false, error: errMsg, feeCap: true };
+      }
+
+      let solBalanceBeforeLamports = null;
+      if (typeof connection?.getBalance === "function") {
+        try {
+          solBalanceBeforeLamports = await connection.getBalance(wallet.publicKey);
+        } catch {}
+      }
+
+      const label = pairName || pair;
+      const recordedSolUi = Number(solCheck.totalSolLamports.toString()) / 1e9;
+      log.info(
+        `🔄 SPOT SOL REBALANCE ${label} — tarik ${recordedSolUi > 0 ? `${recordedSolUi.toFixed(4)} ` : ""}SOL dari bin ${fromBinId}→${toBinId} (recover ${decision.lastPct}% → ${decision.stepLevel}%)`
+      );
+
+      // 1. Tarik 100% likuiditas SOL dari [fromBinId .. toBinId] tanpa menutup posisi.
+      const rawRemoveTxs = await pool.removeLiquidity({
+        user: wallet.publicKey,
+        position: positionPubKey,
+        fromBinId,
+        toBinId,
+        bps: new BN(10000),
+        shouldClaimAndClose: false,
+      });
+      const removeTxs = Array.isArray(rawRemoveTxs) ? rawRemoveTxs : [rawRemoveTxs];
+      const removeSignatures = [];
+      for (const tx of removeTxs) {
+        const sent = await sendAndConfirmFn({
+          connection,
+          tx,
+          signers: [wallet],
+          feePlan,
+          wallet,
+        });
+        if (sent?.signature) removeSignatures.push(sent.signature);
+      }
+
+      // 2. Catat jumlah exact SOL yang ditarik dari posisi (dibatasi saldo wallet setelah dikurangi gas reserve).
+      let solBalanceAfterLamports = null;
+      if (typeof connection?.getBalance === "function") {
+        try {
+          solBalanceAfterLamports = await connection.getBalance(wallet.publicKey);
+        } catch {}
+      }
+
+      let targetSolLamports = solCheck.totalSolLamports;
+      if (
+        targetSolLamports.lte(new BN(0)) &&
+        solBalanceBeforeLamports != null &&
+        solBalanceAfterLamports != null &&
+        solBalanceAfterLamports > solBalanceBeforeLamports
+      ) {
+        targetSolLamports = new BN(String(Math.floor(solBalanceAfterLamports - solBalanceBeforeLamports)));
+      }
+
+      if (solBalanceAfterLamports != null && Number.isFinite(Number(solBalanceAfterLamports))) {
+        const gasReserveSol = Number(config.wallet?.minSolReserve ?? config.entry?.gasReserve ?? 0.05) || 0;
+        const gasReserveLamports = new BN(String(Math.floor(gasReserveSol * 1e9)));
+        const afterBn = new BN(String(Math.floor(Number(solBalanceAfterLamports))));
+        const maxAvailableLamports = BN.max(new BN(0), afterBn.sub(gasReserveLamports));
+        targetSolLamports = BN.min(targetSolLamports, maxAvailableLamports);
+      }
+
+      const spotStrategyType = StrategyType?.Spot ?? 0;
+      const maxRetry = Math.max(1, Math.floor(Number(cfg.retry) || 3));
+      let lastErr = null;
+      let remainingSolRaw = targetSolLamports;
+      let nextFromBinId = fromBinId;
+      const addSignatures = [];
+
+      for (let attempt = 1; attempt <= maxRetry; attempt++) {
+        try {
+          if (targetSolLamports.lte(new BN(0))) {
+            throw new Error("jumlah SOL yang ditarik dari posisi 0 atau di bawah cadangan gas");
+          }
+          if (remainingSolRaw.lte(new BN(0))) break;
+
+          let depositToBinId = toBinId;
+          if (attempt > 1 && typeof pool.getActiveBin === "function") {
+            try {
+              const refreshed = await pool.getActiveBin();
+              if (Number.isFinite(Number(refreshed?.binId))) {
+                const maxAllowedBin = solCheck.activeBinHasBase ? Number(refreshed.binId) - 1 : Number(refreshed.binId);
+                depositToBinId = Math.max(nextFromBinId, Math.min(toBinId, maxAllowedBin));
+              }
+            } catch {}
+          }
+
+          const chunks = chunkSpotRanges(nextFromBinId, depositToBinId, remainingSolRaw, DEFAULT_MAX_BINS_PER_TX);
+          if (chunks.length === 0) {
+            throw new Error("chunkSpotRanges menghasilkan 0 chunk untuk deposit SOL");
+          }
+
+          for (const chunk of chunks) {
+            const totalXAmount = baseIsX ? new BN(0) : chunk.amountRaw;
+            const totalYAmount = baseIsX ? chunk.amountRaw : new BN(0);
+
+            const rawAddTxs = await pool.addLiquidityByStrategy({
+              positionPubKey,
+              user: wallet.publicKey,
+              totalXAmount,
+              totalYAmount,
+              strategy: {
+                minBinId: chunk.minBinId,
+                maxBinId: chunk.maxBinId,
+                strategyType: spotStrategyType,
+              },
+              slippage: config.entry.activeBinSlippagePct,
+            });
+            const addTxs = Array.isArray(rawAddTxs) ? rawAddTxs : [rawAddTxs];
+            for (const tx of addTxs) {
+              const sent = await sendAndConfirmFn({
+                connection,
+                tx,
+                signers: [wallet],
+                feePlan,
+                wallet,
+              });
+              if (sent?.signature) addSignatures.push(sent.signature);
+            }
+            remainingSolRaw = BN.max(new BN(0), remainingSolRaw.sub(chunk.amountRaw));
+            nextFromBinId = chunk.maxBinId + 1;
+          }
+
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err.message || String(err);
+          log.warn(`Spot SOL Rebalance ${label}: gagal re-deposit Spot (${attempt}/${maxRetry}): ${lastErr}`);
+          if (attempt < maxRetry) await sleepFn(2500);
+        }
+      }
+
+      const depositedSolUi = Number(targetSolLamports.toString()) / 1e9;
+
+      if (lastErr) {
+        log.error(`Spot SOL Rebalance ${label}: gagal re-deposit Spot setelah ${maxRetry}x (${lastErr})`);
+        recordAction(
+          `SPOT SOL REBALANCE ${label} GAGAL (recover ${decision.lastPct}%→${decision.stepLevel}%) — ${lastErr}`
+        );
+        notifySolFn({
+          rebalanceType: "sol_spot",
+          pair: label,
+          pool: poolAddress,
+          position: positionAddress,
+          lastPct: decision.lastPct,
+          stepPct: decision.stepLevel,
+          fromBinId,
+          toBinId,
+          amountSol: depositedSolUi,
+          amount: depositedSolUi,
+          success: false,
+          error: lastErr,
+        });
+        return {
+          triggered: true,
+          success: false,
+          rebalanceType: "sol_spot",
+          error: lastErr,
+          stepLevel: decision.stepLevel,
+          removeSignatures,
+        };
+      }
+
+      updateSpotTokenBidaskState(
+        positionAddress,
+        decision.stepLevel,
+        Date.now(),
+        decision.stepLevel > 0 ? activeBinId : null
+      );
+      log.info(
+        `✅ SPOT SOL REBALANCE ${label} — recover ${decision.lastPct}% → ${decision.stepLevel}% (bin ${fromBinId}→${toBinId}) — ${depositedSolUi.toFixed(4)} SOL diatur kembali ke Spot`
+      );
+      recordAction(
+        `SPOT SOL REBALANCE ${label} — recover ${decision.lastPct}%→${decision.stepLevel}% (${depositedSolUi.toFixed(4)} SOL, bin ${fromBinId}→${toBinId})`
+      );
+      notifySolFn({
+        rebalanceType: "sol_spot",
+        pair: label,
+        pool: poolAddress,
+        position: positionAddress,
+        lastPct: decision.lastPct,
+        stepPct: decision.stepLevel,
+        fromBinId,
+        toBinId,
+        amountSol: depositedSolUi,
+        amount: depositedSolUi,
+        success: true,
+      });
+
+      return {
+        triggered: true,
+        success: true,
+        rebalanceType: "sol_spot",
+        lastPct: decision.lastPct,
+        stepLevel: decision.stepLevel,
+        fromBinId,
+        toBinId,
+        amountSol: depositedSolUi,
+        amountSolLamports: targetSolLamports.toString(),
+        removeSignatures,
+        addSignatures,
+      };
+    }
+
+    // --- JALUR B: Rebalance sisi token ke BidAsk saat harga turun tiap kelipatan 15% bin ---
+    const strategyType = StrategyType?.BidAsk ?? 2;
+
     if (activeBinId < lowerBinId || activeBinId >= upperBinId) {
-      log.info(`Spot Token BidAsk ${pair}: activeBin ${activeBinId} tidak lagi di bawah upperBin ${upperBinId} — batal`);
+      log.info(
+        `Spot Token BidAsk ${pair}: activeBin ${activeBinId} tidak lagi di bawah upperBin ${upperBinId} — batal`
+      );
       return { triggered: false, skipped: true, reason: "active_bin_moved" };
     }
 
@@ -373,7 +784,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     const liqCheck = extractTokenSideLiquidity(onChainPos.positionData, fromBinId, toBinId, baseIsX);
     if (liqCheck.hasBinData && !liqCheck.hasTokenLiquidity) {
       log.info(`Spot Token BidAsk ${pair}: tidak ada likuiditas token di bin ${fromBinId}→${toBinId} — dilewati`);
-      updateSpotTokenBidaskState(positionAddress, decision.stepLevel, Date.now());
+      updateSpotTokenBidaskState(positionAddress, decision.stepLevel, Date.now(), activeBinId);
       return { triggered: false, skipped: true, reason: "no_token_liquidity" };
     }
 
@@ -488,7 +899,8 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
         `Spot Token BidAsk ${label}: gagal re-deposit setelah ${maxRetry}x (${lastErr}) — kunci dilepas agar bisa di-sweep`
       );
       recordAction(`SPOT BIDASK ${label} GAGAL (step ${decision.stepLevel}%) — ${lastErr}`);
-      notifyFn({
+      notifyTokenFn({
+        rebalanceType: "token_bidask",
         pair: label,
         pool: poolAddress,
         position: positionAddress,
@@ -502,18 +914,20 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       return {
         triggered: true,
         success: false,
+        rebalanceType: "token_bidask",
         error: lastErr,
         stepLevel: decision.stepLevel,
         removeSignatures,
       };
     }
 
-    updateSpotTokenBidaskState(positionAddress, decision.stepLevel, Date.now());
+    updateSpotTokenBidaskState(positionAddress, decision.stepLevel, Date.now(), activeBinId);
     log.info(
       `✅ SPOT TOKEN BIDASK ${label} — step ${decision.stepLevel}% (${decision.tokenBinPct.toFixed(1)}% bin token, bin ${fromBinId}→${toBinId}) — ${depositedUi} token diatur ke BidAsk`
     );
     recordAction(`SPOT BIDASK ${label} — step ${decision.stepLevel}% (bin ${fromBinId}→${toBinId})`);
-    notifyFn({
+    notifyTokenFn({
+      rebalanceType: "token_bidask",
       pair: label,
       pool: poolAddress,
       position: positionAddress,
@@ -528,6 +942,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     return {
       triggered: true,
       success: true,
+      rebalanceType: "token_bidask",
       stepLevel: decision.stepLevel,
       tokenBinPct: decision.tokenBinPct,
       fromBinId,
@@ -538,20 +953,29 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     };
   } catch (err) {
     const msg = err.message || String(err);
-    log.error(`Spot Token BidAsk ${pair} error: ${msg}`);
-    recordAction(`SPOT BIDASK ${pair} ERROR — ${msg}`);
-    notifyFn({
+    log.error(`Spot Rebalance ${pair} error: ${msg}`);
+    recordAction(`SPOT REBALANCE ${pair} ERROR — ${msg}`);
+    const notifyErrFn = isSolSpotRebalance ? notifySolFn : notifyTokenFn;
+    notifyErrFn({
+      rebalanceType: isSolSpotRebalance ? "sol_spot" : "token_bidask",
       pair,
       pool: poolAddress,
       position: positionAddress,
+      lastPct: decision.lastPct,
       stepPct: decision.stepLevel,
       tokenBinPct: decision.tokenBinPct,
-      fromBinId: decision.fromBinId,
-      toBinId: decision.toBinId,
+      fromBinId: isSolSpotRebalance ? decision.solFromBinId : decision.fromBinId,
+      toBinId: isSolSpotRebalance ? decision.solToBinId : decision.toBinId,
       success: false,
       error: msg,
     });
-    return { triggered: true, success: false, error: msg, stepLevel: decision.stepLevel };
+    return {
+      triggered: true,
+      success: false,
+      rebalanceType: isSolSpotRebalance ? "sol_spot" : "token_bidask",
+      error: msg,
+      stepLevel: decision.stepLevel,
+    };
   } finally {
     removeEntryInProgressMint(baseMint);
     removeEntryInProgressPool(poolAddress);
