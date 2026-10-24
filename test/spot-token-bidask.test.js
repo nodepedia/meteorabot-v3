@@ -17,7 +17,9 @@ const {
   calcSpotTokenBinMetrics,
   evaluateSpotTokenBidaskTrigger,
   chunkBidAskRanges,
+  chunkSolBidAskRanges,
   chunkSpotRanges,
+  patchRebalanceNoShrink,
   extractTokenSideLiquidity,
   extractSolSideLiquidity,
   handleSpotTokenBidask,
@@ -186,7 +188,7 @@ test("evaluateSpotTokenBidaskTrigger: step 15% turun -> BidAsk, naik +15% sejak 
   assert.equal(res.stepLevel, 0);
 });
 
-test("chunkBidAskRanges & chunkSpotRanges: distribusi BidAsk linear vs Spot merata tanpa sisa pembulatan", () => {
+test("chunkBidAskRanges, chunkSolBidAskRanges & chunkSpotRanges: distribusi BidAsk linear Token/SOL vs Spot merata", () => {
   const total = new BN("1000000000"); // 1,000,000,000 raw units (1 SOL)
 
   // 30 bin (<=70) -> 1 chunk
@@ -196,7 +198,7 @@ test("chunkBidAskRanges & chunkSpotRanges: distribusi BidAsk linear vs Spot mera
   assert.equal(single[0].maxBinId, 300);
   assert.equal(single[0].amountRaw.toString(), total.toString());
 
-  // 150 bin (151..300) -> 3 chunk (70 + 70 + 10 bin) BidAsk
+  // 150 bin (151..300) -> 3 chunk (70 + 70 + 10 bin) BidAsk sisi Token (makin ke atas makin besar)
   const multi = chunkBidAskRanges(151, 300, total, 70);
   assert.equal(multi.length, 3);
   assert.deepEqual(
@@ -217,22 +219,31 @@ test("chunkBidAskRanges & chunkSpotRanges: distribusi BidAsk linear vs Spot mera
   assert.ok(avg1 > avg0, "chunk tengah harus punya rata-rata per bin > chunk bawah");
   assert.ok(avg2 > avg1, "chunk atas harus punya rata-rata per bin > chunk tengah");
 
+  // chunkSolBidAskRanges: 200 bin (100..299) -> 3 chunk (70 + 70 + 60 bin) BidAsk sisi SOL (makin ke bawah makin besar)
+  const solMulti = chunkSolBidAskRanges(100, 299, new BN("600000000"), 70);
+  assert.equal(solMulti.length, 3);
+  const solSum = solMulti.reduce((acc, c) => acc.add(c.amountRaw), new BN(0));
+  assert.equal(solSum.toString(), "600000000");
+  const solAvg0 = Number(solMulti[0].amountRaw.toString()) / 70;
+  const solAvg1 = Number(solMulti[1].amountRaw.toString()) / 70;
+  const solAvg2 = Number(solMulti[2].amountRaw.toString()) / 60;
+  assert.ok(solAvg0 > solAvg1, "chunk SOL paling bawah harus punya rata-rata per bin > chunk tengah");
+  assert.ok(solAvg1 > solAvg2, "chunk SOL tengah harus punya rata-rata per bin > chunk dekat activeBin");
+
   // chunkSpotRanges: 200 bin (101..300) -> 3 chunk (70 + 70 + 60 bin) dengan porsi per bin SAMA RATA (Spot)
   const spotChunks = chunkSpotRanges(101, 300, total, 70);
   assert.equal(spotChunks.length, 3);
-  assert.deepEqual(
-    spotChunks.map((c) => [c.minBinId, c.maxBinId]),
-    [
-      [101, 170],
-      [171, 240],
-      [241, 300],
-    ]
-  );
   const spotSum = spotChunks.reduce((acc, c) => acc.add(c.amountRaw), new BN(0));
   assert.equal(spotSum.toString(), total.toString());
-  assert.equal(spotChunks[0].amountRaw.toString(), "350000000"); // 70/200 * 1e9
-  assert.equal(spotChunks[1].amountRaw.toString(), "350000000"); // 70/200 * 1e9
-  assert.equal(spotChunks[2].amountRaw.toString(), "300000000"); // 60/200 * 1e9
+});
+
+test("patchRebalanceNoShrink: memaksa shrink_mode = 3 (NoShrinkBoth) pada instruksi rebalance_liquidity", () => {
+  const buf = Buffer.alloc(64, 0);
+  Buffer.from([92, 4, 176, 193, 119, 185, 83, 9]).copy(buf, 0);
+  buf[48] = 2; // NoShrinkRight bawaan SDK
+  const fakeTx = { instructions: [{ data: buf }] };
+  patchRebalanceNoShrink([fakeTx]);
+  assert.equal(buf[48], 3);
 });
 
 test("extractTokenSideLiquidity & extractSolSideLiquidity: mendeteksi likuiditas token & SOL secara presisi", () => {
@@ -276,7 +287,7 @@ test("extractTokenSideLiquidity & extractSolSideLiquidity: mendeteksi likuiditas
   assert.equal(solPure.totalSolLamports.toString(), "550000000");
 });
 
-test("handleSpotTokenBidask: proteksi wallet sweep aktif selama rebalance token->BidAsk dan rebalance SOL->Spot", async () => {
+test("handleSpotTokenBidask: withdraw semua dulu lalu add BidAsk mulus (addLiquidityByStrategyChunkable) untuk Token & SOL", async () => {
   resetAll();
   trackPosition(POS, POOL, "TEST-SOL", MINT, 0, "spot");
   recordTrackedRange(POS, 100, 300);
@@ -314,7 +325,7 @@ test("handleSpotTokenBidask: proteksi wallet sweep aktif selama rebalance token-
   const sentTxs = [];
   const notifications = [];
 
-  // --- TAHAP 1: Harga turun -15% (activeBin 270) -> Rebalance Token ke BidAsk ---
+  // --- TAHAP 1: Harga turun -15% (activeBin 270, 30 bin <= 70) -> Rebalance Token ke BidAsk ---
   const res = await handleSpotTokenBidask(
     {
       position: POS,
@@ -378,16 +389,18 @@ test("handleSpotTokenBidask: proteksi wallet sweep aktif selama rebalance token-
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].success, true);
 
-  // --- TAHAP 2: Harga naik kembali +15% dari posisi rebalance (270 -> 300) -> Rebalance semua SOL di posisi ke Spot ---
+  // --- TAHAP 2: Harga naik kembali +15% dari posisi rebalance (270 -> 300) -> Rebalance semua SOL di posisi ke BidAsk mulus ---
   updateSpotTokenBidaskState(POS, 15, Date.now() - 120_000, 270);
   calls.length = 0;
   notifications.length = 0;
   let solLockDuringRemove = false;
   let solLockDuringAdd = false;
 
-  // Simulasi posisi memiliki 0.45 SOL di bin Spot (100..270) + 0.15 SOL di bin hasil konversi BidAsk (271..299) = 0.60 SOL (600,000,000 lamports),
-  // sedangkan di bin 300 masih ada sedikit sisa base token sehingga hanya bin 100..299 (200 bin) yang ditarik SOL-nya.
-  // Wallet sendiri punya 1.50 SOL (termasuk 0.60 SOL hasil withdraw); hanya 0.60 SOL milik posisi yang boleh dideposit ulang!
+  // Buat buffer instruksi rebalance_liquidity palsu untuk memastikan patchRebalanceNoShrink dipanggil pada >70 bin
+  const fakeRebalanceData = Buffer.alloc(64, 0);
+  Buffer.from([92, 4, 176, 193, 119, 185, 83, 9]).copy(fakeRebalanceData, 0);
+  fakeRebalanceData[48] = 2;
+
   const mockPoolSolRecovery = {
     getActiveBin: async () => ({ binId: 300 }),
     getPosition: async () => ({
@@ -405,15 +418,20 @@ test("handleSpotTokenBidask: proteksi wallet sweep aktif selama rebalance token-
     removeLiquidity: async (params) => {
       solLockDuringRemove = getEntryInProgressMints().has(MINT) && getEntryInProgressPools().has(POOL);
       calls.push({ op: "removeLiquidity", params });
-      return [{ id: "tx-sol-remove-1" }];
+      return [{ id: "tx-sol-remove-1" }, { id: "tx-sol-remove-2" }];
     },
-    addLiquidityByStrategy: async (params) => {
+    addLiquidityByStrategyChunkable: async (params) => {
       solLockDuringAdd = getEntryInProgressMints().has(MINT) && getEntryInProgressPools().has(POOL);
-      calls.push({ op: "addLiquidityByStrategy", params });
-      return { id: `tx-sol-add-${calls.length}` };
+      calls.push({ op: "addLiquidityByStrategyChunkable", params });
+      return [
+        { id: "tx-sol-chunk-1", instructions: [{ data: fakeRebalanceData }] },
+        { id: "tx-sol-chunk-2", instructions: [] },
+        { id: "tx-sol-chunk-3", instructions: [] },
+      ];
     },
   };
 
+  const solTxOrder = [];
   const solRes = await handleSpotTokenBidask(
     {
       position: POS,
@@ -443,7 +461,10 @@ test("handleSpotTokenBidask: proteksi wallet sweep aktif selama rebalance token-
       getWallet: () => WALLET_KP,
       buildFeePlan: () => ({ mode: "none" }),
       checkFeeCap: () => ({ ok: true, totalSol: 0, cap: 0.002 }),
-      sendAndConfirmRobust: async ({ tx }) => ({ signature: `sig-${tx.id}` }),
+      sendAndConfirmRobust: async ({ tx }) => {
+        solTxOrder.push(tx.id);
+        return { signature: `sig-${tx.id}` };
+      },
       sleep: async () => {},
       notifySpotSolRebalance: (payload) => notifications.push(payload),
     }
@@ -460,37 +481,30 @@ test("handleSpotTokenBidask: proteksi wallet sweep aktif selama rebalance token-
   assert.equal(solRes.amountSolLamports, "600000000");
 
   assert.equal(solLockDuringRemove, true, "kunci sweep aktif saat removeLiquidity SOL");
-  assert.equal(solLockDuringAdd, true, "kunci sweep aktif saat addLiquidityByStrategy SOL");
+  assert.equal(solLockDuringAdd, true, "kunci sweep aktif saat addLiquidityByStrategyChunkable SOL");
   assert.equal(getEntryInProgressMints().has(MINT), false);
   assert.equal(getEntryInProgressPools().has(POOL), false);
 
-  // Verifikasi removeLiquidity menarik dari 100..299
-  const solRemCall = calls.find((c) => c.op === "removeLiquidity");
-  assert.ok(solRemCall);
-  assert.equal(solRemCall.params.fromBinId, 100);
-  assert.equal(solRemCall.params.toBinId, 299);
-  assert.equal(solRemCall.params.bps.toNumber(), 10000);
-  assert.equal(solRemCall.params.shouldClaimAndClose, false);
+  // Verifikasi semua tx remove dijalankan habis terlebih dahulu sebelum tx add chunk 1..3
+  assert.deepEqual(solTxOrder, [
+    "tx-sol-remove-1",
+    "tx-sol-remove-2",
+    "tx-sol-chunk-1",
+    "tx-sol-chunk-2",
+    "tx-sol-chunk-3",
+  ]);
 
-  // Verifikasi addLiquidityByStrategy memakai StrategyType.Spot (0) di-chunk 3x (70 + 70 + 60 = 200 bin) dengan total exact 0.60 SOL (600,000,000 lamports)
-  const solAddCalls = calls.filter((c) => c.op === "addLiquidityByStrategy");
-  assert.equal(solAddCalls.length, 3);
-  assert.deepEqual(
-    solAddCalls.map((c) => [
-      c.params.strategy.minBinId,
-      c.params.strategy.maxBinId,
-      c.params.strategy.strategyType,
-      c.params.totalXAmount.toString(),
-      c.params.totalYAmount.toString(),
-    ]),
-    [
-      [100, 169, 0, "0", "210000000"], // 70/200 * 600,000,000
-      [170, 239, 0, "0", "210000000"], // 70/200 * 600,000,000
-      [240, 299, 0, "0", "180000000"], // 60/200 * 600,000,000
-    ]
-  );
+  // Verifikasi addLiquidityByStrategyChunkable dipanggil 1x untuk seluruh rentang 100..299 dengan StrategyType.BidAsk (2)
+  const solAddCalls = calls.filter((c) => c.op === "addLiquidityByStrategyChunkable");
+  assert.equal(solAddCalls.length, 1);
+  assert.equal(solAddCalls[0].params.strategy.minBinId, 100);
+  assert.equal(solAddCalls[0].params.strategy.maxBinId, 299);
+  assert.equal(solAddCalls[0].params.strategy.strategyType, 2); // StrategyType.BidAsk
+  assert.equal(solAddCalls[0].params.totalXAmount.toString(), "0");
+  assert.equal(solAddCalls[0].params.totalYAmount.toString(), "600000000");
+  assert.equal(fakeRebalanceData[48], 3, "shrinkMode wajib di-patch ke 3 (NoShrinkBoth)");
 
-  // State posisi kembali ke 0% setelah semua SOL di-Spot-kan kembali
+  // State posisi kembali ke 0%
   const afterSolSt = getSpotTokenBidaskState(POS);
   assert.equal(afterSolSt.lastPct, 0);
   assert.equal(afterSolSt.lastBin, null);

@@ -117,7 +117,7 @@ export function notifySpotTokenBidask({
   }
 }
 
-// Rebalance sisi SOL posisi spot kembali ke distribusi Spot murni saat harga naik +step%.
+// Rebalance sisi SOL posisi spot dengan distribusi BidAsk saat harga naik +step%.
 export function notifySpotSolRebalance({
   pair,
   pool,
@@ -137,7 +137,7 @@ export function notifySpotSolRebalance({
   const solStr = Number.isFinite(Number(solVal)) ? `${Number(solVal).toFixed(4)} SOL` : `${solVal ?? "?"} SOL`;
   if (success) {
     send(
-      `🔄 SPOT SOL REBALANCE ${label}\nRecover: ${lastPct ?? "?"}% → ${stepPct ?? 0}%\nRange SOL: ${rangeStr}\nSOL: ${solStr} (mode Spot)\nPosition: ${position || "?"}\nPool: ${pool || "?"}`
+      `🔄 SPOT SOL REBALANCE ${label}\nRecover: ${lastPct ?? "?"}% → ${stepPct ?? 0}%\nRange SOL: ${rangeStr}\nSOL: ${solStr} (mode BidAsk)\nPosition: ${position || "?"}\nPool: ${pool || "?"}`
     );
   } else {
     send(
