@@ -90,6 +90,33 @@ export function notifyFallback({ pair, pool, success, amount, error }) {
 }
 
 // Re-entry spot OOR kanan: beri tahu hasil membuka posisi spot baru.
+// Rebalance sisi token posisi spot ke distribusi BidAsk (tiap kelipatan step % bin).
+export function notifySpotTokenBidask({
+  pair,
+  pool,
+  position,
+  stepPct,
+  tokenBinPct,
+  fromBinId,
+  toBinId,
+  amount,
+  success,
+  error,
+}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const pctStr = Number.isFinite(Number(tokenBinPct)) ? `${Number(tokenBinPct).toFixed(1)}%` : `${stepPct ?? "?"}%`;
+  const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
+  if (success) {
+    send(
+      `📐 SPOT TOKEN BIDASK ${label}\nStep: ${stepPct}% (bin token ${pctStr})\nRange token: ${rangeStr}\nToken: ${amount ?? "?"}\nPosition: ${position || "?"}\nPool: ${pool || "?"}`
+    );
+  } else {
+    send(
+      `⚠️ SPOT TOKEN BIDASK ${label} GAGAL (step ${stepPct}%)\n${error ? `Alasan: ${error}\n` : ""}Range token: ${rangeStr}\nPool: ${pool || "?"}`
+    );
+  }
+}
+
 export function notifySpotReentry({ pair, pool, sizeSol, attempt, max, bins, success, error, reason }) {
   const label = pair || pool?.slice(0, 8) || "";
   if (success) {

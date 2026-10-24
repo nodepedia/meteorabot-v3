@@ -70,6 +70,14 @@ const spotReentry = {
   maxNonRefundableSol: Math.max(0, num(e.SPOT_REENTRY_MAX_NONREFUNDABLE_SOL, 0)),
 };
 
+// Rebalance sisi token posisi spot ke BidAsk tiap kelipatan stepPct% bin di atas activeBin.
+const spotTokenBidask = {
+  enabled: bool(e.SPOT_TOKEN_BIDASK_ENABLED, true),
+  stepPct: Math.max(1, num(e.SPOT_TOKEN_BIDASK_STEP_PCT, 15)),
+  cooldownSec: Math.max(0, num(e.SPOT_TOKEN_BIDASK_COOLDOWN_SEC, 60)),
+  retry: Math.max(1, Math.floor(num(e.SPOT_TOKEN_BIDASK_RETRY, 3))),
+};
+
 const entry = {
   enabled: bool(e.ENTRY_ENABLED, true),
   poolListFile: e.POOL_LIST_FILE || "pool.txt",
@@ -246,6 +254,7 @@ const config = {
   dca,
   spotFallback,
   spotReentry,
+  spotTokenBidask,
 
   bidaskDouble,
   bidaskToken,

@@ -10,7 +10,17 @@ export function readState() {
 }
 
 export function writeState(data) {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(data, null, 2));
+  const payload = JSON.stringify(data, null, 2);
+  const tmpFile = `${STATE_FILE}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmpFile, payload);
+    fs.renameSync(tmpFile, STATE_FILE);
+  } catch {
+    try {
+      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    } catch {}
+    fs.writeFileSync(STATE_FILE, payload);
+  }
 }
 
 export function readJsonArray(file) {

@@ -33,6 +33,7 @@ import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
 import { handleSpotOorKiri } from "./spot-fallback.js";
 import { handleSpotOorKananReentry, canSpotReenter } from "./spot-reentry.js";
+import { handleSpotTokenBidask } from "./spot-token-bidask.js";
 
 let cycleCount = 0;
 let lastStatusSent = 0;
@@ -152,7 +153,8 @@ function emitSummary(positions) {
   log.info("\n" + block);
 }
 
-export async function mainLoop() {
+export async function mainLoop(opts = {}) {
+  const { runSweep = process.env.EXIT_INLINE_SWEEP !== "false" } = opts;
   // Tunda ringkasan pertama ~20s agar refresh kandidat pool sudah selesai.
   lastSummaryAt = Date.now() - minutes(config.tgStatusInterval) + 20_000;
 
@@ -160,7 +162,9 @@ export async function mainLoop() {
     cycleCount++;
     log.debug(`[detail] exit cycle #${cycleCount}`);
 
-    await runSafetySweep();
+    if (runSweep) {
+      await runSafetySweep();
+    }
 
     let positions;
     try {
@@ -293,9 +297,15 @@ export async function mainLoop() {
           const closeRes = await handleClose(pos, exit.reason, { skipDeactivate: willReenter });
           if (closeRes?.success && willReenter) await handleSpotOorKananReentry(pos);
         }
-      } else if (exit.action === "arm_indicator_trailing") {
-        armIndicatorTrailing(pos.position, exit.reason, pos.pnlPct);
-        log.info(`${pairLabel}: ${humanReason(exit.reason)} → trailing profit disiapkan`);
+      } else {
+        if (exit.action === "arm_indicator_trailing") {
+          armIndicatorTrailing(pos.position, exit.reason, pos.pnlPct);
+          log.info(`${pairLabel}: ${humanReason(exit.reason)} → trailing profit disiapkan`);
+        }
+        // Rebalance sisi token posisi spot ke distribusi BidAsk tiap kenaikan 15% bin di atas activeBin.
+        if (pos.mode === "spot") {
+          await handleSpotTokenBidask(pos);
+        }
       }
     }
 

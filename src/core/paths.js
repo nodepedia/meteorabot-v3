@@ -11,7 +11,7 @@ export const ROOT = path.resolve(SRC_DIR, "..");
 // file produksi).
 function resolveFile(envName, fallbackName) {
   const override = process.env[envName];
-  return override && override.trim() ? override : path.join(ROOT, fallbackName);
+  return override && override.trim() ? override : path.resolve(ROOT, fallbackName);
 }
 
 export const ENV_FILE = path.join(ROOT, ".env");
@@ -21,3 +21,9 @@ export const LOG_DIR = path.join(ROOT, "logs");
 export const STATE_FILE = resolveFile("STATE_FILE", "state.json");
 export const DECISION_LOG_FILE = resolveFile("DECISION_LOG_FILE", "decision-log.json");
 export const PNL_HISTORY_FILE = resolveFile("PNL_HISTORY_FILE", "pnl-history.json");
+export const RUNTIME_STATE_FILE = resolveFile(
+  "RUNTIME_STATE_FILE",
+  process.env.STATE_FILE && process.env.STATE_FILE.trim()
+    ? path.join(path.dirname(process.env.STATE_FILE.trim()), "runtime-state.json")
+    : "runtime-state.json"
+);

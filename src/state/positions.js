@@ -61,6 +61,9 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       // Berapa kali posisi ini adalah hasil re-entry spot OOR kanan (diwariskan
       // ke posisi berikutnya supaya rantai berhenti di SPOT_REENTRY_MAX).
       spotReentryCount: 0,
+      // Level persentase bin token terakhir yang sudah di-rebalance ke BidAsk (mis. 15, 30, 45).
+      lastSpotTokenBidaskPct: 0,
+      lastSpotTokenBidaskAt: null,
     };
     writeState(state);
   }
@@ -134,6 +137,30 @@ export function setSpotReentryCount(positionAddress, count) {
   const p = state.positions[positionAddress];
   if (!p) return;
   p.spotReentryCount = n;
+  writeState(state);
+}
+
+// --- State rebalance token-side spot → BidAsk ---
+
+export function getSpotTokenBidaskState(positionAddress) {
+  if (!positionAddress) return { lastPct: 0, lastAt: null };
+  const state = readState();
+  const p = state.positions[positionAddress];
+  return {
+    lastPct: Math.max(0, Number(p?.lastSpotTokenBidaskPct) || 0),
+    lastAt: p?.lastSpotTokenBidaskAt ?? null,
+  };
+}
+
+export function updateSpotTokenBidaskState(positionAddress, pct, at = Date.now()) {
+  if (!positionAddress) return;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return;
+  p.lastSpotTokenBidaskPct = Math.max(0, Number(pct) || 0);
+  if (at !== undefined) {
+    p.lastSpotTokenBidaskAt = at;
+  }
   writeState(state);
 }
 

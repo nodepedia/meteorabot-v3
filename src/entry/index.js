@@ -11,15 +11,20 @@ import { selectWatchCandidates } from "./candidates.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
+  addEntryInProgressPool,
+  removeEntryInProgressPool,
+  isPoolClosing,
   getEntryUsage,
   getEntryInProgressPools,
+  setWatchSnapshot,
+  getSharedWatchSnapshot,
 } from "./runtime.js";
 
 export { getPoolNames } from "./pool-info.js";
 export { selectWatchCandidates } from "./candidates.js";
 
 // Ringkasan pool yang sedang dipantau untuk log naratif (tanpa I/O).
-export function getWatchSnapshot() {
+function buildLocalWatchSnapshot() {
   const prices = getLastPrices();
   return candidateCache.map((c) => {
     const st = getSupertrend(c.mint) || getSupertrendFallback(c.mint);
@@ -34,6 +39,11 @@ export function getWatchSnapshot() {
       price: Number.isFinite(price) ? price : null,
     };
   });
+}
+
+export function getWatchSnapshot() {
+  if (candidateCache.length > 0) return buildLocalWatchSnapshot();
+  return getSharedWatchSnapshot();
 }
 
 // Runtime-only state (resets on restart, as designed)
@@ -91,6 +101,7 @@ export async function refreshCandidates() {
     const pools = loadPoolList();
     if (pools.length === 0) {
       candidateCache = [];
+      setWatchSnapshot([]);
       return null;
     }
 
@@ -175,6 +186,7 @@ export async function refreshCandidates() {
     }
 
     candidateCache = candidates;
+    setWatchSnapshot(buildLocalWatchSnapshot());
     return candidates;
   } catch (err) {
     log.error(`refreshCandidates failed: ${err.message}`);
@@ -203,6 +215,7 @@ export async function watchAndEnter() {
 
     const byPool = new Map(watchable.map((c) => [c.pool, c]));
     const { triggered } = await watchPrices(watchable.map((c) => ({ pool: c.pool, mint: c.mint })));
+    setWatchSnapshot(buildLocalWatchSnapshot());
 
     for (const t of triggered) {
       const c = byPool.get(t.pool);
@@ -222,7 +235,7 @@ export async function watchAndEnter() {
 // mencegah retrigger selama swap/tx (10-30s) saat harga masih <= garis.
 function startEntry(trigger, candidate) {
   const { pool, mint, sizeSol, pairName } = candidate;
-  if (inFlightPools.has(pool) || enteredPools.has(pool)) return;
+  if (inFlightPools.has(pool) || isPoolClosing(pool) || enteredPools.has(pool)) return;
 
   const pair = pairName || `${mint.slice(0, 4)}-SOL`;
   log.info(
@@ -237,7 +250,7 @@ function startEntry(trigger, candidate) {
     return;
   }
 
-  inFlightPools.add(pool);
+  addEntryInProgressPool(pool);
   addEntryInProgressMint(mint);
 
   executeEntry(
@@ -263,9 +276,7 @@ function startEntry(trigger, candidate) {
       // Rem harga kehabisan percobaan (harga pool meleset terus): batalkan dan
       // nonaktifkan pool (beri '#' di pool.txt) — bukan dihitung gagal biasa.
       if (result.skipped && result.exhausted) {
-        log.warn(
-          `Pool ${pool.slice(0, 8)} dibatalkan: ${result.reason || "harga pool menyimpang"} — dinonaktifkan`
-        );
+        log.warn(`Pool ${pool.slice(0, 8)} dibatalkan: ${result.reason || "harga pool menyimpang"} — dinonaktifkan`);
         deactivatePool(pool, "harga pool meleset terus");
         tg.notifyEntryAborted({
           pool,
@@ -336,7 +347,7 @@ function startEntry(trigger, candidate) {
     })
     .catch((err) => log.error(`Entry error for ${pool.slice(0, 8)}: ${err.message}`))
     .finally(() => {
-      inFlightPools.delete(pool);
+      removeEntryInProgressPool(pool);
       removeEntryInProgressMint(mint);
     });
 }

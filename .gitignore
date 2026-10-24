@@ -12,3 +12,6 @@ supertrend-cache.json
 rclone-current-linux-amd64.zip
 backup/
 updatelist.txt
+runtime-state.json
+*.tmp
+logs/

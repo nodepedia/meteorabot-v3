@@ -51,6 +51,10 @@ const MODULES = [
   "../src/exit/close.js",
   "../src/exit/spot-fallback.js",
   "../src/exit/spot-reentry.js",
+  "../src/exit/spot-token-bidask.js",
+  "../src/worker-entry.js",
+  "../src/worker-exit.js",
+  "../src/worker-wallet.js",
 ];
 
 test("every module loads without import errors", async () => {

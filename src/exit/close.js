@@ -8,9 +8,21 @@ import { swapToSol } from "../solana/swap.js";
 import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
 import { clearTrailingState } from "../state/trailing.js";
 import { clearBounceRecovery } from "../state/bounce.js";
-import { clearDcaState, resetPoolDcaState, getPoolDcaCount, markPoolDcaCloseSafeguard, isTrailingTpReason } from "../state/dca.js";
+import {
+  clearDcaState,
+  resetPoolDcaState,
+  getPoolDcaCount,
+  markPoolDcaCloseSafeguard,
+  isTrailingTpReason,
+} from "../state/dca.js";
 import { clearTrailingTimer } from "./trailing.js";
-import { addClosingPool, removeClosingPool, recordAction } from "../entry/runtime.js";
+import {
+  addClosingPool,
+  removeClosingPool,
+  addClosingMint,
+  removeClosingMint,
+  recordAction,
+} from "../entry/runtime.js";
 import { deactivatePool } from "../entry/index.js";
 import { humanReason, fmtPct } from "../core/report.js";
 
@@ -29,11 +41,20 @@ export async function handleClose(pos, reason, opts = {}) {
     log.info(`${pairLabel}: close already in progress — skip duplicate (${reason})`);
     return { success: false, skipped: true };
   }
+  const lockedMints = new Set();
+  if (pos.baseMint) {
+    lockedMints.add(pos.baseMint);
+    addClosingMint(pos.baseMint);
+  }
   closingPositions.add(positionAddress);
   addClosingPool(pos.pool);
 
   try {
     const result = await closePosition(positionAddress);
+    if (result?.baseMint && !lockedMints.has(result.baseMint)) {
+      lockedMints.add(result.baseMint);
+      addClosingMint(result.baseMint);
+    }
 
     if (result?.success) {
       // PnL final dari endpoint closed Meteora (agar alert sama dengan dashboard).
@@ -123,5 +144,6 @@ export async function handleClose(pos, reason, opts = {}) {
   } finally {
     closingPositions.delete(positionAddress);
     removeClosingPool(pos.pool);
+    for (const m of lockedMints) removeClosingMint(m);
   }
 }

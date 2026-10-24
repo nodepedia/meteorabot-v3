@@ -27,6 +27,8 @@ import {
   isEntryInProgressPool,
   addEntryInProgressPool,
   removeEntryInProgressPool,
+  addEntryInProgressMint,
+  removeEntryInProgressMint,
   isPoolClosing,
   getDcaCooldownUntil,
   setDcaCooldown,
@@ -201,9 +203,11 @@ export function maybeStartDca(pos, tracked, pairLabel) {
 
   // Reservasi sinkron: cegah posisi lain di pool sama memicu DCA bersamaan.
   // Counter sesi dinaikkan sebelum eksekusi agar tahan crash/restart.
+  const dcaMint = tracked?.baseMint || null;
   markDcaTriggered(pos.position);
   incrementPoolDca(pos.pool);
   addEntryInProgressPool(pos.pool);
+  if (dcaMint) addEntryInProgressMint(dcaMint);
 
   log.debug(
     `[detail] Pool ${pos.pool.slice(0, 8)} DCA: PnL ${pos.pnlPct.toFixed(2)}% → entry baru ${entry.sizeSol} SOL (${pair})`
@@ -212,6 +216,7 @@ export function maybeStartDca(pos, tracked, pairLabel) {
   if (config.dryRun) {
     log.info(`[DRY RUN] Akan DCA ${pair} — ${entry.sizeSol} SOL`);
     removeEntryInProgressPool(pos.pool);
+    if (dcaMint) removeEntryInProgressMint(dcaMint);
     return true;
   }
 
@@ -254,7 +259,10 @@ export function maybeStartDca(pos, tracked, pairLabel) {
       decrementPoolDca(pos.pool);
       setDcaCooldown(pos.pool, cfg.cooldownSec * 1000);
     })
-    .finally(() => removeEntryInProgressPool(pos.pool));
+    .finally(() => {
+      removeEntryInProgressPool(pos.pool);
+      if (dcaMint) removeEntryInProgressMint(dcaMint);
+    });
 
   return true;
 }
