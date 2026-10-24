@@ -132,8 +132,8 @@ export function calcSpotTokenBinMetrics({ activeBin, lowerBin, upperBin, stepPct
 }
 
 // Pure: evaluasi apakah posisi spot perlu:
-// - di-rebalance sisi tokennya ke BidAsk saat harga turun -15% bin (`action: "rebalance"`),
-// - di-rebalance sisi SOL-nya ke BidAsk saat harga naik +15% bin sejak rebalance (`action: "rebalance_sol_spot"`),
+// - di-rebalance sisi tokennya ke BidAsk saat harga turun -step% bin (`action: "rebalance"`),
+// - di-rebalance sisi SOL-nya kembali ke Spot murni saat harga naik +step% bin sejak rebalance (`action: "rebalance_sol_spot"`),
 // - atau ditahan karena cooldown / belum mencapai step berikutnya.
 export function evaluateSpotTokenBidaskTrigger({
   pos,
@@ -181,7 +181,7 @@ export function evaluateSpotTokenBidaskTrigger({
       : null;
   const cooldownMs = Math.max(0, Number(cfg.cooldownSec) || 0) * 1000;
 
-  // 1. Harga turun mencapai step +15% berikutnya: rebalance token di atas activeBin ke BidAsk.
+  // 1. Harga turun mencapai step berikutnya: rebalance token di atas activeBin ke BidAsk.
   if (metrics.stepLevel >= lastPct + step && metrics.stepLevel >= step) {
     if (lastAt > 0 && cooldownMs > 0 && now - lastAt < cooldownMs) {
       return {
@@ -201,7 +201,8 @@ export function evaluateSpotTokenBidaskTrigger({
   }
 
   // 2. Harga naik kembali >= +step% sejak posisi rebalance:
-  //    tarik seluruh SOL di posisi terlebih dahulu, lalu deposit ulang dengan distribusi BidAsk yang rapi.
+  //    bin yang tadinya BidAsk token berubah jadi BidAsk SOL (bercampur dengan Spot SOL di bawahnya).
+  //    Tarik seluruh SOL di posisi terlebih dahulu, lalu deposit ulang dengan mode Spot agar seluruh SOL kembali berbentuk Spot murni yang rapi.
   const risePctFromLastBin = lastBin != null ? ((Number(pos.activeBin) - lastBin) * 100) / binSpan : null;
   const risePctFromLastStep = lastPct - metrics.tokenBinPct;
   const recoveredEnough =
@@ -328,7 +329,7 @@ export function chunkSolBidAskRanges(fromBinId, toBinId, totalAmountRaw, maxBins
 
 // Pure: bagi rentang [fromBinId, toBinId] ke chunk <= maxBinsPerChunk (70 bin)
 // dengan bobot merata (Spot) proporsional terhadap jumlah bin di tiap chunk,
-// sehingga setiap bin di seluruh rentang menerima jumlah SOL yang sama.
+// sehingga setiap bin di seluruh rentang menerima jumlah SOL yang sama rata.
 export function chunkSpotRanges(fromBinId, toBinId, totalAmountRaw, maxBinsPerChunk = DEFAULT_MAX_BINS_PER_TX) {
   const from = Math.floor(Number(fromBinId));
   const to = Math.floor(Number(toBinId));
@@ -487,12 +488,12 @@ async function fetchPositionOnChain(pool, positionPubKey, walletPubKey) {
   return null;
 }
 
-// Helper: bangun & kirim transaksi deposit BidAsk utuh yang mulus (tanpa patahan di kelipatan 70 bin).
-// - Jika pool menyediakan `addLiquidityByStrategyChunkable`, gunakan metode tersebut untuk menghitung
-//   1 kurva BidAsk global `(x0, deltaX, y0, deltaY)` di seluruh [minBinId .. maxBinId] lalu pecah
+// Helper: bangun & kirim transaksi deposit BidAsk sisi Token utuh yang mulus (tanpa patahan di kelipatan 70 bin).
+// - Jika pool menyediakan `addLiquidityByStrategyChunkable` dan rentang > 70 bin, gunakan metode tersebut untuk
+//   menghitung 1 kurva BidAsk global `(x0, deltaX, y0, deltaY)` di seluruh [minBinId .. maxBinId] lalu pecah
 //   ke transaksi per 70 bin menggunakan `rebalance_liquidity` dengan `shrinkMode = NoShrinkBoth (3)`.
 // - Jika <= 70 bin (atau pada unit test mock yang hanya menyediakan `addLiquidityByStrategy`),
-//   gunakan `addLiquidityByStrategy` / fallback chunking.
+//   gunakan `addLiquidityByStrategy`.
 async function depositContinuousBidAsk({
   pool,
   positionPubKey,
@@ -506,7 +507,6 @@ async function depositContinuousBidAsk({
   totalYAmount,
   strategyType,
   slippage,
-  isSolSide = false,
   baseIsX = true,
 }) {
   const totalBins = maxBinId - minBinId + 1;
@@ -518,9 +518,6 @@ async function depositContinuousBidAsk({
     } catch {}
   }
 
-  // Untuk > 70 bin (atau berapa pun jumlah bin jika addLiquidityByStrategyChunkable tersedia),
-  // gunakan addLiquidityByStrategyChunkable agar kurva BidAsk dihitung 1x secara global dari minBinId..maxBinId
-  // sehingga tidak pernah reset/patah di batas chunk ke-70!
   if (typeof pool.addLiquidityByStrategyChunkable === "function" && totalBins > DEFAULT_MAX_BINS_PER_TX) {
     const rawAddTxs = await pool.addLiquidityByStrategyChunkable({
       positionPubKey,
@@ -549,38 +546,15 @@ async function depositContinuousBidAsk({
     return signatures;
   }
 
-  // Fallback (untuk <= 70 bin atau mock pool pada unit test yang hanya memiliki addLiquidityByStrategy):
-  const rawAmount = isSolSide
-    ? baseIsX
-      ? totalYAmount
-      : totalXAmount
-    : baseIsX
-      ? totalXAmount
-      : totalYAmount;
-
-  const chunks = isSolSide
-    ? chunkSolBidAskRanges(minBinId, maxBinId, rawAmount, DEFAULT_MAX_BINS_PER_TX)
-    : chunkBidAskRanges(minBinId, maxBinId, rawAmount, DEFAULT_MAX_BINS_PER_TX);
-
+  const rawAmount = baseIsX ? totalXAmount : totalYAmount;
+  const chunks = chunkBidAskRanges(minBinId, maxBinId, rawAmount, DEFAULT_MAX_BINS_PER_TX);
   if (chunks.length === 0) {
-    throw new Error("chunk BidAsk menghasilkan 0 chunk untuk deposit");
+    throw new Error("chunkBidAskRanges menghasilkan 0 chunk untuk deposit token");
   }
 
   for (const chunk of chunks) {
-    const chunkX = isSolSide
-      ? baseIsX
-        ? new BN(0)
-        : chunk.amountRaw
-      : baseIsX
-        ? chunk.amountRaw
-        : new BN(0);
-    const chunkY = isSolSide
-      ? baseIsX
-        ? chunk.amountRaw
-        : new BN(0)
-      : baseIsX
-        ? new BN(0)
-        : chunk.amountRaw;
+    const chunkX = baseIsX ? chunk.amountRaw : new BN(0);
+    const chunkY = baseIsX ? new BN(0) : chunk.amountRaw;
 
     const rawAddTxs = await pool.addLiquidityByStrategy({
       positionPubKey,
@@ -611,8 +585,8 @@ async function depositContinuousBidAsk({
 }
 
 // Eksekusi rebalance posisi spot:
-// - Saat harga turun tiap step 15% bin (`action === "rebalance"`): tarik semua token di atas activeBin -> deposit ulang BidAsk mulus.
-// - Saat harga naik kembali +15% bin sejak rebalance (`action === "rebalance_sol_spot"`): tarik semua SOL di posisi -> catat jumlahnya -> deposit ulang BidAsk mulus.
+// - Saat harga turun tiap step % bin (`action === "rebalance"`): tarik semua token di atas activeBin -> deposit ulang BidAsk mulus.
+// - Saat harga naik kembali +step% bin sejak rebalance (`action === "rebalance_sol_spot"`): tarik semua SOL di posisi -> catat jumlahnya -> deposit ulang Spot merata.
 export async function handleSpotTokenBidask(pos, deps = {}) {
   const cfg = deps.cfg || config.spotTokenBidask;
   const now = deps.now ? deps.now() : Date.now();
@@ -648,7 +622,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     updateSpotTokenBidaskState(pos.position, decision.stepLevel, now, nextBin);
     if (isSolSpotRebalance) {
       log.info(
-        `[DRY RUN] Would rebalance spot SOL-side → BidAsk ${pair} (recover ${decision.lastPct}% → ${decision.stepLevel}%, bin ${decision.solFromBinId}→${decision.solToBinId})`
+        `[DRY RUN] Would rebalance spot SOL-side → Spot ${pair} (recover ${decision.lastPct}% → ${decision.stepLevel}%, bin ${decision.solFromBinId}→${decision.solToBinId})`
       );
       return {
         triggered: true,
@@ -731,9 +705,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       ? Number(onChainPos.positionData.upperBinId)
       : Number(pos.upperBin);
 
-    const bidAskStrategyType = StrategyType?.BidAsk ?? 2;
-
-    // --- JALUR A: Rebalance sisi SOL dengan BidAsk saat harga naik +15% dari posisi rebalance ---
+    // --- JALUR A: Rebalance sisi SOL kembali ke Spot murni saat harga naik +step% dari posisi rebalance ---
     if (isSolSpotRebalance) {
       if (activeBinId < lowerBinId || activeBinId > upperBinId) {
         log.info(
@@ -775,7 +747,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       const label = pairName || pair;
       const recordedSolUi = Number(solCheck.totalSolLamports.toString()) / 1e9;
       log.info(
-        `🔄 SPOT SOL BIDASK ${label} — tarik semua (${recordedSolUi > 0 ? `${recordedSolUi.toFixed(4)} ` : ""}SOL) dari bin ${fromBinId}→${toBinId} lalu add BidAsk (recover ${decision.lastPct}% → ${decision.stepLevel}%)`
+        `🔄 SPOT SOL REBALANCE ${label} — tarik semua (${recordedSolUi > 0 ? `${recordedSolUi.toFixed(4)} ` : ""}SOL) dari bin ${fromBinId}→${toBinId} lalu add Spot (recover ${decision.lastPct}% → ${decision.stepLevel}%)`
       );
 
       // 1. Tarik 100% seluruh likuiditas SOL dari [fromBinId .. toBinId] terlebih dahulu tanpa menutup posisi.
@@ -826,8 +798,11 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
         targetSolLamports = BN.min(targetSolLamports, maxAvailableLamports);
       }
 
+      const spotStrategyType = StrategyType?.Spot ?? 0;
       const maxRetry = Math.max(1, Math.floor(Number(cfg.retry) || 3));
       let lastErr = null;
+      let remainingSolRaw = targetSolLamports;
+      let nextFromBinId = fromBinId;
       const addSignatures = [];
 
       for (let attempt = 1; attempt <= maxRetry; attempt++) {
@@ -835,46 +810,62 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
           if (targetSolLamports.lte(new BN(0))) {
             throw new Error("jumlah SOL yang ditarik dari posisi 0 atau di bawah cadangan gas");
           }
+          if (remainingSolRaw.lte(new BN(0))) break;
 
           let depositToBinId = toBinId;
-          if (typeof pool.getActiveBin === "function") {
+          if (attempt > 1 && typeof pool.getActiveBin === "function") {
             try {
               const refreshed = await pool.getActiveBin();
               if (Number.isFinite(Number(refreshed?.binId))) {
                 const maxAllowedBin = solCheck.activeBinHasBase
                   ? Number(refreshed.binId) - 1
                   : Number(refreshed.binId);
-                depositToBinId = Math.max(fromBinId, Math.min(toBinId, maxAllowedBin));
+                depositToBinId = Math.max(nextFromBinId, Math.min(toBinId, maxAllowedBin));
               }
             } catch {}
           }
 
-          const totalXAmount = baseIsX ? new BN(0) : targetSolLamports;
-          const totalYAmount = baseIsX ? targetSolLamports : new BN(0);
+          const chunks = chunkSpotRanges(nextFromBinId, depositToBinId, remainingSolRaw, DEFAULT_MAX_BINS_PER_TX);
+          if (chunks.length === 0) {
+            throw new Error("chunkSpotRanges menghasilkan 0 chunk untuk deposit SOL");
+          }
 
-          const sigs = await depositContinuousBidAsk({
-            pool,
-            positionPubKey,
-            wallet,
-            connection,
-            feePlan,
-            sendAndConfirmFn,
-            minBinId: fromBinId,
-            maxBinId: depositToBinId,
-            totalXAmount,
-            totalYAmount,
-            strategyType: bidAskStrategyType,
-            slippage: config.entry.activeBinSlippagePct,
-            isSolSide: true,
-            baseIsX,
-          });
-          addSignatures.push(...sigs);
+          for (const chunk of chunks) {
+            const totalXAmount = baseIsX ? new BN(0) : chunk.amountRaw;
+            const totalYAmount = baseIsX ? chunk.amountRaw : new BN(0);
+
+            const rawAddTxs = await pool.addLiquidityByStrategy({
+              positionPubKey,
+              user: wallet.publicKey,
+              totalXAmount,
+              totalYAmount,
+              strategy: {
+                minBinId: chunk.minBinId,
+                maxBinId: chunk.maxBinId,
+                strategyType: spotStrategyType,
+              },
+              slippage: config.entry.activeBinSlippagePct,
+            });
+            const addTxs = Array.isArray(rawAddTxs) ? rawAddTxs : [rawAddTxs];
+            for (const tx of addTxs) {
+              const sent = await sendAndConfirmFn({
+                connection,
+                tx,
+                signers: [wallet],
+                feePlan,
+                wallet,
+              });
+              if (sent?.signature) addSignatures.push(sent.signature);
+            }
+            remainingSolRaw = BN.max(new BN(0), remainingSolRaw.sub(chunk.amountRaw));
+            nextFromBinId = chunk.maxBinId + 1;
+          }
 
           lastErr = null;
           break;
         } catch (err) {
           lastErr = err.message || String(err);
-          log.warn(`Spot SOL BidAsk ${label}: gagal re-deposit BidAsk (${attempt}/${maxRetry}): ${lastErr}`);
+          log.warn(`Spot SOL Rebalance ${label}: gagal re-deposit Spot (${attempt}/${maxRetry}): ${lastErr}`);
           if (attempt < maxRetry) await sleepFn(2500);
         }
       }
@@ -882,9 +873,9 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       const depositedSolUi = Number(targetSolLamports.toString()) / 1e9;
 
       if (lastErr) {
-        log.error(`Spot SOL BidAsk ${label}: gagal re-deposit BidAsk setelah ${maxRetry}x (${lastErr})`);
+        log.error(`Spot SOL Rebalance ${label}: gagal re-deposit Spot setelah ${maxRetry}x (${lastErr})`);
         recordAction(
-          `SPOT SOL BIDASK ${label} GAGAL (recover ${decision.lastPct}%→${decision.stepLevel}%) — ${lastErr}`
+          `SPOT SOL REBALANCE ${label} GAGAL (recover ${decision.lastPct}%→${decision.stepLevel}%) — ${lastErr}`
         );
         notifySolFn({
           rebalanceType: "sol_spot",
@@ -917,10 +908,10 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
         decision.stepLevel > 0 ? activeBinId : null
       );
       log.info(
-        `✅ SPOT SOL BIDASK ${label} — recover ${decision.lastPct}% → ${decision.stepLevel}% (bin ${fromBinId}→${toBinId}) — ${depositedSolUi.toFixed(4)} SOL diatur ulang ke BidAsk`
+        `✅ SPOT SOL REBALANCE ${label} — recover ${decision.lastPct}% → ${decision.stepLevel}% (bin ${fromBinId}→${toBinId}) — ${depositedSolUi.toFixed(4)} SOL diatur kembali ke Spot`
       );
       recordAction(
-        `SPOT SOL BIDASK ${label} — recover ${decision.lastPct}%→${decision.stepLevel}% (${depositedSolUi.toFixed(4)} SOL, bin ${fromBinId}→${toBinId})`
+        `SPOT SOL REBALANCE ${label} — recover ${decision.lastPct}%→${decision.stepLevel}% (${depositedSolUi.toFixed(4)} SOL, bin ${fromBinId}→${toBinId})`
       );
       notifySolFn({
         rebalanceType: "sol_spot",
@@ -951,7 +942,9 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       };
     }
 
-    // --- JALUR B: Rebalance sisi token ke BidAsk saat harga turun tiap kelipatan 15% bin ---
+    // --- JALUR B: Rebalance sisi token ke BidAsk mulus saat harga turun tiap kelipatan step % bin ---
+    const bidAskStrategyType = StrategyType?.BidAsk ?? 2;
+
     if (activeBinId < lowerBinId || activeBinId >= upperBinId) {
       log.info(
         `Spot Token BidAsk ${pair}: activeBin ${activeBinId} tidak lagi di bawah upperBin ${upperBinId} — batal`
@@ -1051,7 +1044,6 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
           totalYAmount,
           strategyType: bidAskStrategyType,
           slippage: config.entry.activeBinSlippagePct,
-          isSolSide: false,
           baseIsX,
         });
         addSignatures.push(...sigs);
