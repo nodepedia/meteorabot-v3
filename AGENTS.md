@@ -9,6 +9,7 @@
 5. Jangan commit tanpa izin. Setelah hasil disetujui, baru tawarkan commit dengan pesan sederhana.
 6. Jelaskan dengan bahasa sederhana (non-teknis). Waktu selalu pakai WIB — konversi kalau sumbernya UTC.
 7. Selalu baca `PROJECT_STRUCTURE.md` dulu untuk menentukan file yang relevan; jangan baca semua folder.
+8. Setiap kali mengubah angka aturan/parameter strategi (timer, persentase, cooldown, threshold), WAJIB jalankan pencarian lintas repo (`rg`) di `strat.conf`, `src/config/`, `src/`, dan `test/` untuk memastikan semua parameter kembar serta fallback default di `src/config/index.js` 100% sinkron, lalu pastikan `test/config-sync.test.js` lulus.
 
 ## Snapshot
 

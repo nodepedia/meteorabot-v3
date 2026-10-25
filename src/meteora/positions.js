@@ -204,11 +204,17 @@ async function enrichMarketCap(positions) {
       const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${p.baseMint}`);
       if (!res.ok) continue;
       const data = await res.json();
-      const pair = data?.pairs?.find((x) => x.marketCap && x.marketCap > 0);
+      const pairs = Array.isArray(data?.pairs) ? data.pairs : [];
+      const pair = pairs.find((x) => x.marketCap && x.marketCap > 0);
       const mc = pair ? Number(pair.marketCap) : null;
+      const dexVol5m = pairs.reduce((max, x) => {
+        const v = Number(x?.volume?.m5);
+        return Number.isFinite(v) && v > max ? v : max;
+      }, 0);
       for (const pos of positions) {
         if (pos.baseMint === p.baseMint) {
           pos.marketCap = mc;
+          if (dexVol5m > 0) pos.dexVolume5m = dexVol5m;
         }
       }
     } catch {

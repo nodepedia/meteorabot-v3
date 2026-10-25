@@ -53,18 +53,35 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
   // (mis. area 0%..+15% sebelum kena rebalance token) juga dihitung OOR kanan.
   // Mode lain (oorKananMinutes = 0) tutup langsung.
   if (activeBin != null && effectiveUpperBin != null && activeBin > effectiveUpperBin) {
+    const vol5m = Number(position.volume5m);
+    const isHighVol5m =
+      rules.oorKananHighVol5mUsd > 0 &&
+      Number.isFinite(vol5m) &&
+      vol5m > rules.oorKananHighVol5mUsd;
+    const effectiveOorKananMinutes =
+      isHighVol5m && rules.oorKananFastMinutes > 0
+        ? rules.oorKananFastMinutes
+        : rules.oorKananMinutes;
+    const effectiveCooldownSec = isHighVol5m
+      ? (config.spotReentry?.fastCooldownSec ?? effectiveOorKananMinutes * 60)
+      : (config.spotReentry?.cooldownSec ?? effectiveOorKananMinutes * 60);
+
     if (position.mode === "spot" && position.pool) {
-      const cooldownRemMs = getSpotReentryCooldownRemainingMs(position.pool);
+      const cooldownRemMs = getSpotReentryCooldownRemainingMs(
+        position.pool,
+        Date.now(),
+        effectiveCooldownSec
+      );
       if (cooldownRemMs > 0) {
         updateOOR(position.position, "kanan");
         return { action: "hold", reason: `oor_kanan_cooldown_${Math.ceil(cooldownRemMs / 1000)}s` };
       }
     }
-    if (rules.oorKananMinutes > 0) {
+    if (effectiveOorKananMinutes > 0) {
       updateOOR(position.position, "kanan");
       const oorState = getOORState(position.position);
       const menit = oorState ? (Date.now() - oorState.sejak) / 60000 : 0;
-      if (menit >= rules.oorKananMinutes) {
+      if (menit >= effectiveOorKananMinutes) {
         resetOOR(position.position);
         return { action: "close", reason: "oor_kanan" };
       }

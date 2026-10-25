@@ -215,16 +215,18 @@ async function refreshGmgn15m(mint, { limit = 90, priority = "normal", nowMs, de
 export async function fetchVolume(mint, pool, { resolution, limit = 5 } = {}) {
   const res = resolution || config.volumeTimeframe || "5m";
   const candles = await fetchCandles(mint, pool, { resolution: res, limit });
-  if (!candles || candles.length < 1) return { vol: 0, volAvg5: 0 };
+  if (!candles || candles.length < 1) return { vol: 0, volPrev: 0, vol5mEffective: 0, volAvg5: 0 };
 
-  const volumes = candles.map((c) => c.volume ?? 0);
-  const vol = volumes[volumes.length - 1];
+  const volumes = candles.map((c) => Number(c.volume) || 0);
+  const vol = volumes[volumes.length - 1] ?? 0;
+  const volPrev = volumes.length >= 2 ? volumes[volumes.length - 2] ?? 0 : 0;
+  const vol5mEffective = Math.max(vol, volPrev);
   const volAvg5 =
     volumes.length >= 5
       ? volumes.slice(-5).reduce((a, b) => a + b, 0) / 5
       : volumes.reduce((a, b) => a + b, 0) / volumes.length;
 
-  return { vol, volAvg5 };
+  return { vol, volPrev, vol5mEffective, volAvg5 };
 }
 
 // Routing sumber data:

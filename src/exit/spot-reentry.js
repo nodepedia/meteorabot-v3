@@ -45,6 +45,22 @@ export function clearSpotReentryCooldown(poolAddress) {
   lastReentryAtByPool.delete(poolAddress);
 }
 
+export function getEffectiveSpotReentryCooldownSec(
+  pos,
+  cfg = config.spotReentry,
+  spotRules = config.spot
+) {
+  const vol5m = Number(pos?.volume5m);
+  const highVolUsd = Number(spotRules?.oorKananHighVol5mUsd ?? cfg?.highVol5mUsd ?? 100000);
+  const isHighVol5m = highVolUsd > 0 && Number.isFinite(vol5m) && vol5m > highVolUsd;
+  if (isHighVol5m) {
+    const fastMin = Number(spotRules?.oorKananFastMinutes);
+    return Number(cfg?.fastCooldownSec ?? (fastMin > 0 ? fastMin * 60 : 60));
+  }
+  const normalMin = Number(spotRules?.oorKananMinutes);
+  return Number(cfg?.cooldownSec ?? (normalMin > 0 ? normalMin * 60 : 120));
+}
+
 export function getSpotReentryCooldownRemainingMs(
   poolAddress,
   now = Date.now(),
@@ -150,9 +166,10 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     return { success: false, error: reason };
   };
 
-  const remMs = pos.pool ? getSpotReentryCooldownRemainingMs(pos.pool, Date.now(), cfg.cooldownSec) : 0;
+  const effectiveCooldownSec = getEffectiveSpotReentryCooldownSec(pos, cfg, config.spot);
+  const remMs = pos.pool ? getSpotReentryCooldownRemainingMs(pos.pool, Date.now(), effectiveCooldownSec) : 0;
   if (remMs > 0) {
-    return fail(`cooldown re-entry masih aktif (${Math.ceil(remMs / 1000)}s tersisa dari ${cfg.cooldownSec}s)`);
+    return fail(`cooldown re-entry masih aktif (${Math.ceil(remMs / 1000)}s tersisa dari ${effectiveCooldownSec}s)`);
   }
 
   try {

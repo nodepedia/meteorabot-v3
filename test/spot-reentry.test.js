@@ -106,7 +106,7 @@ test("canSpotReenter membaca binSpan + counter dari state", () => {
   assert.equal(canSpotReenter(pos, "oor_kanan"), true);
   assert.equal(canSpotReenter(pos, "oor_kiri"), false);
 
-  setSpotReentryCount(POS, 10);
+  setSpotReentryCount(POS, config.spotReentry.maxReentries);
   assert.equal(canSpotReenter(pos, "oor_kanan"), false);
 });
 

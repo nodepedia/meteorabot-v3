@@ -57,11 +57,16 @@ export function patchRebalanceNoShrink(txs) {
 // Pure: hitung metrik bin token (di atas activeBin) & bin SOL (<= activeBin) untuk posisi spot.
 // Ketika harga turun di dalam rentang (lowerBin <= activeBin < upperBin),
 // bin di (activeBin + 1 .. upperBin) berisi token base, sedangkan bin <= activeBin berisi SOL.
-export function calcSpotTokenBinMetrics({ activeBin, lowerBin, upperBin, stepPct = 15 }) {
+export function calcSpotTokenBinMetrics({
+  activeBin,
+  lowerBin,
+  upperBin,
+  stepPct = config.spotTokenBidask?.stepPct ?? 10,
+}) {
   const active = Number(activeBin);
   const lower = Number(lowerBin);
   const upper = Number(upperBin);
-  const step = Math.max(1, Number(stepPct) || 15);
+  const step = Math.max(1, Number(stepPct) || (config.spotTokenBidask?.stepPct ?? 10));
 
   if (!Number.isFinite(active) || !Number.isFinite(lower) || !Number.isFinite(upper) || upper <= lower) {
     return {
@@ -161,7 +166,7 @@ export function evaluateSpotTokenBidaskTrigger({
     return { action: "none", reason: "span_below_min", binSpan };
   }
 
-  const step = Math.max(1, Number(cfg.stepPct) || 15);
+  const step = Math.max(1, Number(cfg.stepPct) || (config.spotTokenBidask?.stepPct ?? 10));
   const metrics = calcSpotTokenBinMetrics({
     activeBin: pos.activeBin,
     lowerBin,

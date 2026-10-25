@@ -258,15 +258,25 @@ export async function mainLoop(opts = {}) {
       // Track PnL peaks
       if (pos.pnlPct != null) updatePnlPeaks(pos.position, pos.pnlPct);
 
-      // Snapshot PnL history + volume for evaluation
+      // Fetch 5m volume & snapshot PnL history for evaluation
+      const volumeData = pos.baseMint
+        ? await fetchVolume(pos.baseMint, pos.pool, {
+            resolution: config.volumeTimeframe,
+            limit: config.volumeCandleCount,
+          })
+        : null;
+      if (volumeData) {
+        pos.volume5mCurrent = volumeData.vol;
+        pos.volume5mPrev = volumeData.volPrev ?? 0;
+        pos.volume5m = Math.max(
+          Number(volumeData.vol) || 0,
+          Number(volumeData.volPrev) || 0,
+          Number(pos.dexVolume5m) || 0
+        );
+      } else if (Number(pos.dexVolume5m) > 0) {
+        pos.volume5m = Number(pos.dexVolume5m);
+      }
       if (pos.pnlPct != null) {
-        const volumeData = pos.baseMint
-          ? await fetchVolume(pos.baseMint, pos.pool, {
-              resolution: config.volumeTimeframe,
-              limit: config.volumeCandleCount,
-            })
-          : null;
-        if (volumeData) pos.volume5m = volumeData.vol;
         recordPnlSnapshot(pos.position, pairLabel, pos.pnlPct, pos.marketCap, pos.feePct24h, volumeData);
       }
 
@@ -314,7 +324,7 @@ export async function mainLoop(opts = {}) {
           armIndicatorTrailing(pos.position, exit.reason, pos.pnlPct);
           log.info(`${pairLabel}: ${humanReason(exit.reason)} → trailing profit disiapkan`);
         }
-        // Rebalance sisi token posisi spot ke distribusi BidAsk tiap kenaikan 15% bin di atas activeBin.
+        // Rebalance sisi token posisi spot ke distribusi BidAsk tiap kenaikan stepPct% bin di atas activeBin.
         if (pos.mode === "spot") {
           await handleSpotTokenBidask(pos);
         }

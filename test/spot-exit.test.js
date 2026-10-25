@@ -11,6 +11,7 @@ process.env.STATE_FILE = path.join(TMP, "state.json");
 const { trackPosition, getTrackedPosition, recordTrackedRange } = await import("../src/state/positions.js");
 const { evaluateExit, isExitWarmup } = await import("../src/exit/rules.js");
 const { fallbackBinRange } = await import("../src/meteora/open-token-position.js");
+const { setLastSpotReentryAt, clearSpotReentryCooldown, getEffectiveSpotReentryCooldownSec } = await import("../src/exit/spot-reentry.js");
 const config = (await import("../src/config/index.js")).default;
 
 const POOL = "PoolSpot1111111111111111111111111111111111";
@@ -273,4 +274,107 @@ test("Spot dengan bin atas sudah terisi token (maxFilledBin === upperBin setelah
   assert.notEqual(res.action, "close");
   assert.doesNotMatch(String(res.reason || ""), /^oor_kanan/);
   assert.equal(getTrackedPosition(POS).oorSejak, null);
+});
+
+test("OOR kanan spot: volume 5m <= $100k tetap menunggu 2 menit (Hold di 1.5m, Close di 2m)", () => {
+  resetState();
+  clearSpotReentryCooldown();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+
+  // Volume 5m = $50k (<= $100k) -> timer normal 2 menit
+  let res = evaluateExit(
+    makePosition(301, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, volume5m: 50000 }),
+    null
+  );
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "oor_kanan_0m");
+
+  // Di menit ke-1.5 -> masih hold (belum 2 menit)
+  const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  state.positions[POS].oorSejak = Date.now() - 1.5 * 60000;
+  state.positions[POS].oorArah = "kanan";
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state));
+
+  res = evaluateExit(
+    makePosition(301, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, volume5m: 50000 }),
+    null
+  );
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "oor_kanan_1m");
+
+  // Di menit ke-2.1 -> close
+  state.positions[POS].oorSejak = Date.now() - 2.1 * 60000;
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state));
+
+  res = evaluateExit(
+    makePosition(301, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, volume5m: 50000 }),
+    null
+  );
+  assert.equal(res.action, "close");
+  assert.equal(res.reason, "oor_kanan");
+  assert.equal(getEffectiveSpotReentryCooldownSec({ volume5m: 50000 }), 120);
+});
+
+test("OOR kanan spot & bin kosong atas: volume 5m > $100k mempercepat reposisi jadi 1 menit (60s timer & cooldown)", () => {
+  resetState();
+  clearSpotReentryCooldown();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+
+  assert.equal(config.spot.oorKananHighVol5mUsd, 100000);
+  assert.equal(config.spot.oorKananFastMinutes, 1);
+  assert.equal(config.spotReentry.fastCooldownSec, 60);
+  assert.equal(getEffectiveSpotReentryCooldownSec({ volume5m: 150000 }), 60);
+
+  // 1. Masuk bin kosong atas (301 > maxFilledBin 300) dengan volume5m = $150k (> $100k)
+  let res = evaluateExit(
+    makePosition(301, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, volume5m: 150000 }),
+    null
+  );
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "oor_kanan_0m");
+
+  // Setelah 1.05 menit -> langsung CLOSE (tidak perlu tunggu 2 menit!)
+  const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  state.positions[POS].oorSejak = Date.now() - 1.05 * 60000;
+  state.positions[POS].oorArah = "kanan";
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state));
+
+  res = evaluateExit(
+    makePosition(301, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, volume5m: 150000 }),
+    null
+  );
+  assert.equal(res.action, "close");
+  assert.equal(res.reason, "oor_kanan");
+
+  // 2. Cooldown per-pool dengan volume > $100k: di detik ke-30 masih cooldown, di detik ke-65 sudah bebas cooldown!
+  setLastSpotReentryAt(POOL, Date.now() - 30_000);
+  res = evaluateExit(
+    makePosition(UPPER + 5, { volume5m: 150000 }),
+    null
+  );
+  assert.equal(res.action, "hold");
+  assert.match(res.reason, /^oor_kanan_cooldown_/);
+
+  // Setelah 65 detik (> 60s fastCooldownSec), cooldown sudah selesai untuk high volume (sedangkan volume rendah masih kena cooldown 120s)
+  setLastSpotReentryAt(POOL, Date.now() - 65_000);
+  const resLowVol = evaluateExit(
+    makePosition(UPPER + 5, { volume5m: 50000 }),
+    null
+  );
+  assert.equal(resLowVol.action, "hold");
+  assert.match(resLowVol.reason, /^oor_kanan_cooldown_/);
+
+  // Untuk volume > $100k dan timer oorSejak >= 1m -> langsung close oor_kanan!
+  const state2 = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  state2.positions[POS].oorSejak = Date.now() - 1.05 * 60000;
+  state2.positions[POS].oorArah = "kanan";
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state2));
+
+  const resHighVol = evaluateExit(
+    makePosition(UPPER + 5, { volume5m: 150000 }),
+    null
+  );
+  assert.equal(resHighVol.action, "close");
+  assert.equal(resHighVol.reason, "oor_kanan");
+  clearSpotReentryCooldown();
 });

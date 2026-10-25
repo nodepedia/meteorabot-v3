@@ -8,6 +8,8 @@ export const RULE_DEFAULTS = {
   // OOR kanan: 0 = tutup langsung; >0 = masa tunggu (menit) sebelum tutup,
   // batal bila harga kembali masuk range.
   oorKananMinutes: 0,
+  oorKananHighVol5mUsd: 0,
+  oorKananFastMinutes: 0,
   enableIndicators: false,
   // Warmup exit (menit): trailing & arm indikator ditahan selama ini sejak
   // posisi pertama terlihat. Stop loss/OOR/yield tetap jalan. 0 = nonaktif.
@@ -43,6 +45,8 @@ export function modeRules(e, prefix, overrides = {}) {
     enableOOR: bool(e[k("ENABLE_OOR")], d.enableOOR),
     oorKiriMinutes: num(e[k("OOR_KIRI_MINUTES")], d.oorKiriMinutes),
     oorKananMinutes: Math.max(0, num(e[k("OOR_KANAN_MINUTES")], d.oorKananMinutes)),
+    oorKananHighVol5mUsd: Math.max(0, num(e[k("OOR_KANAN_HIGH_VOL_5M_USD")], d.oorKananHighVol5mUsd)),
+    oorKananFastMinutes: Math.max(0, num(e[k("OOR_KANAN_FAST_MINUTES")], d.oorKananFastMinutes)),
     enableIndicators: bool(e[k("ENABLE_INDICATORS")], d.enableIndicators),
     exitWarmupMinutes: Math.max(0, num(e[k("EXIT_WARMUP_MINUTES")], d.exitWarmupMinutes)),
     rsiPeriod: num(e[k("RSI_PERIOD")], d.rsiPeriod),
