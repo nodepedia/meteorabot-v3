@@ -1,4 +1,4 @@
-import { Keypair } from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import BN from "bn.js";
 import config, { BINS_BELOW, BINS_ABOVE, STRATEGY } from "../config/index.js";
 import log from "../core/logger.js";
@@ -12,7 +12,8 @@ import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { getPoolInfo } from "./pool-info.js";
 import { guardPoolPrice, poolPriceSolPerToken } from "./price-guard.js";
-import { trackPosition, setEntryPoolPrice } from "../state/positions.js";
+import { trackPosition, setEntryPoolPrice, recordTrackedRange, setEntrySizeSol } from "../state/positions.js";
+import { resolveSpotRangeWithRentCheck, openSpotSolPosition } from "../meteora/spot-position.js";
 import { incrementEntryUsage, getEntryUsage, recordAction } from "./runtime.js";
 
 const STRATEGY_ENUM = { spot: "Spot", curve: "Curve", bid_ask: "BidAsk" };
@@ -252,4 +253,196 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
     feeMode: feePlan.mode,
     feeSol: feeCap.totalSol,
   };
+}
+
+// Entry instan posisi Spot satu sisi SOL (-95%..+15%, fallback -90%..+15% bila kena non-refundable rent).
+// Deposit SOL hanya masuk ke [minBinId .. activeBinId], bin (activeBinId+1 .. maxBinId] dibiarkan kosong.
+export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
+  const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;
+  const getDlmmSdkFn = opts.getDlmmSdk || getDlmmSdk;
+  const getConnectionFn = opts.getConnection || getConnection;
+  const getWalletFn = opts.getWallet || getWallet;
+  const getSolBalanceFn = opts.getSolBalance || (() => getTokenBalance("SOL"));
+  const buildFeePlanFn = opts.buildFeePlan || buildFeePlan;
+  const checkFeeCapFn = opts.checkFeeCap || checkFeeCap;
+  const sendAndConfirmFn = opts.sendAndConfirmRobust || sendAndConfirmRobust;
+  const dryRun = opts.dryRun ?? config.dryRun;
+  const skipNonRefundable = opts.skipNonRefundable ?? config.spotReentry?.skipNonRefundable ?? true;
+  const maxNonRefundableSol = opts.maxNonRefundableSol ?? config.spotReentry?.maxNonRefundableSol ?? 0;
+
+  try {
+    if (!(sizeSol > 0)) {
+      return { success: false, error: `spot entry size invalid: size=${sizeSol}` };
+    }
+
+    const { pool, baseMint, baseIsX, quoteMint, unsupported, collectFeeMode, pairName } =
+      await getPoolInfoFn(poolAddress);
+    if (unsupported || !baseMint) {
+      return {
+        success: false,
+        error: `unsupported pool: pair bukan SOL (quote ${quoteMint || "?"})`,
+        baseMint,
+      };
+    }
+
+    const activeBin = await pool.getActiveBin();
+    const activeBinId = Number(activeBin.binId);
+    const binStep = Number(pool.lbPair?.binStep) || 100;
+
+    const rangeRes = await resolveSpotRangeWithRentCheck({
+      pool,
+      activeBinId,
+      binStep,
+      lowerPctPrimary: -95,
+      lowerPctFallback: -90,
+      upperPct: 15,
+      skipNonRefundable,
+      maxNonRefundableSol,
+    });
+
+    const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
+
+    if (!rangeRes.ok) {
+      return {
+        success: false,
+        skipped: true,
+        redflagNonRefundable: Boolean(rangeRes.redflagNonRefundable),
+        cost95Sol: rangeRes.costPrimarySol,
+        cost90Sol: rangeRes.costFallbackSol,
+        reason: rangeRes.reason,
+        baseMint,
+        pair,
+      };
+    }
+
+    const {
+      minBinId,
+      maxBinId,
+      depositMinBinId,
+      depositMaxBinId,
+      lowerPctUsed,
+      upperPctUsed,
+      usedFallback,
+    } = rangeRes;
+
+    log.info(
+      `Executing SPOT entry on pool ${poolAddress.slice(0, 8)}... | size=${sizeSol} SOL | range=${lowerPctUsed}%..+${upperPctUsed}% ([${minBinId}..${maxBinId}], deposit SOL [${depositMinBinId}..${depositMaxBinId}])${usedFallback ? " [fallback -90%]" : ""}`
+    );
+
+    if (dryRun) {
+      log.info(
+        `[DRY RUN] Would open SPOT position (${lowerPctUsed}%..+${upperPctUsed}%, bins ${minBinId}..${maxBinId}, deposit ${depositMinBinId}..${depositMaxBinId}) with ${sizeSol} SOL single-sided`
+      );
+      return {
+        success: true,
+        dryRun: true,
+        mode: "spot",
+        minBinId,
+        maxBinId,
+        depositMinBinId,
+        depositMaxBinId,
+        lowerPctUsed,
+        upperPctUsed,
+        usedFallback,
+      };
+    }
+
+    const solBalance = await getSolBalanceFn();
+    const required = sizeSol + config.entry.gasReserve;
+    if (solBalance < required) {
+      return {
+        success: false,
+        error: `insufficient SOL: have ${solBalance.toFixed(4)}, need ${required.toFixed(4)}`,
+      };
+    }
+
+    const feePlan = buildFeePlanFn();
+    const feeCheck = checkFeeCapFn(feePlan);
+    if (!feeCheck.ok) {
+      return {
+        success: false,
+        error: `entry fee cap exceeded: est ${feeCheck.estimatedSol.toFixed(6)} SOL > max ${feeCheck.maxSol} SOL (mode=${feePlan.mode})`,
+      };
+    }
+
+    const { StrategyType } = await getDlmmSdkFn();
+    const strategyType = StrategyType?.Spot ?? 0;
+    const solLamports = new BN(Math.floor(sizeSol * LAMPORTS_PER_SOL));
+
+    const openRes = await openSpotSolPosition({
+      pool,
+      connection: getConnectionFn(),
+      wallet: getWalletFn(),
+      feePlan,
+      baseIsX,
+      solLamports,
+      minBinId,
+      maxBinId,
+      depositMinBinId,
+      depositMaxBinId,
+      strategyType,
+      slippage: config.entry.activeBinSlippagePct,
+      sendAndConfirmFn,
+    });
+
+    const positionAddress = openRes.positionPubkey;
+    const lastSig = openRes.lastSig;
+
+    log.info(
+      `SPOT position opened: ${positionAddress} (tx: ${lastSig}) | bins [${minBinId}..${maxBinId}] (${lowerPctUsed}%..+${upperPctUsed}%), SOL [${depositMinBinId}..${depositMaxBinId}]`
+    );
+
+    trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode ?? null, "spot", false);
+    recordTrackedRange(positionAddress, minBinId, maxBinId);
+    setEntrySizeSol(positionAddress, sizeSol);
+    const entryPoolPrice = poolPriceSolPerToken(activeBin, baseIsX);
+    if (entryPoolPrice != null) setEntryPoolPrice(positionAddress, entryPoolPrice);
+    incrementEntryUsage(poolAddress);
+
+    recordAction({
+      type: "entry",
+      position: positionAddress,
+      pool: poolAddress,
+      pair,
+      mode: "spot",
+      sizeSol,
+      lowerPctUsed,
+      upperPctUsed,
+      minBinId,
+      maxBinId,
+      depositMinBinId,
+      depositMaxBinId,
+      txSig: lastSig,
+      dryRun: false,
+    });
+
+    await tg.notifyEntry({
+      pool: poolAddress,
+      pair,
+      position: positionAddress,
+      sizeSol,
+      solAmount: sizeSol,
+      tokenAmountSol: 0,
+      strategy: `spot (${lowerPctUsed}%..+${upperPctUsed}%, SOL 1-sisi)`,
+      txSig: lastSig,
+      dryRun: false,
+    });
+
+    return {
+      success: true,
+      mode: "spot",
+      position: positionAddress,
+      txSig: lastSig,
+      minBinId,
+      maxBinId,
+      depositMinBinId,
+      depositMaxBinId,
+      lowerPctUsed,
+      upperPctUsed,
+      usedFallback,
+    };
+  } catch (err) {
+    log.error(`Spot entry execution failed on ${poolAddress}: ${err.message}`);
+    return { success: false, error: err.message };
+  }
 }

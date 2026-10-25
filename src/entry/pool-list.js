@@ -8,17 +8,61 @@ function poolListPath() {
   return path.resolve(ROOT, config.entry.poolListFile);
 }
 
+const TIER_MULTIPLIERS = {
+  "1x": 1,
+  "1.25x": 1.25,
+  "1.5x": 1.5,
+  tier1: 1,
+  tier2: 1.25,
+  tier3: 1.5,
+};
+
+function resolveSizeSol(sizeRaw, defaultSize) {
+  if (!sizeRaw) return defaultSize;
+  const key = sizeRaw.toLowerCase();
+  if (key in TIER_MULTIPLIERS) {
+    return Number((defaultSize * TIER_MULTIPLIERS[key]).toFixed(6));
+  }
+  if (key.endsWith("x")) {
+    const mult = Number(key.slice(0, -1));
+    if (Number.isFinite(mult) && mult > 0) {
+      return Number((defaultSize * mult).toFixed(6));
+    }
+    return NaN;
+  }
+  return Number(sizeRaw);
+}
+
+function resolveEntryMode(modeRaw) {
+  if (!modeRaw) return "bidask:double";
+  const key = String(modeRaw).trim().toLowerCase();
+  if (key === "spot") return "spot";
+  if (key === "bidask" || key === "bidask:double") return "bidask:double";
+  return null;
+}
+
 // Baris `alamat` saja memakai default dari .env (ENTRY_DEFAULT_SIZE_SOL /
-// ENTRY_DEFAULT_MAX_POSITION); `alamat,size,max` tetap meng-override.
+// ENTRY_DEFAULT_MAX_POSITION); `alamat,size,max` atau `alamat,size,max,spot` meng-override.
 export function parsePoolList(raw) {
+  const defaultSize = Number(config.entry.defaultSizeSol);
+  const defaultMax = Number(config.entry.defaultMaxPositions);
   const entries = [];
-  for (const line of raw.split("\n")) {
+
+  for (const line of String(raw || "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    const [address, sizeRaw, maxRaw] = trimmed.split(",").map((s) => s.trim());
+
+    const [address, sizeRaw, maxRaw, modeRaw] = trimmed.split(",").map((s) => s.trim());
     if (!address) continue;
 
-    const sizeSol = sizeRaw ? Number(sizeRaw) : config.entry.defaultSizeSol;
+    const secondIsSpot = Boolean(sizeRaw && sizeRaw.toLowerCase() === "spot" && !modeRaw);
+    const mode = secondIsSpot ? "spot" : resolveEntryMode(modeRaw);
+    if (!mode) {
+      log.warn(`Pool ${address.slice(0, 8)} skipped: entry_mode invalid "${modeRaw ?? ""}" (gunakan spot atau bidask:double)`);
+      continue;
+    }
+
+    const sizeSol = secondIsSpot ? defaultSize : resolveSizeSol(sizeRaw, defaultSize);
     if (!Number.isFinite(sizeSol) || sizeSol <= 0) {
       log.warn(
         `Pool ${address.slice(0, 8)} skipped: entry_size invalid "${sizeRaw ?? ""}" (set ENTRY_DEFAULT_SIZE_SOL atau tulis alamat,size,max)`
@@ -26,9 +70,9 @@ export function parsePoolList(raw) {
       continue;
     }
 
-    const maxNum = maxRaw ? Number(maxRaw) : config.entry.defaultMaxPositions;
-    const maxPositions = Number.isFinite(maxNum) && maxNum > 0 ? Math.floor(maxNum) : config.entry.defaultMaxPositions;
-    entries.push({ pool: address, sizeSol, maxPositions });
+    const maxNum = maxRaw ? Number(maxRaw) : defaultMax;
+    const maxPositions = Number.isFinite(maxNum) && maxNum > 0 ? Math.floor(maxNum) : defaultMax;
+    entries.push({ pool: address, sizeSol, maxPositions, mode });
   }
   return entries;
 }

@@ -317,3 +317,17 @@ export function notifyStatus(positions) {
   const msg = buildStatusMessage(positions);
   if (msg) send(msg);
 }
+
+export async function notifySpotNonRefundableSkipped({ pool, pair, cost95Sol, cost90Sol, context }) {
+  const c95 = Number.isFinite(Number(cost95Sol)) ? `${Number(cost95Sol).toFixed(6)} SOL` : "-";
+  const c90 = Number.isFinite(Number(cost90Sol)) ? `${Number(cost90Sol).toFixed(6)} SOL` : "-";
+  const lines = [
+    `🚨 *REDFLAG NON-REFUNDABLE RENT — SKIP SPOT*`,
+    pair ? `Pair: \`${pair}\`` : null,
+    pool ? `Pool: \`${pool}\`` : null,
+    context ? `Tahap: ${context}` : null,
+    `Rent -95%: ${c95} | Fallback -90%: ${c90}`,
+    `Pool di-skip & dinonaktifkan di pool.txt.`,
+  ].filter(Boolean);
+  await send(lines.join("\n"));
+}

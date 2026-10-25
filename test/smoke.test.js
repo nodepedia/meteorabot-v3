@@ -36,6 +36,7 @@ const MODULES = [
   "../src/meteora/positions.js",
   "../src/meteora/close.js",
   "../src/meteora/open-token-position.js",
+  "../src/meteora/spot-position.js",
   "../src/notify/telegram.js",
   "../src/entry/index.js",
   "../src/entry/runtime.js",

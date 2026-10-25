@@ -8,10 +8,35 @@ import path from "path";
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "meteorabot-reentry-"));
 process.env.STATE_FILE = path.join(TMP, "state.json");
 
-const { trackPosition, getTrackedPosition, recordTrackedRange, getSpotReentryCount, setSpotReentryCount } =
-  await import("../src/state/positions.js");
-const { reentryBinRange, shouldReenter, canSpotReenter, nonRefundableCost, exceedsNonRefundable } =
-  await import("../src/exit/spot-reentry.js");
+const { Keypair } = await import("@solana/web3.js");
+const { default: config } = await import("../src/config/index.js");
+const {
+  trackPosition,
+  getTrackedPosition,
+  recordTrackedRange,
+  getSpotReentryCount,
+  setSpotReentryCount,
+  setEntrySizeSol,
+  getEntrySizeSol,
+} = await import("../src/state/positions.js");
+const {
+  reentryBinRange,
+  shouldReenter,
+  canSpotReenter,
+  nonRefundableCost,
+  exceedsNonRefundable,
+  handleSpotOorKananReentry,
+  getSpotReentryCooldownRemainingMs,
+  setLastSpotReentryAt,
+  clearSpotReentryCooldown,
+} = await import("../src/exit/spot-reentry.js");
+const {
+  calcBinsForPricePct,
+  resolveSpotRangeWithRentCheck,
+  openSpotSolPosition,
+} = await import("../src/meteora/spot-position.js");
+const { executeSpotEntry } = await import("../src/entry/execute.js");
+const { startSpotEntry } = await import("../src/entry/index.js");
 
 const POOL = "PoolReentry11111111111111111111111111111111";
 const POS = "PosReentry111111111111111111111111111111111";
@@ -83,4 +108,341 @@ test("canSpotReenter membaca binSpan + counter dari state", () => {
 
   setSpotReentryCount(POS, 10);
   assert.equal(canSpotReenter(pos, "oor_kanan"), false);
+});
+
+test("calcBinsForPricePct: hitung bin untuk -95%, -90%, dan +15% (binStep=100)", () => {
+  assert.equal(calcBinsForPricePct(100, -95), 301);
+  assert.equal(calcBinsForPricePct(100, -90), 231);
+  assert.equal(calcBinsForPricePct(100, 15), 14);
+});
+
+test("resolveSpotRangeWithRentCheck: -95% aman -> pakai -95%..+15%, deposit SOL hanya sampai activeBin", async () => {
+  const pool = {
+    async quoteCreatePosition({ strategy }) {
+      return {
+        positionCost: 0.0574,
+        binArrayCost: 0,
+        bitmapExtensionCost: 0,
+        strategy,
+      };
+    },
+  };
+  const res = await resolveSpotRangeWithRentCheck({
+    pool,
+    activeBinId: 1000,
+    binStep: 100,
+    lowerPctPrimary: -95,
+    lowerPctFallback: -90,
+    upperPct: 15,
+    skipNonRefundable: true,
+    maxNonRefundableSol: 0,
+  });
+
+  assert.equal(res.ok, true);
+  assert.equal(res.usedFallback, false);
+  assert.equal(res.lowerPctUsed, -95);
+  assert.equal(res.upperPctUsed, 15);
+  assert.equal(res.minBinId, 699); // 1000 - 301
+  assert.equal(res.maxBinId, 1014); // 1000 + 14
+  assert.equal(res.depositMinBinId, 699);
+  assert.equal(res.depositMaxBinId, 1000); // +15% di atas activeBin kosong!
+});
+
+test("resolveSpotRangeWithRentCheck: -95% kena non-refundable -> fallback ke -90%..+15%", async () => {
+  const calls = [];
+  const pool = {
+    async quoteCreatePosition({ strategy }) {
+      calls.push(strategy);
+      if (strategy.minBinId === 699) {
+        return { binArrayCost: 0.07143744, bitmapExtensionCost: 0 };
+      }
+      return { binArrayCost: 0, bitmapExtensionCost: 0, positionCost: 0.0574 };
+    },
+  };
+  const res = await resolveSpotRangeWithRentCheck({
+    pool,
+    activeBinId: 1000,
+    binStep: 100,
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(res.ok, true);
+  assert.equal(res.usedFallback, true);
+  assert.equal(res.lowerPctUsed, -90);
+  assert.equal(res.upperPctUsed, 15);
+  assert.equal(res.minBinId, 769); // 1000 - 231
+  assert.equal(res.maxBinId, 1014); // 1000 + 14
+  assert.equal(res.depositMinBinId, 769);
+  assert.equal(res.depositMaxBinId, 1000);
+});
+
+test("resolveSpotRangeWithRentCheck: -95% dan -90% sama-sama kena non-refundable -> redflag skip", async () => {
+  const pool = {
+    async quoteCreatePosition() {
+      return { binArrayCost: 0.07143744, bitmapExtensionCost: 0 };
+    },
+  };
+  const res = await resolveSpotRangeWithRentCheck({
+    pool,
+    activeBinId: 1000,
+    binStep: 100,
+  });
+
+  assert.equal(res.ok, false);
+  assert.equal(res.redflagNonRefundable, true);
+  assert.equal(res.costPrimarySol, 0.07143744);
+  assert.equal(res.costFallbackSol, 0.07143744);
+});
+
+test("openSpotSolPosition: createExtendedEmptyPosition [min..max] lalu deposit SOL hanya di [min..activeBin] per chunk <= 70 bin", async () => {
+  const wallet = Keypair.generate();
+  const newPos = Keypair.generate();
+  let extendedRange = null;
+  const addedChunks = [];
+
+  const pool = {
+    async createExtendedEmptyPosition(lower, upper, posPubkey, ownerPubkey) {
+      extendedRange = { lower, upper, pos: posPubkey.toString(), owner: ownerPubkey.toString() };
+      return { type: "init_extended" };
+    },
+    async addLiquidityByStrategy({ strategy, totalXAmount, totalYAmount }) {
+      addedChunks.push({
+        minBinId: strategy.minBinId,
+        maxBinId: strategy.maxBinId,
+        x: totalXAmount.toString(),
+        y: totalYAmount.toString(),
+      });
+      return { type: "add_chunk" };
+    },
+  };
+
+  let sigCounter = 0;
+  const res = await openSpotSolPosition({
+    pool,
+    connection: {},
+    wallet,
+    feePlan: { mode: "none" },
+    baseIsX: true,
+    solLamports: 200_000_000n,
+    minBinId: 699,
+    maxBinId: 1014,
+    depositMinBinId: 699,
+    depositMaxBinId: 1000,
+    strategyType: 0,
+    slippage: 10,
+    newPositionKeypair: newPos,
+    sendAndConfirmFn: async () => `sig_${++sigCounter}`,
+  });
+
+  assert.equal(res.usedExtended, true);
+  assert.deepEqual(extendedRange, {
+    lower: 699,
+    upper: 1014,
+    pos: newPos.publicKey.toString(),
+    owner: wallet.publicKey.toString(),
+  });
+  // Deposit hanya mencakup 699..1000 (302 bin -> 5 chunk), bin 1001..1014 (+15%) kosong!
+  assert.equal(addedChunks.length, 5);
+  assert.equal(addedChunks[0].minBinId, 699);
+  assert.equal(addedChunks[addedChunks.length - 1].maxBinId, 1000);
+  const totalDepositedY = addedChunks.reduce((acc, c) => acc + BigInt(c.y), 0n);
+  assert.equal(totalDepositedY, 200_000_000n);
+  assert.ok(addedChunks.every((c) => c.x === "0"));
+});
+
+test("executeSpotEntry: buka posisi Spot instan, simpan entrySizeSol & range [-95%..+15%], atau redflag skip bila -90% non-refundable", async () => {
+  resetState();
+  const wallet = Keypair.generate();
+  const addedChunks = [];
+
+  const mockPool = {
+    lbPair: { binStep: 100 },
+    async getActiveBin() {
+      return { binId: 1000, pricePerToken: "0.001" };
+    },
+    async quoteCreatePosition({ strategy }) {
+      // -95% (699) kena rent, -90% (769) bebas rent -> fallback -90%
+      if (strategy.minBinId === 699) return { binArrayCost: 0.07143744, bitmapExtensionCost: 0 };
+      return { binArrayCost: 0, bitmapExtensionCost: 0 };
+    },
+    async createExtendedEmptyPosition() {
+      return { tx: "init" };
+    },
+    async addLiquidityByStrategy({ strategy, totalYAmount }) {
+      addedChunks.push({ minBinId: strategy.minBinId, maxBinId: strategy.maxBinId, y: totalYAmount.toString() });
+      return { tx: "add" };
+    },
+  };
+
+  const entryRes = await executeSpotEntry(POOL, 0.25, {
+    dryRun: false,
+    getPoolInfo: async () => ({
+      pool: mockPool,
+      baseMint: "MintRunner111111111111111111111111111111111",
+      baseIsX: true,
+      quoteMint: "So11111111111111111111111111111111111111112",
+      unsupported: false,
+      collectFeeMode: 1,
+      pairName: "RUN-SOL",
+    }),
+    getDlmmSdk: async () => ({ StrategyType: { Spot: 0 } }),
+    getConnection: () => ({}),
+    getWallet: () => wallet,
+    getSolBalance: async () => 5,
+    buildFeePlan: () => ({ mode: "none" }),
+    checkFeeCap: () => ({ ok: true, estimatedSol: 0, maxSol: 0.002 }),
+    sendAndConfirmRobust: async () => "tx_spot_entry_1",
+  });
+
+  assert.equal(entryRes.success, true);
+  assert.equal(entryRes.usedFallback, true);
+  assert.equal(entryRes.lowerPctUsed, -90);
+  assert.equal(entryRes.upperPctUsed, 15);
+  assert.equal(entryRes.minBinId, 769);
+  assert.equal(entryRes.maxBinId, 1014);
+  assert.equal(entryRes.depositMinBinId, 769);
+  assert.equal(entryRes.depositMaxBinId, 1000);
+  assert.equal(getEntrySizeSol(entryRes.position), 0.25);
+  assert.equal(getTrackedPosition(entryRes.position).binSpan, 1014 - 769);
+
+  // Test redflag skip ketika -95% dan -90% sama-sama kena non-refundable rent
+  const redflagPool = {
+    lbPair: { binStep: 100 },
+    async getActiveBin() {
+      return { binId: 1000, pricePerToken: "0.001" };
+    },
+    async quoteCreatePosition() {
+      return { binArrayCost: 0.07143744, bitmapExtensionCost: 0 };
+    },
+  };
+  const skipRes = await executeSpotEntry(POOL, 0.25, {
+    dryRun: false,
+    getPoolInfo: async () => ({
+      pool: redflagPool,
+      baseMint: "MintRunner111111111111111111111111111111111",
+      baseIsX: true,
+      quoteMint: "So11111111111111111111111111111111111111112",
+      unsupported: false,
+      pairName: "RUN-SOL",
+    }),
+  });
+  assert.equal(skipRes.success, false);
+  assert.equal(skipRes.skipped, true);
+  assert.equal(skipRes.redflagNonRefundable, true);
+});
+
+test("handleSpotOorKananReentry: warisi entrySizeSol, pakai range -95%..+15%, dan jaga cooldown 2 menit antar loop", async () => {
+  resetState();
+  clearSpotReentryCooldown();
+  const savedReentry = { ...config.spotReentry };
+  Object.assign(config.spotReentry, {
+    enabled: true,
+    sizeSol: 0.2,
+    maxReentries: 10,
+    cooldownSec: 120,
+    skipNonRefundable: true,
+    maxNonRefundableSol: 0,
+  });
+
+  try {
+    trackPosition(POS, POOL, "RUN-SOL", "MintRunner111111111111111111111111111111111", 1, "spot");
+    recordTrackedRange(POS, 699, 1014);
+    setEntrySizeSol(POS, 0.3); // 1.5x dari 0.2 SOL
+
+    const wallet = Keypair.generate();
+    const mockPool = {
+      lbPair: { binStep: 100 },
+      async getActiveBin() {
+        return { binId: 1020, pricePerToken: "0.0012" };
+      },
+      async quoteCreatePosition() {
+        return { binArrayCost: 0, bitmapExtensionCost: 0, positionCost: 0.0574 };
+      },
+      async createExtendedEmptyPosition() {
+        return { tx: "init" };
+      },
+      async addLiquidityByStrategy() {
+        return { tx: "add" };
+      },
+    };
+
+    const res = await handleSpotOorKananReentry(
+      { position: POS, pool: POOL, pair: "RUN-SOL", mode: "spot" },
+      {
+        dryRun: false,
+        getPoolInfo: async () => ({
+          pool: mockPool,
+          baseMint: "MintRunner111111111111111111111111111111111",
+          baseIsX: true,
+          unsupported: false,
+          collectFeeMode: 1,
+        }),
+        getDlmmSdk: async () => ({ StrategyType: { Spot: 0 } }),
+        getConnection: () => ({}),
+        getWallet: () => wallet,
+        getSolBalance: async () => 5,
+        buildFeePlan: () => ({ mode: "none" }),
+        checkFeeCap: () => ({ ok: true, estimatedSol: 0, maxSol: 0.002 }),
+        sendAndConfirmRobust: async () => "tx_reentry_1",
+      }
+    );
+
+    assert.equal(res.success, true);
+    assert.equal(res.count, 1);
+    assert.equal(res.sizeSol, 0.3); // mewarisi entrySizeSol (0.3 SOL), bukan default 0.2 SOL
+    assert.equal(res.minBinId, 1020 - 301);
+    assert.equal(res.maxBinId, 1020 + 14);
+    assert.equal(res.depositMinBinId, 1020 - 301);
+    assert.equal(res.depositMaxBinId, 1020);
+    assert.equal(getEntrySizeSol(res.position), 0.3);
+    assert.equal(getSpotReentryCount(res.position), 1);
+
+    // Cooldown 2 menit (120s) langsung aktif untuk pool tersebut
+    assert.ok(getSpotReentryCooldownRemainingMs(POOL) > 110_000);
+    setLastSpotReentryAt(POOL, Date.now() - 121_000);
+    assert.equal(getSpotReentryCooldownRemainingMs(POOL), 0);
+  } finally {
+    clearSpotReentryCooldown();
+    Object.assign(config.spotReentry, savedReentry);
+  }
+});
+
+test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langsung ditandai # di pool.txt", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spot-redflag-"));
+  const poolFile = path.join(dir, "pool.txt");
+  const poolAddr = "3C6qVymTAwWNKCSspmd1qbUH9avaqhsjgW2yntvEYBXt";
+  fs.writeFileSync(poolFile, `${poolAddr},1.25x,1,spot\n`, "utf8");
+
+  const savedDryRun = config.dryRun;
+  const savedPoolListFile = config.entry.poolListFile;
+  config.dryRun = false;
+  config.entry.poolListFile = poolFile;
+
+  try {
+    const res = await startSpotEntry(
+      {
+        pool: poolAddr,
+        mint: "MintRunner111111111111111111111111111111111",
+        sizeSol: 0.25,
+        pairName: "RUN-SOL",
+        mode: "spot",
+      },
+      async () => ({
+        success: false,
+        skipped: true,
+        redflagNonRefundable: true,
+        cost95Sol: 0.07143744,
+        cost90Sol: 0.07143744,
+        pair: "RUN-SOL",
+      })
+    );
+
+    assert.equal(res.skipped, true);
+    assert.equal(res.redflagNonRefundable, true);
+    assert.equal(fs.readFileSync(poolFile, "utf8"), `#${poolAddr},1.25x,1,spot\n`);
+  } finally {
+    config.dryRun = savedDryRun;
+    config.entry.poolListFile = savedPoolListFile;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -6,7 +6,7 @@ import { loadPoolList, commentPoolInList } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
-import { executeEntry } from "./execute.js";
+import { executeEntry, executeSpotEntry } from "./execute.js";
 import { selectWatchCandidates } from "./candidates.js";
 import {
   addEntryInProgressMint,
@@ -109,11 +109,12 @@ export async function refreshCandidates() {
     // bukan hitungan on-chain, agar posisi mode lain (mis. spot manual) tidak
     // memblokir entry.
     const openBotByPool = countOpenBotPositionsByPool(ENTRY_MODE);
+    const openSpotByPool = countOpenBotPositionsByPool("spot");
     const now = Date.now();
     const candidates = [];
     const stillOpen = new Set();
 
-    for (const { pool: poolAddress, sizeSol, maxPositions } of pools) {
+    for (const { pool: poolAddress, sizeSol, maxPositions, mode = ENTRY_MODE } of pools) {
       if (skipped.has(poolAddress)) continue;
 
       const cooldownUntil = failureCooldownUntil.get(poolAddress) || 0;
@@ -140,7 +141,11 @@ export async function refreshCandidates() {
         continue;
       }
 
-      if ((openBotByPool.get(poolAddress) || 0) >= config.entry.maxConcurrentBidaskDouble) {
+      const openCount =
+        mode === "spot"
+          ? (openSpotByPool.get(poolAddress) || 0) + (openBotByPool.get(poolAddress) || 0)
+          : openBotByPool.get(poolAddress) || 0;
+      if (openCount >= config.entry.maxConcurrentBidaskDouble) {
         stillOpen.add(poolAddress);
         continue;
       }
@@ -166,11 +171,23 @@ export async function refreshCandidates() {
         continue;
       }
 
+      if (mode === "spot") {
+        startSpotEntry({
+          pool: poolAddress,
+          mint: info.baseMint,
+          sizeSol,
+          pairName: info.pairName,
+          mode: "spot",
+        });
+        continue;
+      }
+
       candidates.push({
         pool: poolAddress,
         mint: info.baseMint,
         sizeSol,
         pairName: info.pairName,
+        mode,
       });
     }
 
@@ -346,6 +363,96 @@ function startEntry(trigger, candidate) {
       }
     })
     .catch((err) => log.error(`Entry error for ${pool.slice(0, 8)}: ${err.message}`))
+    .finally(() => {
+      removeEntryInProgressPool(pool);
+      removeEntryInProgressMint(mint);
+    });
+}
+
+
+// Entry instan untuk pool mode="spot" (Runner Spot): langsung eksekusi saat refreshCandidates
+// tanpa menunggu sinyal Supertrend 15m.
+export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry) {
+  const { pool, mint, sizeSol, pairName } = candidate;
+  if (inFlightPools.has(pool) || isPoolClosing(pool) || enteredPools.has(pool)) return null;
+
+  const pair = pairName || `${mint.slice(0, 4)}-SOL`;
+  log.info(`Pool ${pool.slice(0, 8)} (${pair}) mode=spot — entry instan tanpa tunggu Supertrend (${sizeSol} SOL)`);
+
+  if (config.dryRun) {
+    if (!dryRunNoted.has(pool)) {
+      dryRunNoted.add(pool);
+      log.info(`[DRY RUN] Would enter SPOT ${pair} immediately — ${sizeSol} SOL (-95%..+15% SOL 1-sisi)`);
+    }
+    return null;
+  }
+
+  addEntryInProgressPool(pool);
+  addEntryInProgressMint(mint);
+
+  return executeSpotEntryFn(pool, sizeSol)
+    .then((result) => {
+      if (result.success) {
+        enteredPools.set(pool, Date.now());
+        firstSeenAt.delete(pool);
+        failureCooldownUntil.delete(pool);
+        failureCounts.delete(pool);
+        return result;
+      }
+
+      if (result.skipped && result.redflagNonRefundable) {
+        log.warn(
+          `Pool ${pool.slice(0, 8)} (${pair}) REDFLAG non-refundable rent pada -95% dan -90% — skip & nonaktifkan pool`
+        );
+        deactivatePool(pool, "redflag non-refundable rent (-95% & -90%)");
+        tg.notifySpotNonRefundableSkipped({
+          pool,
+          pair: result.pair || pair,
+          cost95Sol: result.cost95Sol,
+          cost90Sol: result.cost90Sol,
+          context: "Entry Spot Instan",
+        });
+        return result;
+      }
+
+      if (result.skipped) {
+        log.warn(`Pool ${pool.slice(0, 8)} dilewati: ${result.reason || "spot entry skipped"}`);
+        return result;
+      }
+
+      log.warn(`Spot entry failed for ${pool.slice(0, 8)}: ${result.error}`);
+      const failures = (failureCounts.get(pool) || 0) + 1;
+      failureCounts.set(pool, failures);
+      if (failures >= config.entry.maxFailures) {
+        deactivatePool(pool, `gagal spot entry ${failures}x`);
+        log.error(`Pool ${pool.slice(0, 8)} aborted after ${failures} failed spot entries — dinonaktifkan`);
+        tg.notifyEntryAborted({
+          pool,
+          pair,
+          attempts: failures,
+          error: result.error,
+        });
+      } else {
+        const cooldownSec = Math.max(0, Number(config.entry.failureCooldownSec) || 0);
+        const cooldownMs = cooldownSec * 1000;
+        if (cooldownMs > 0) {
+          failureCooldownUntil.set(pool, Date.now() + cooldownMs);
+          log.info(
+            `Pool ${pool.slice(0, 8)} cooldown ${config.entry.failureCooldownSec}s after failed spot entry (${failures}/${config.entry.maxFailures})`
+          );
+        }
+        tg.notifyEntryFailed({
+          pool,
+          pair,
+          error: result.error,
+          attempts: failures,
+          maxFailures: config.entry.maxFailures,
+          cooldownSec,
+        });
+      }
+      return result;
+    })
+    .catch((err) => log.error(`Spot entry error for ${pool.slice(0, 8)}: ${err.message}`))
     .finally(() => {
       removeEntryInProgressPool(pool);
       removeEntryInProgressMint(mint);

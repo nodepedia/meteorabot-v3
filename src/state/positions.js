@@ -342,3 +342,21 @@ export function markClosedNotDetected(positionAddress) {
   recordClose(positionAddress, "not_detected", null);
   return getTrackedPosition(positionAddress);
 }
+
+export function getEntrySizeSol(positionAddress) {
+  const s = readState();
+  const n = Number(s.positions?.[positionAddress]?.entrySizeSol);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+export function setEntrySizeSol(positionAddress, sizeSol) {
+  if (!positionAddress) return;
+  const num = Number(sizeSol);
+  if (!Number.isFinite(num) || num <= 0) return;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (p) {
+    p.entrySizeSol = num;
+    writeState(state);
+  }
+}

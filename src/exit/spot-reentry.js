@@ -1,259 +1,393 @@
-import { Keypair } from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import BN from "bn.js";
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
 import { getConnection } from "../solana/connection.js";
 import { getWallet } from "../solana/wallet.js";
+import { getTokenBalance } from "../solana/balances.js";
 import { buildFeePlan, checkFeeCap } from "../solana/fees.js";
 import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
+import {
+  nonRefundableCost,
+  exceedsNonRefundable,
+  resolveSpotRangeWithRentCheck,
+  openSpotSolPosition,
+} from "../meteora/spot-position.js";
 import { getPoolInfo } from "../entry/pool-info.js";
-import { addEntryInProgressPool, removeEntryInProgressPool, recordAction } from "../entry/runtime.js";
 import {
   trackPosition,
-  recordTrackedRange,
   getTrackedPosition,
+  recordTrackedRange,
   getSpotReentryCount,
   setSpotReentryCount,
+  setEntrySizeSol,
 } from "../state/positions.js";
+import { recordAction } from "../entry/runtime.js";
+import { deactivatePool } from "../entry/index.js";
 
-// Guard per-posisi: cegah re-entry jalan dobel untuk posisi yang sama.
-const reentryInProgress = new Set();
+export { nonRefundableCost, exceedsNonRefundable };
 
-// Pure: range spot SOL-only satu-sisi, `binSpan` bin di bawah harga aktif.
-// Anchor selalu ke active bin (harga sekarang), jadi persentase range tetap.
-export function reentryBinRange(activeBinId, binSpan) {
-  const active = Math.floor(Number(activeBinId));
-  const span = Math.max(0, Math.floor(Number(binSpan) || 0));
-  return { minBinId: active - span, maxBinId: active };
+// Cooldown per pool antar loop re-entry OOR kanan (default 120s = 2 menit).
+const lastReentryAtByPool = new Map();
+
+export function setLastSpotReentryAt(poolAddress, ts = Date.now()) {
+  if (!poolAddress) return;
+  lastReentryAtByPool.set(poolAddress, Number(ts));
 }
 
-// Pure: total biaya NON-REFUNDABLE dari quoteCreatePosition (SOL). Sewa bin
-// array / bitmap extension hangus; sewa akun posisi (refundable) tidak dihitung.
-export function nonRefundableCost(quote) {
-  const binArray = Number(quote?.binArrayCost) || 0;
-  const bitmap = Number(quote?.bitmapExtensionCost) || 0;
-  return binArray + bitmap;
+export function clearSpotReentryCooldown(poolAddress) {
+  if (!poolAddress) {
+    lastReentryAtByPool.clear();
+    return;
+  }
+  lastReentryAtByPool.delete(poolAddress);
 }
 
-// Pure: apakah biaya non-refundable melewati batas yang diizinkan.
-export function exceedsNonRefundable(cost, maxSol) {
-  const c = Number(cost) || 0;
-  const m = Number.isFinite(Number(maxSol)) ? Math.max(0, Number(maxSol)) : 0;
-  return c > m;
+export function getSpotReentryCooldownRemainingMs(
+  poolAddress,
+  now = Date.now(),
+  cooldownSec = config.spotReentry?.cooldownSec ?? 120
+) {
+  if (!poolAddress) return 0;
+  const sec = Number(cooldownSec);
+  if (!Number.isFinite(sec) || sec <= 0) return 0;
+  const lastAt = lastReentryAtByPool.get(poolAddress);
+  if (!Number.isFinite(lastAt) || lastAt <= 0) return 0;
+  return Math.max(0, lastAt + sec * 1000 - now);
 }
 
-// Pure: putuskan apakah posisi yang mau ditutup layak di-re-entry.
+/**
+ * Pure: hitung range bin untuk posisi re-entry spot SOL-only legacy (tanpa binStep).
+ * Posisi spot SOL-only di-anchor dari activeBin ke bawah sepanjang `span` bin
+ * (jumlah bin yang sama dengan posisi yang baru ditutup karena OOR kanan).
+ */
+export function reentryBinRange(activeBinId, span) {
+  const safeSpan = Math.max(0, Math.floor(Number(span) || 0));
+  return {
+    minBinId: activeBinId - safeSpan,
+    maxBinId: activeBinId,
+  };
+}
+
+/**
+ * Pure: apakah posisi yang ditutup memenuhi syarat re-entry OOR kanan?
+ */
 export function shouldReenter({ mode, reason, span, count, cfg }) {
-  if (!cfg?.enabled || !(cfg.sizeSol > 0)) return false;
-  if (mode !== "spot" || reason !== "oor_kanan") return false;
-  const s = Number(span);
-  if (!Number.isFinite(s) || s <= 0) return false;
-  const c = Number(count) || 0;
-  return c < cfg.maxReentries;
+  if (!cfg?.enabled) return false;
+  if (!(cfg.sizeSol > 0)) return false;
+  if (mode !== "spot") return false;
+  if (reason !== "oor_kanan") return false;
+  if (!Number.isFinite(span) || span <= 0) return false;
+  if (count >= cfg.maxReentries) return false;
+  return true;
 }
 
-// Baca state posisi lalu nilai kelayakan re-entry (dipakai loop exit).
+/**
+ * Cek cepat sebelum close: apakah posisi ini akan di-re-enter setelah close?
+ * Dipakai agar handleClose tidak menandai pool `#` di pool.txt saat kita
+ * justru mau langsung membuka posisi baru di pool yang sama.
+ */
 export function canSpotReenter(pos, reason) {
-  if (!pos?.position) return false;
   const tracked = getTrackedPosition(pos.position);
+  const span = tracked?.binSpan || pos.binSpan || 0;
+  const count = getSpotReentryCount(pos.position);
+  const sizeSol = tracked?.entrySizeSol > 0 ? tracked.entrySizeSol : config.spotReentry.sizeSol;
+  const cfg = { ...config.spotReentry, sizeSol };
   return shouldReenter({
     mode: pos.mode,
     reason,
-    span: tracked?.binSpan,
-    count: getSpotReentryCount(pos.position),
-    cfg: config.spotReentry,
+    span,
+    count,
+    cfg,
   });
 }
 
-// OOR kanan spot: buka posisi spot SOL-only baru di harga aktif dengan jumlah
-// bin ke bawah sama seperti posisi yang barusan ditutup. Return true bila
-// posisi baru berhasil dibuka (atau dry-run).
-export async function handleSpotOorKananReentry(pos) {
+/**
+ * Buka posisi spot SOL-only baru di pool yang sama setelah posisi spot lama
+ * ditutup karena OOR kanan.
+ * - Menggunakan entrySizeSol dari posisi sebelumnya (mis. 1x / 1.25x / 1.5x dari Runner Spot),
+ *   atau fallback ke SPOT_REENTRY_SIZE_SOL.
+ * - Bila pool.lbPair.binStep tersedia: buka range -95%..+15% (fallback -90%..+15% bila kena
+ *   non-refundable rent; bila -90% masih kena non-refundable -> redflag skip + alert).
+ *   Deposit SOL satu sisi hanya di [minBinId .. activeBinId], bin di atas activeBin kosong.
+ * - Counter `spotReentryCount` dan `entrySizeSol` diteruskan ke posisi baru (maks SPOT_REENTRY_MAX).
+ * - Cooldown antar loop per pool dijaga sesuai SPOT_REENTRY_COOLDOWN_SEC (2 menit).
+ */
+export async function handleSpotOorKananReentry(pos, opts = {}) {
+  const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;
+  const getDlmmSdkFn = opts.getDlmmSdk || getDlmmSdk;
+  const getConnectionFn = opts.getConnection || getConnection;
+  const getWalletFn = opts.getWallet || getWallet;
+  const getSolBalanceFn = opts.getSolBalance || (() => getTokenBalance("SOL"));
+  const buildFeePlanFn = opts.buildFeePlan || buildFeePlan;
+  const checkFeeCapFn = opts.checkFeeCap || checkFeeCap;
+  const sendAndConfirmFn = opts.sendAndConfirmRobust || sendAndConfirmRobust;
+  const dryRun = opts.dryRun ?? config.dryRun;
+
+  if (!canSpotReenter(pos, "oor_kanan")) return { skipped: true };
+
   const cfg = config.spotReentry;
-  const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
-  if (!cfg?.enabled || !pos?.position || pos.mode !== "spot" || !pos.pool) return false;
-
-  if (reentryInProgress.has(pos.position)) {
-    log.info(`Re-entry ${pair}: sudah diproses, lewati`);
-    return true;
-  }
-
+  const pair = pos.pair || pos.position?.slice(0, 8) || "?";
   const tracked = getTrackedPosition(pos.position);
-  const span = Number(tracked?.binSpan);
-  if (!Number.isFinite(span) || span <= 0) {
-    log.warn(`Re-entry ${pair}: binSpan tidak tercatat — dilewati`);
-    return false;
-  }
-
+  const span = tracked?.binSpan || pos.binSpan || 0;
   const prevCount = getSpotReentryCount(pos.position);
-  if (prevCount >= cfg.maxReentries) {
-    log.info(`Re-entry ${pair}: batas ${cfg.maxReentries}x tercapai — berhenti`);
-    recordAction(`RE-ENTRY ${pair} — batas ${cfg.maxReentries}x tercapai`);
-    return false;
-  }
-
   const nextCount = prevCount + 1;
+  const sizeSol = tracked?.entrySizeSol > 0 ? tracked.entrySizeSol : cfg.sizeSol;
 
-  if (config.dryRun) {
-    log.info(
-      `[DRY RUN] Would re-entry ${pair} — ${cfg.sizeSol} SOL, ${span} bin ke bawah (${nextCount}/${cfg.maxReentries})`
-    );
-    return true;
+  const fail = async (reason) => {
+    log.warn(`${pair}: re-entry spot gagal (#${nextCount}/${cfg.maxReentries}) — ${reason}`);
+    deactivatePool(pos.pool, `re-entry spot gagal: ${reason}`);
+    await tg.notifySpotReentryFailed({
+      pair,
+      pool: pos.pool,
+      oldPosition: pos.position,
+      count: nextCount,
+      max: cfg.maxReentries,
+      reason,
+    });
+    return { success: false, error: reason };
+  };
+
+  const remMs = pos.pool ? getSpotReentryCooldownRemainingMs(pos.pool, Date.now(), cfg.cooldownSec) : 0;
+  if (remMs > 0) {
+    return fail(`cooldown re-entry masih aktif (${Math.ceil(remMs / 1000)}s tersisa dari ${cfg.cooldownSec}s)`);
   }
-
-  reentryInProgress.add(pos.position);
-  addEntryInProgressPool(pos.pool);
 
   try {
-    const { pool, baseMint, baseIsX, unsupported, collectFeeMode, pairName } = await getPoolInfo(pos.pool);
+    const { pool, baseMint, baseIsX, unsupported, collectFeeMode } = await getPoolInfoFn(pos.pool);
     if (unsupported || !baseMint) {
-      return fail(pair, pos.pool, cfg, nextCount, "pool bukan pair SOL / tidak didukung");
-    }
-
-    const { StrategyType } = await getDlmmSdk();
-    const strategyType = StrategyType?.Spot;
-    if (strategyType === undefined) {
-      return fail(pair, pos.pool, cfg, nextCount, "StrategyType.Spot tidak tersedia");
+      return await fail("pool tidak didukung (bukan pair SOL)");
     }
 
     const activeBin = await pool.getActiveBin();
-    const { minBinId, maxBinId } = reentryBinRange(activeBin.binId, span);
+    const hasBinStep = Number(pool.lbPair?.binStep) > 0;
 
-    // Cek biaya NON-REFUNDABLE (sewa bin array/bitmap baru) sebelum keluar SOL.
-    // Gagal cek = fail-closed (batal), agar tidak kena biaya hangus.
-    if (cfg.skipNonRefundable) {
-      let quote;
-      try {
-        quote = await pool.quoteCreatePosition({ strategy: { minBinId, maxBinId } });
-      } catch (err) {
-        const brief = String(err.message || err).split("\n")[0];
-        return fail(pair, pos.pool, cfg, nextCount, `gagal cek biaya non-refundable: ${brief}`);
-      }
-      const cost = nonRefundableCost(quote);
-      if (exceedsNonRefundable(cost, cfg.maxNonRefundableSol)) {
-        return fail(
+    let minBinId;
+    let maxBinId;
+    let depositMinBinId;
+    let depositMaxBinId;
+    let lowerPctUsed = null;
+    let upperPctUsed = null;
+    let usedFallback = false;
+
+    if (hasBinStep) {
+      const rangeRes = await resolveSpotRangeWithRentCheck({
+        pool,
+        activeBinId: Number(activeBin.binId),
+        binStep: Number(pool.lbPair.binStep),
+        lowerPctPrimary: -95,
+        lowerPctFallback: -90,
+        upperPct: 15,
+        skipNonRefundable: cfg.skipNonRefundable,
+        maxNonRefundableSol: cfg.maxNonRefundableSol,
+      });
+
+      if (!rangeRes.ok) {
+        log.warn(
+          `${pair}: REDFLAG non-refundable rent saat re-entry #${nextCount}/${cfg.maxReentries} — skip & nonaktifkan pool`
+        );
+        await tg.notifySpotNonRefundableSkipped({
+          pool: pos.pool,
           pair,
-          pos.pool,
-          cfg,
-          nextCount,
-          `biaya non-refundable ${cost.toFixed(6)} SOL (${quote?.binArraysCount || 0} bin array)`
+          cost95Sol: rangeRes.costPrimarySol,
+          cost90Sol: rangeRes.costFallbackSol,
+          context: `Re-entry OOR Kanan #${nextCount}/${cfg.maxReentries}`,
+        });
+        return await fail(rangeRes.reason);
+      }
+
+      minBinId = rangeRes.minBinId;
+      maxBinId = rangeRes.maxBinId;
+      depositMinBinId = rangeRes.depositMinBinId;
+      depositMaxBinId = rangeRes.depositMaxBinId;
+      lowerPctUsed = rangeRes.lowerPctUsed;
+      upperPctUsed = rangeRes.upperPctUsed;
+      usedFallback = rangeRes.usedFallback;
+
+      if (Number(rangeRes.quote?.positionCost) > 0) {
+        log.info(
+          `${pair}: info sewa akun posisi ~${Number(rangeRes.quote.positionCost).toFixed(4)} SOL (refundable saat close) — lanjut re-entry`
         );
       }
+    } else {
+      const legacy = reentryBinRange(activeBin.binId, span);
+      minBinId = legacy.minBinId;
+      maxBinId = legacy.maxBinId;
+      depositMinBinId = minBinId;
+      depositMaxBinId = maxBinId;
+
+      if (typeof pool.quoteCreatePosition === "function") {
+        const quote = await pool.quoteCreatePosition({
+          strategy: { minBinId, maxBinId },
+        });
+        const nonRef = nonRefundableCost(quote);
+        if (cfg.skipNonRefundable && exceedsNonRefundable(nonRef, cfg.maxNonRefundableSol)) {
+          return await fail(
+            `akan kena sewa non-refundable ${nonRef.toFixed(6)} SOL (binArray=${Number(quote?.binArrayCost ?? 0).toFixed(6)}, bitmap=${Number(quote?.bitmapExtensionCost ?? 0).toFixed(6)}) > batas ${cfg.maxNonRefundableSol} SOL — batalkan re-entry`
+          );
+        }
+        if (Number(quote?.positionCost) > 0) {
+          log.info(
+            `${pair}: info sewa akun posisi ~${Number(quote.positionCost).toFixed(4)} SOL (refundable saat close) — lanjut re-entry`
+          );
+        }
+      }
     }
 
-    const connection = getConnection();
-    const wallet = getWallet();
+    const effectiveSpan = maxBinId - minBinId;
 
-    const balanceSol = (await connection.getBalance(wallet.publicKey)) / 1e9;
-    const need = cfg.sizeSol + Number(config.entry.gasReserve);
-    if (balanceSol < need) {
-      return fail(
-        pair,
-        pos.pool,
-        cfg,
-        nextCount,
-        `saldo SOL tidak cukup (punya ${balanceSol.toFixed(4)}, butuh ${need.toFixed(4)})`
+    if (dryRun) {
+      log.info(
+        `[DRY RUN] ${pair}: OOR kanan re-entry #${nextCount}/${cfg.maxReentries} — buka spot ${sizeSol} SOL bins [${minBinId}..${maxBinId}] (deposit [${depositMinBinId}..${depositMaxBinId}], active ${activeBin.binId})`
       );
-    }
-
-    const feePlan = buildFeePlan();
-    const feeCap = checkFeeCap(feePlan);
-    if (!feeCap.ok) {
-      return fail(
+      setLastSpotReentryAt(pos.pool, Date.now());
+      await tg.notifySpotReentry({
         pair,
-        pos.pool,
-        cfg,
-        nextCount,
-        `estimasi fee ${feeCap.totalSol.toFixed(6)} SOL > cap ${feeCap.cap} SOL (mode ${feePlan.mode})`
-      );
+        pool: pos.pool,
+        oldPosition: pos.position,
+        newPosition: "dry-run",
+        sizeSol,
+        minBin: minBinId,
+        maxBin: maxBinId,
+        span: effectiveSpan,
+        count: nextCount,
+        max: cfg.maxReentries,
+        txSig: null,
+        dryRun: true,
+      });
+      return {
+        success: true,
+        dryRun: true,
+        count: nextCount,
+        sizeSol,
+        minBinId,
+        maxBinId,
+        depositMinBinId,
+        depositMaxBinId,
+        lowerPctUsed,
+        upperPctUsed,
+        usedFallback,
+      };
     }
 
-    const lamports = new BN(Math.floor(cfg.sizeSol * 1e9));
-    const totalXAmount = baseIsX ? new BN(0) : lamports;
-    const totalYAmount = baseIsX ? lamports : new BN(0);
+    const solBalance = await getSolBalanceFn();
+    const required = sizeSol + config.entry.gasReserve;
+    if (solBalance < required) {
+      return await fail(`saldo SOL kurang (punya ${solBalance.toFixed(4)}, butuh ${required.toFixed(4)})`);
+    }
 
-    const label = pairName || pair;
-    log.debug(
-      `[detail] Re-entry ${label}: ${cfg.sizeSol} SOL bins ${minBinId}→${maxBinId} active ${activeBin.binId} (${nextCount}/${cfg.maxReentries})`
-    );
+    const feePlan = buildFeePlanFn();
+    const feeCheck = checkFeeCapFn(feePlan);
+    if (!feeCheck.ok) {
+      return await fail(`estimasi fee ${feeCheck.estimatedSol.toFixed(6)} SOL > batas ${feeCheck.maxSol} SOL`);
+    }
 
+    const { StrategyType } = await getDlmmSdkFn();
+    const strategyType = StrategyType?.Spot ?? 0;
+    const solLamports = new BN(Math.floor(sizeSol * LAMPORTS_PER_SOL));
+    const connection = getConnectionFn();
+    const wallet = getWalletFn();
     const newPosition = Keypair.generate();
-    let txHash = null;
+
+    let openRes;
     try {
-      const tx = await pool.initializePositionAndAddLiquidityByStrategy({
-        positionPubKey: newPosition.publicKey,
-        user: wallet.publicKey,
-        totalXAmount,
-        totalYAmount,
-        strategy: { minBinId, maxBinId, strategyType },
-        slippage: config.entry.activeBinSlippagePct,
-      });
-      const sent = await sendAndConfirmRobust({
+      openRes = await openSpotSolPosition({
+        pool,
         connection,
-        tx,
-        signers: [wallet, newPosition],
-        feePlan,
         wallet,
+        feePlan,
+        baseIsX,
+        solLamports,
+        minBinId,
+        maxBinId,
+        depositMinBinId,
+        depositMaxBinId,
+        strategyType,
+        slippage: config.entry.activeBinSlippagePct,
+        sendAndConfirmFn,
+        newPositionKeypair: newPosition,
       });
-      txHash = sent.signature;
-    } catch (err) {
-      // Konfirmasi gagal bukan berarti tx tidak mendarat.
+    } catch (txErr) {
       let landed = false;
       try {
-        landed = !!(await connection.getAccountInfo(newPosition.publicKey));
-      } catch {
-        landed = false;
-      }
+        const info = await connection.getAccountInfo(newPosition.publicKey, "confirmed");
+        landed = Boolean(info);
+      } catch {}
       if (!landed) {
-        return fail(pair, pos.pool, cfg, nextCount, err.message);
+        return await fail(txErr.message);
       }
-      txHash = err.signature || null;
-      log.warn(`Re-entry ${label}: konfirmasi gagal (${err.message}) tapi posisi ada on-chain — dianggap sukses`);
+      log.warn(
+        `${pair}: konfirmasi tx timeout tapi akun posisi ${newPosition.publicKey.toString()} sudah aktif on-chain — lanjut catat`
+      );
+      openRes = {
+        positionPubkey: newPosition.publicKey.toString(),
+        txSigs: [],
+        lastSig: "",
+      };
     }
 
-    const positionAddress = newPosition.publicKey.toString();
-    const pairLabel = pairName || pos.pair || `${baseMint.slice(0, 4)}-SOL`;
-    trackPosition(positionAddress, pos.pool, pairLabel, baseMint, collectFeeMode, "spot");
-    setSpotReentryCount(positionAddress, nextCount);
-    recordTrackedRange(positionAddress, minBinId, maxBinId);
+    const newAddr = openRes.positionPubkey;
+    const lastSig = openRes.lastSig;
+    log.info(
+      `${pair}: OOR kanan re-entry #${nextCount}/${cfg.maxReentries} berhasil → ${newAddr.slice(0, 8)} (${sizeSol} SOL, bins [${minBinId}..${maxBinId}], deposit [${depositMinBinId}..${depositMaxBinId}])`
+    );
 
-    log.info(`🔁 RE-ENTRY ${pairLabel} — ${cfg.sizeSol} SOL | ${span} bin ke bawah (${nextCount}/${cfg.maxReentries})`);
-    log.debug(`[detail] position ${positionAddress} | tx ${txHash?.slice(0, 16)}`);
-    recordAction(`RE-ENTRY ${pairLabel} — ${cfg.sizeSol} SOL (${nextCount}/${cfg.maxReentries})`);
-    tg.notifySpotReentry({
-      pair: pairLabel,
+    trackPosition(newAddr, pos.pool, pair, baseMint, collectFeeMode ?? pos.collectFeeMode ?? null, "spot", false);
+    recordTrackedRange(newAddr, minBinId, maxBinId);
+    setEntrySizeSol(newAddr, sizeSol);
+    setSpotReentryCount(newAddr, nextCount);
+    setLastSpotReentryAt(pos.pool, Date.now());
+
+    recordAction({
+      type: "spot_reentry",
+      oldPosition: pos.position,
+      position: newAddr,
       pool: pos.pool,
-      sizeSol: cfg.sizeSol,
-      attempt: nextCount,
+      pair,
+      sizeSol,
+      minBin: minBinId,
+      maxBin: maxBinId,
+      depositMinBin: depositMinBinId,
+      depositMaxBin: depositMaxBinId,
+      span: effectiveSpan,
+      count: nextCount,
       max: cfg.maxReentries,
-      bins: span,
-      success: true,
+      txSig: lastSig,
+      dryRun: false,
     });
 
-    return true;
-  } catch (err) {
-    return fail(pair, pos.pool, cfg, nextCount, err.message);
-  } finally {
-    removeEntryInProgressPool(pos.pool);
-    reentryInProgress.delete(pos.position);
-  }
-}
+    await tg.notifySpotReentry({
+      pair,
+      pool: pos.pool,
+      oldPosition: pos.position,
+      newPosition: newAddr,
+      sizeSol,
+      minBin: minBinId,
+      maxBin: maxBinId,
+      span: effectiveSpan,
+      count: nextCount,
+      max: cfg.maxReentries,
+      txSig: lastSig,
+      dryRun: false,
+    });
 
-// Log + notif kegagalan re-entry (menghentikan rantai).
-function fail(pair, pool, cfg, attempt, error) {
-  const brief = String(error || "unknown").split("\n")[0];
-  log.warn(`Re-entry ${pair} gagal (${attempt}/${cfg.maxReentries}): ${brief} — rantai dihentikan`);
-  recordAction(`RE-ENTRY ${pair} GAGAL — ${brief}`);
-  tg.notifySpotReentry({
-    pair,
-    pool,
-    sizeSol: cfg.sizeSol,
-    attempt,
-    max: cfg.maxReentries,
-    success: false,
-    error: brief,
-  });
-  return false;
+    return {
+      success: true,
+      position: newAddr,
+      count: nextCount,
+      sizeSol,
+      minBinId,
+      maxBinId,
+      depositMinBinId,
+      depositMaxBinId,
+      lowerPctUsed,
+      upperPctUsed,
+      usedFallback,
+      txSig: lastSig,
+    };
+  } catch (err) {
+    return await fail(err.message);
+  }
 }

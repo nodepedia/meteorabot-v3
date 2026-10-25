@@ -10,6 +10,7 @@ import {
 } from "../state/positions.js";
 import { isTrailingConfirmed } from "../state/trailing.js";
 import { getBounceRecoveryState } from "../state/bounce.js";
+import { getSpotReentryCooldownRemainingMs } from "./spot-reentry.js";
 
 // Pure: masih dalam masa warmup exit? (trailing & arm indikator ditahan)
 export function isExitWarmup(firstSeenAt, warmupMinutes, now = Date.now()) {
@@ -39,6 +40,13 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
   // 2. OOR kanan — mode dengan masa tunggu (mis. spot) pakai timer; batal bila
   // harga kembali masuk range. Mode lain (oorKananMinutes = 0) tutup langsung.
   if (activeBin != null && upperBin != null && activeBin > upperBin) {
+    if (position.mode === "spot" && position.pool) {
+      const cooldownRemMs = getSpotReentryCooldownRemainingMs(position.pool);
+      if (cooldownRemMs > 0) {
+        updateOOR(position.position, "kanan");
+        return { action: "hold", reason: `oor_kanan_cooldown_${Math.ceil(cooldownRemMs / 1000)}s` };
+      }
+    }
     if (rules.oorKananMinutes > 0) {
       updateOOR(position.position, "kanan");
       const oorState = getOORState(position.position);
