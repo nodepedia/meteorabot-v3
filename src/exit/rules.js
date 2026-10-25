@@ -26,8 +26,19 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
 
   const baseIsX = !position.xIsSol;
   const hasBase = baseIsX ? position.hasX : position.hasY;
+  const effectiveUpperBin =
+    position.mode === "spot" &&
+    position.maxFilledBin != null &&
+    Number.isFinite(Number(position.maxFilledBin)) &&
+    Number(position.maxFilledBin) < upperBin
+      ? Number(position.maxFilledBin)
+      : upperBin;
   const inRange =
-    activeBin != null && lowerBin != null && upperBin != null && activeBin >= lowerBin && activeBin <= upperBin;
+    activeBin != null &&
+    lowerBin != null &&
+    effectiveUpperBin != null &&
+    activeBin >= lowerBin &&
+    activeBin <= effectiveUpperBin;
   // Timer yield rendah hanya relevan saat in-range; keluar range = reset.
   if (!inRange) clearLowYieldSince(position.position);
 
@@ -38,8 +49,10 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
   }
 
   // 2. OOR kanan — mode dengan masa tunggu (mis. spot) pakai timer; batal bila
-  // harga kembali masuk range. Mode lain (oorKananMinutes = 0) tutup langsung.
-  if (activeBin != null && upperBin != null && activeBin > upperBin) {
+  // harga kembali masuk range. Untuk posisi spot, bin kosong di atas maxFilledBin
+  // (mis. area 0%..+15% sebelum kena rebalance token) juga dihitung OOR kanan.
+  // Mode lain (oorKananMinutes = 0) tutup langsung.
+  if (activeBin != null && effectiveUpperBin != null && activeBin > effectiveUpperBin) {
     if (position.mode === "spot" && position.pool) {
       const cooldownRemMs = getSpotReentryCooldownRemainingMs(position.pool);
       if (cooldownRemMs > 0) {

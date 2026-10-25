@@ -207,3 +207,70 @@ test("yield rendah spot: keluar range membatalkan timer", () => {
   assert.equal(res.reason, "oor_kiri");
   assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
 });
+
+test("OOR kanan spot di bin kosong atas (activeBin > maxFilledBin tapi <= upperBin): timer 2m lalu close oor_kanan", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+  const minutes = config.spot.oorKananMinutes;
+  assert.equal(minutes, 2);
+
+  // Posisi dibuka [-95%..+15%] -> lowerBin=100, upperBin=315, tapi SOL hanya di [100..300] (maxFilledBin=300).
+  // Harga naik ke bin 301 (di dalam bin kosong 301..315) -> langsung dianggap OOR kanan!
+  let res = evaluateExit(
+    makePosition(301, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, hasX: false, hasY: true }),
+    null
+  );
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "oor_kanan_0m");
+  assert.notEqual(getTrackedPosition(POS).oorSejak, null);
+
+  // Simulasi sudah lewat 2 menit masa tunggu OOR kanan.
+  const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  state.positions[POS].oorSejak = Date.now() - (minutes + 0.1) * 60000;
+  state.positions[POS].oorArah = "kanan";
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state));
+
+  res = evaluateExit(
+    makePosition(301, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, hasX: false, hasY: true }),
+    null
+  );
+  assert.equal(res.action, "close");
+  assert.equal(res.reason, "oor_kanan");
+});
+
+test("OOR kanan spot di bin kosong atas: turun kembali ke <= maxFilledBin membatalkan timer", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+
+  // Masuk bin kosong (302 > maxFilledBin 300)
+  let res = evaluateExit(
+    makePosition(302, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, hasX: false, hasY: true }),
+    null
+  );
+  assert.equal(res.action, "hold");
+  assert.match(res.reason, /^oor_kanan_/);
+  assert.notEqual(getTrackedPosition(POS).oorSejak, null);
+
+  // Harga turun kembali ke 300 (<= maxFilledBin) -> in-range, timer OOR kanan direset!
+  res = evaluateExit(
+    makePosition(300, { lowerBin: 100, upperBin: 315, maxFilledBin: 300, hasX: false, hasY: true }),
+    null
+  );
+  assert.notEqual(res.action, "close");
+  assert.equal(getTrackedPosition(POS).oorSejak, null);
+});
+
+test("Spot dengan bin atas sudah terisi token (maxFilledBin === upperBin setelah rebalance BidAsk): activeBin 305 tetap in-range", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+
+  // Setelah harga sempat turun dan kena rebalance BidAsk, token tersebar sampai upperBin (maxFilledBin = 315).
+  // Saat harga di 305 (<= 315), bin tidak kosong dan sedang dapat fee -> TIDAK boleh memicu oor_kanan.
+  const res = evaluateExit(
+    makePosition(305, { lowerBin: 100, upperBin: 315, maxFilledBin: 315, hasX: true, hasY: true }),
+    null
+  );
+  assert.notEqual(res.action, "close");
+  assert.doesNotMatch(String(res.reason || ""), /^oor_kanan/);
+  assert.equal(getTrackedPosition(POS).oorSejak, null);
+});

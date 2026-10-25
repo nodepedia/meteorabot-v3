@@ -87,6 +87,15 @@ export async function getOpenPositions() {
           const binData = d.positionBinData ?? [];
           const hasX = binData.some((b) => BigInt(b?.positionXAmount ?? 0) > 0n);
           const hasY = binData.some((b) => BigInt(b?.positionYAmount ?? 0) > 0n);
+          let maxFilledBin = null;
+          for (const b of binData) {
+            if (BigInt(b?.positionXAmount ?? 0) > 0n || BigInt(b?.positionYAmount ?? 0) > 0n) {
+              const id = Number(b.binId);
+              if (Number.isFinite(id) && (maxFilledBin == null || id > maxFilledBin)) {
+                maxFilledBin = id;
+              }
+            }
+          }
           const binSpan = lowerBin != null && upperBin != null ? upperBin - lowerBin : 0;
 
           positions.push({
@@ -101,6 +110,7 @@ export async function getOpenPositions() {
             yIsSol,
             lowerBin,
             upperBin,
+            maxFilledBin,
             activeBin,
             collectFeeMode,
             pnlPct: 0,

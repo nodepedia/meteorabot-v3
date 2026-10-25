@@ -32,7 +32,7 @@ const bidaskSol = modeRules(e, "BIDASK_SOL", {
 });
 
 // Spot-quote (satu mode, isi SOL-only, span >= SPOT_MIN_BINS): indikator sama
-// seperti bidask:double, trailing TP trigger +20%, OOR kanan ber-timer 5 menit.
+// seperti bidask:double, trailing TP trigger +20%, OOR kanan ber-timer 2 menit.
 // OOR kiri = tutup langsung (0 menit), lalu token dikonversi ke posisi
 // bidask:token oleh fallback (lihat spotFallback).
 const spot = modeRules(e, "SPOT", {
@@ -44,7 +44,7 @@ const spot = modeRules(e, "SPOT", {
   trailingTriggerPct: 20,
   enableOOR: true,
   oorKiriMinutes: 0,
-  oorKananMinutes: 5,
+  oorKananMinutes: 2,
   lowYieldClosePct: 6,
   lowYieldDelayMinutes: 10,
 });
@@ -74,7 +74,7 @@ const spotReentry = {
 // Rebalance sisi token posisi spot ke BidAsk tiap kelipatan stepPct% bin di atas activeBin.
 const spotTokenBidask = {
   enabled: bool(e.SPOT_TOKEN_BIDASK_ENABLED, true),
-  stepPct: Math.max(1, num(e.SPOT_TOKEN_BIDASK_STEP_PCT, 15)),
+  stepPct: Math.max(1, num(e.SPOT_TOKEN_BIDASK_STEP_PCT, 10)),
   cooldownSec: Math.max(0, num(e.SPOT_TOKEN_BIDASK_COOLDOWN_SEC, 60)),
   retry: Math.max(1, Math.floor(num(e.SPOT_TOKEN_BIDASK_RETRY, 3))),
 };

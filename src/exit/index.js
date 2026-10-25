@@ -87,12 +87,21 @@ function buildPositionLines(positions) {
     const tracked = getTrackedPosition(pos.position);
     let zone = null;
     if (pos.activeBin != null && pos.lowerBin != null && pos.upperBin != null) {
+      const inEmptyUpper =
+        pos.mode === "spot" &&
+        pos.maxFilledBin != null &&
+        Number.isFinite(Number(pos.maxFilledBin)) &&
+        Number(pos.maxFilledBin) < pos.upperBin &&
+        pos.activeBin > Number(pos.maxFilledBin) &&
+        pos.activeBin <= pos.upperBin;
       zone =
         pos.activeBin > pos.upperBin
           ? "di atas rentang"
-          : pos.activeBin < pos.lowerBin
-            ? "di bawah rentang"
-            : "masih dalam rentang";
+          : inEmptyUpper
+            ? "di bin kosong atas (OOR kanan)"
+            : pos.activeBin < pos.lowerBin
+              ? "di bawah rentang"
+              : "masih dalam rentang";
     }
     let trailing = null;
     if (tracked?.trailingActive) {
