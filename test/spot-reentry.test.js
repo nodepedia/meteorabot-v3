@@ -37,6 +37,8 @@ const {
 } = await import("../src/meteora/spot-position.js");
 const { executeSpotEntry } = await import("../src/entry/execute.js");
 const { startSpotEntry } = await import("../src/entry/index.js");
+const { incrementEntryUsage, getEntryUsage } = await import("../src/entry/runtime.js");
+const { selectMostEfficientSpotPool, calcSpotPoolEfficiencyScore } = await import("../src/meteora/spot-position.js");
 
 const POOL = "PoolReentry11111111111111111111111111111111";
 const POS = "PosReentry111111111111111111111111111111111";
@@ -445,4 +447,150 @@ test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langs
     config.entry.poolListFile = savedPoolListFile;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("handleSpotOorKananReentry: evaluasi ulang semua pool DLMM TOKEN/SOL dan pindah ke pool paling efisien saat reposisi", async () => {
+  resetState();
+  clearSpotReentryCooldown();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spot-reentry-eff-"));
+  const poolFile = path.join(dir, "pool.txt");
+  const OLD_POOL = "OldPool111111111111111111111111111111111111";
+  const BEST_POOL = "BestPool22222222222222222222222222222222222";
+  const REDFLAG_POOL = "RedflagPool33333333333333333333333333333333";
+  const MINT = "MintEff111111111111111111111111111111111111";
+  fs.writeFileSync(poolFile, `${OLD_POOL},1.25x,1,spot\n`, "utf8");
+
+  const savedPoolListFile = config.entry.poolListFile;
+  config.entry.poolListFile = poolFile;
+  incrementEntryUsage(OLD_POOL);
+
+  try {
+    trackPosition(POS, OLD_POOL, "LAUNCH-SOL", MINT, 1, "spot");
+    recordTrackedRange(POS, 699, 1014);
+    setEntrySizeSol(POS, 0.25);
+
+    const wallet = Keypair.generate();
+    const makeMockPool = ({ activeBinId, binStep, rentCost = 0, bins31 = 31, lpCount = 50 }) => ({
+      lbPair: { binStep },
+      mockBins31Ge1Sol: bins31,
+      mockLpCount: lpCount,
+      async getActiveBin() {
+        return { binId: activeBinId, pricePerToken: "0.002" };
+      },
+      async quoteCreatePosition() {
+        return { binArrayCost: rentCost, bitmapExtensionCost: 0, positionCost: 0.0574 };
+      },
+      async createExtendedEmptyPosition() {
+        return { tx: "init" };
+      },
+      async addLiquidityByStrategy() {
+        return { tx: "add" };
+      },
+    });
+
+    const poolsByAddr = {
+      [OLD_POOL]: makeMockPool({ activeBinId: -200, binStep: 200, rentCost: 0, bins31: 31, lpCount: 40 }),
+      [BEST_POOL]: makeMockPool({ activeBinId: -400, binStep: 100, rentCost: 0, bins31: 31, lpCount: 150 }),
+      // Pool ketiga punya TVL tertinggi tapi kena non-refundable rent -> harus ditolak!
+      [REDFLAG_POOL]: makeMockPool({ activeBinId: -100, binStep: 100, rentCost: 0.071437, bins31: 31, lpCount: 200 }),
+    };
+
+    const res = await handleSpotOorKananReentry(
+      { position: POS, pool: OLD_POOL, pair: "LAUNCH-SOL", baseMint: MINT, mode: "spot" },
+      {
+        dryRun: false,
+        discoverCandidatePools: async () => [
+          {
+            address: REDFLAG_POOL,
+            tvlUsd: 300000,
+            fees24hUsd: 10000,
+            cumFeesUsd: 20000,
+            efficiencyScore: calcSpotPoolEfficiencyScore({ tvlUsd: 300000, fees24hUsd: 10000, cumFeesUsd: 20000 }),
+          },
+          {
+            address: BEST_POOL,
+            tvlUsd: 140000,
+            fees24hUsd: 6000,
+            cumFeesUsd: 6000,
+            efficiencyScore: calcSpotPoolEfficiencyScore({ tvlUsd: 140000, fees24hUsd: 6000, cumFeesUsd: 6000 }),
+          },
+          {
+            address: OLD_POOL,
+            tvlUsd: 45000,
+            fees24hUsd: 5000,
+            cumFeesUsd: 5000,
+            efficiencyScore: calcSpotPoolEfficiencyScore({ tvlUsd: 45000, fees24hUsd: 5000, cumFeesUsd: 5000 }),
+          },
+        ],
+        getPoolInfo: async (addr) => ({
+          pool: poolsByAddr[addr],
+          baseMint: MINT,
+          baseIsX: true,
+          unsupported: false,
+          collectFeeMode: 1,
+        }),
+        getDlmmSdk: async () => ({ StrategyType: { Spot: 0 } }),
+        getConnection: () => ({}),
+        getWallet: () => wallet,
+        getSolBalance: async () => 5,
+        buildFeePlan: () => ({ mode: "none" }),
+        checkFeeCap: () => ({ ok: true, estimatedSol: 0, maxSol: 0.002 }),
+        sendAndConfirmRobust: async () => "tx_reentry_best_pool",
+      }
+    );
+
+    assert.equal(res.success, true);
+    assert.equal(res.switchedPool, true);
+    assert.equal(res.previousPool, OLD_POOL);
+    assert.equal(res.pool, BEST_POOL);
+    assert.equal(getTrackedPosition(res.position).pool, BEST_POOL);
+    // pool.txt otomatis di-update dari OLD_POOL ke BEST_POOL dengan mempertahankan multiplier & mode
+    assert.equal(fs.readFileSync(poolFile, "utf8"), `${BEST_POOL},1.25x,1,spot\n`);
+    // entryUsage juga ikut ditransfer ke BEST_POOL agar worker entry tidak buka posisi ganda
+    assert.ok(getEntryUsage(BEST_POOL) >= 1);
+    // Cooldown aktif di kedua pool
+    assert.ok(getSpotReentryCooldownRemainingMs(OLD_POOL) > 0);
+    assert.ok(getSpotReentryCooldownRemainingMs(BEST_POOL) > 0);
+  } finally {
+    config.entry.poolListFile = savedPoolListFile;
+    clearSpotReentryCooldown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("selectMostEfficientSpotPool: tetap di currentPool bila currentPool paling efisien atau pool lain gagal rentCheck", async () => {
+  const CUR_POOL = "CurPool111111111111111111111111111111111111";
+  const OTHER_POOL = "OtherPool2222222222222222222222222222222222";
+  const MINT = "MintStay11111111111111111111111111111111111";
+
+  const res = await selectMostEfficientSpotPool({
+    currentPool: CUR_POOL,
+    baseMint: MINT,
+    discoverPoolsFn: async () => [
+      { address: CUR_POOL, tvlUsd: 150000, fees24hUsd: 8000, cumFeesUsd: 10000 },
+      { address: OTHER_POOL, tvlUsd: 40000, fees24hUsd: 2000, cumFeesUsd: 3000 },
+    ],
+    getPoolInfoFn: async (addr) => ({
+      pool: {
+        lbPair: { binStep: 100 },
+        mockBins31Ge1Sol: 31,
+        mockLpCount: 60,
+        async getActiveBin() {
+          return { binId: 500 };
+        },
+        async quoteCreatePosition() {
+          return { binArrayCost: 0, bitmapExtensionCost: 0 };
+        },
+      },
+      baseMint: MINT,
+      baseIsX: true,
+      unsupported: false,
+      address: addr,
+    }),
+    connection: {},
+  });
+
+  assert.equal(res.chosenPoolAddress, CUR_POOL);
+  assert.equal(res.switched, false);
+  assert.equal(res.candidatesAudited.length, 2);
 });

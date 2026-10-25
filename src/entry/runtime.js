@@ -312,6 +312,17 @@ export function incrementEntryUsage(pool) {
   return uses;
 }
 
+export function transferPoolEntryUsage(oldPool, newPool) {
+  if (!oldPool || !newPool || oldPool === newPool) return 0;
+  let uses = 0;
+  mutateRuntimeState((state) => {
+    const prev = state.entryUsage[oldPool] || 0;
+    uses = Math.max(state.entryUsage[newPool] || 0, prev, 1);
+    state.entryUsage[newPool] = uses;
+  });
+  return uses;
+}
+
 // Buffer aksi terakhir (entry/DCA/close/sweep) untuk baris "AKSI" di ringkasan log
 // sekaligus mencatat otomatis ke logs/important.log & logs/important-events.jsonl.
 export function recordAction(text) {

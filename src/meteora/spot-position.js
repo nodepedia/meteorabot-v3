@@ -1,4 +1,4 @@
-import { Keypair } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
 import log from "../core/logger.js";
 import { sendAndConfirmRobust } from "../solana/send.js";
@@ -286,5 +286,293 @@ export async function openSpotSolPosition({
     chunksAdded: 1,
     totalChunks: 1,
     usedExtended: false,
+  };
+}
+
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+const DLMM_PROGRAM_ID = new PublicKey("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
+
+export function calcSpotPoolEfficiencyScore({ tvlUsd = 0, fees24hUsd = 0, cumFeesUsd = 0 } = {}) {
+  return (Number(tvlUsd) || 0) + (Number(fees24hUsd) || 0) * 5 + (Number(cumFeesUsd) || 0);
+}
+
+/**
+ * Ambil seluruh pool Meteora DLMM TOKEN/SOL yang tidak di-blacklist untuk baseMint,
+ * lalu urutkan dari skor efisiensi tertinggi (TVL + 24h fees * 5 + cumFees).
+ */
+export async function fetchTokenSolDlmmPools(baseMint, { fetchFn = fetch, timeoutMs = 10000 } = {}) {
+  if (!baseMint || typeof fetchFn !== "function") return [];
+  try {
+    const url = `https://dlmm.datapi.meteora.ag/pools?page=1&page_size=20&query=${encodeURIComponent(baseMint)}`;
+    const res = await fetchFn(url, {
+      signal: typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(timeoutMs) : undefined,
+    });
+    if (!res?.ok) return [];
+    const json = await res.json();
+    const raw = Array.isArray(json?.data) ? json.data : [];
+    const pools = [];
+
+    for (const p of raw) {
+      if (!p?.address || p.is_blacklisted) continue;
+      const xAddr = p.token_x?.address;
+      const yAddr = p.token_y?.address;
+      const isTokenSol =
+        (xAddr === WSOL_MINT && yAddr === baseMint) || (yAddr === WSOL_MINT && xAddr === baseMint);
+      if (!isTokenSol) continue;
+
+      const tvlUsd = Number(p.tvl || 0);
+      const vol24hUsd = Number(p.volume?.["24h"] || 0);
+      const fees24hUsd = Number(p.fees?.["24h"] || 0);
+      const cumFeesUsd = Number(p.cumulative_metrics?.fees || 0);
+      const efficiencyScore = calcSpotPoolEfficiencyScore({ tvlUsd, fees24hUsd, cumFeesUsd });
+
+      pools.push({
+        address: p.address,
+        name: p.name || "",
+        binStep: Number(p.pool_config?.bin_step || 100),
+        baseFeePct: Number(p.pool_config?.base_fee_pct || 0),
+        tvlUsd,
+        vol24hUsd,
+        fees24hUsd,
+        cumFeesUsd,
+        efficiencyScore,
+      });
+    }
+
+    pools.sort((a, b) => b.efficiencyScore - a.efficiencyScore);
+    return pools;
+  } catch (err) {
+    log.debug(`[detail] fetchTokenSolDlmmPools gagal untuk ${String(baseMint).slice(0, 8)}: ${err.message}`);
+    return [];
+  }
+}
+
+export async function auditSpotPoolCandidate({
+  poolAddress,
+  poolMeta = {},
+  getPoolInfoFn,
+  connection,
+  skipNonRefundable = true,
+  maxNonRefundableSol = 0,
+}) {
+  try {
+    const poolInfo = await getPoolInfoFn(poolAddress);
+    if (!poolInfo || poolInfo.unsupported || !poolInfo.baseMint || !poolInfo.pool) {
+      return { ok: false, poolAddress, reason: "unsupported" };
+    }
+
+    const { pool, baseIsX } = poolInfo;
+    const activeBin = await pool.getActiveBin();
+    const activeBinId = Number(activeBin.binId);
+    const hasBinStep = Number(pool.lbPair?.binStep) > 0;
+    const binStep = hasBinStep ? Number(pool.lbPair.binStep) : Number(poolMeta?.binStep || 100);
+
+    let rangeRes = { ok: true, usedFallback: false };
+    if (hasBinStep) {
+      rangeRes = await resolveSpotRangeWithRentCheck({
+        pool,
+        activeBinId,
+        binStep,
+        lowerPctPrimary: -95,
+        lowerPctFallback: -90,
+        upperPct: 15,
+        skipNonRefundable,
+        maxNonRefundableSol,
+      });
+    }
+
+    let bins31RequiredGe1SolCount = 31;
+    let totalSolIn35Bins = 0;
+    const xIsSol = !baseIsX;
+
+    if (typeof pool.getBinsAroundActiveBin === "function") {
+      try {
+        const around = await pool.getBinsAroundActiveBin(40, 40);
+        const binsList = around?.bins || [];
+        const binMap = new Map(binsList.map((b) => [Number(b.binId), b]));
+        bins31RequiredGe1SolCount = 0;
+        for (let offset = 0; offset <= 34; offset++) {
+          const bid = xIsSol ? activeBinId + offset : activeBinId - offset;
+          const b = binMap.get(bid);
+          const rawLamports = b ? Number(xIsSol ? b.xAmount?.toString?.() ?? b.xAmount : b.yAmount?.toString?.() ?? b.yAmount) : 0;
+          const solAmt = (Number(rawLamports) || 0) / 1e9;
+          totalSolIn35Bins += solAmt;
+          if (offset >= 4 && solAmt >= 1.0) {
+            bins31RequiredGe1SolCount++;
+          }
+        }
+      } catch {
+        bins31RequiredGe1SolCount = Number(pool.mockBins31Ge1Sol ?? 0);
+      }
+    } else if (pool.mockBins31Ge1Sol != null) {
+      bins31RequiredGe1SolCount = Number(pool.mockBins31Ge1Sol);
+    }
+
+    let lpCount = 20;
+    if (connection && typeof connection.getProgramAccounts === "function") {
+      try {
+        const posAccts = await connection.getProgramAccounts(DLMM_PROGRAM_ID, {
+          dataSlice: { offset: 40, length: 0 },
+          filters: [{ memcmp: { offset: 8, bytes: poolAddress } }],
+        });
+        lpCount = Array.isArray(posAccts) ? posAccts.length : 0;
+      } catch {
+        lpCount = Number(pool.mockLpCount ?? 20);
+      }
+    } else if (pool.mockLpCount != null) {
+      lpCount = Number(pool.mockLpCount);
+    }
+
+    const tvlUsd = Number(poolMeta?.tvlUsd || 0);
+    const fees24hUsd = Number(poolMeta?.fees24hUsd || 0);
+    const cumFeesUsd = Number(poolMeta?.cumFeesUsd || 0);
+    const efficiencyScore =
+      poolMeta?.efficiencyScore != null
+        ? Number(poolMeta.efficiencyScore)
+        : calcSpotPoolEfficiencyScore({ tvlUsd, fees24hUsd, cumFeesUsd });
+
+    const rentOk = Boolean(rangeRes?.ok);
+    const passes3BinToleranceRule = bins31RequiredGe1SolCount === 31;
+    const passesLp20 = lpCount >= 20;
+    const passedStage2 = rentOk && passes3BinToleranceRule && passesLp20;
+
+    return {
+      ok: true,
+      poolAddress,
+      poolInfo,
+      activeBin,
+      rangeRes,
+      rentOk,
+      passedStage2,
+      passes3BinToleranceRule,
+      bins31RequiredGe1SolCount,
+      totalSolIn35Bins: Number(totalSolIn35Bins.toFixed(4)),
+      lpCount,
+      tvlUsd,
+      fees24hUsd,
+      cumFeesUsd,
+      efficiencyScore,
+    };
+  } catch (err) {
+    return { ok: false, poolAddress, reason: err.message };
+  }
+}
+
+export function compareSpotPoolAudits(a, b) {
+  const aRent = a?.rentOk ? 1 : 0;
+  const bRent = b?.rentOk ? 1 : 0;
+  if (bRent !== aRent) return bRent - aRent;
+
+  const aStage2 = a?.passedStage2 ? 1 : 0;
+  const bStage2 = b?.passedStage2 ? 1 : 0;
+  if (bStage2 !== aStage2) return bStage2 - aStage2;
+
+  const aBins = Number(a?.bins31RequiredGe1SolCount || 0);
+  const bBins = Number(b?.bins31RequiredGe1SolCount || 0);
+  if (bBins !== aBins) return bBins - aBins;
+
+  const aEff = Number(a?.efficiencyScore || 0);
+  const bEff = Number(b?.efficiencyScore || 0);
+  if (bEff !== aEff) return bEff - aEff;
+
+  const aLp = Number(a?.lpCount || 0);
+  const bLp = Number(b?.lpCount || 0);
+  if (bLp !== aLp) return bLp - aLp;
+
+  return Number(b?.tvlUsd || 0) - Number(a?.tvlUsd || 0);
+}
+
+/**
+ * Evaluasi seluruh kandidat pool DLMM TOKEN/SOL untuk baseMint dan pilih 1 pool paling efisien
+ * untuk reposisi Spot. Bila tidak ada pool lain yang lebih unggul & lolos rent check, tetap di currentPool.
+ */
+export async function selectMostEfficientSpotPool({
+  currentPool,
+  baseMint,
+  getPoolInfoFn,
+  connection,
+  skipNonRefundable = true,
+  maxNonRefundableSol = 0,
+  fetchFn = fetch,
+  discoverPoolsFn = null,
+  maxCandidates = 3,
+}) {
+  if (!currentPool || !baseMint) {
+    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+  }
+
+  const discovered =
+    typeof discoverPoolsFn === "function"
+      ? await discoverPoolsFn(baseMint)
+      : await fetchTokenSolDlmmPools(baseMint, { fetchFn });
+
+  const list = Array.isArray(discovered) ? discovered.slice() : [];
+  if (list.length === 0) {
+    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+  }
+
+  list.sort((a, b) => {
+    const scoreA = a.efficiencyScore ?? calcSpotPoolEfficiencyScore(a);
+    const scoreB = b.efficiencyScore ?? calcSpotPoolEfficiencyScore(b);
+    return scoreB - scoreA;
+  });
+
+  const shortlist = list.slice(0, Math.max(1, maxCandidates));
+  if (!shortlist.some((p) => p.address === currentPool)) {
+    const existingCur = list.find((p) => p.address === currentPool) || {
+      address: currentPool,
+      tvlUsd: 0,
+      fees24hUsd: 0,
+      cumFeesUsd: 0,
+      efficiencyScore: 0,
+    };
+    shortlist.push(existingCur);
+  }
+
+  // Bila hanya ada 1 pool (currentPool saja), tidak perlu bandingkan multi-pool
+  if (shortlist.length <= 1 && shortlist[0]?.address === currentPool) {
+    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+  }
+
+  const audited = [];
+  for (const cand of shortlist) {
+    const audit = await auditSpotPoolCandidate({
+      poolAddress: cand.address,
+      poolMeta: cand,
+      getPoolInfoFn,
+      connection,
+      skipNonRefundable,
+      maxNonRefundableSol,
+    });
+    if (audit.ok) {
+      audited.push(audit);
+    }
+  }
+
+  if (audited.length === 0) {
+    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+  }
+
+  audited.sort(compareSpotPoolAudits);
+  const best = audited[0];
+  const currentAudit = audited.find((a) => a.poolAddress === currentPool) || null;
+
+  // Jangan pindah ke pool baru bila pool baru gagal rentCheck!
+  if (best.poolAddress !== currentPool && !best.rentOk) {
+    return {
+      chosenPoolAddress: currentPool,
+      switched: false,
+      chosenAudit: currentAudit,
+      currentAudit,
+      candidatesAudited: audited,
+    };
+  }
+
+  return {
+    chosenPoolAddress: best.poolAddress,
+    switched: best.poolAddress !== currentPool,
+    chosenAudit: best,
+    currentAudit,
+    candidatesAudited: audited,
   };
 }

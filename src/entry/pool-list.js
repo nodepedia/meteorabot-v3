@@ -113,3 +113,37 @@ export function commentPoolInList(poolAddress) {
     return false;
   }
 }
+
+// Ganti alamat pool aktif di pool.txt dengan pool baru yang lebih efisien saat reposisi
+// (mempertahankan konfigurasi size/multiplier/mode pada baris tersebut).
+export function replacePoolInList(oldPoolAddress, newPoolAddress) {
+  if (!oldPoolAddress || !newPoolAddress || oldPoolAddress === newPoolAddress) return false;
+  const file = poolListPath();
+  try {
+    if (!fs.existsSync(file)) return false;
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    const hasNewActive = lines.some((line) => {
+      const t = line.trim();
+      return t && !t.startsWith("#") && t.split(",")[0].trim() === newPoolAddress;
+    });
+    let changed = false;
+    const out = lines.map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) return line;
+      const parts = trimmed.split(",");
+      if (parts[0].trim() !== oldPoolAddress) return line;
+      changed = true;
+      if (hasNewActive) return `#${line}`;
+      parts[0] = newPoolAddress;
+      return parts.join(",");
+    });
+    if (!changed) return true;
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, out.join("\n"));
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (err) {
+    log.warn(`Gagal mengganti pool ${oldPoolAddress.slice(0, 8)} -> ${newPoolAddress.slice(0, 8)} di ${config.entry.poolListFile}: ${err.message}`);
+    return false;
+  }
+}
