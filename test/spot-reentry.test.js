@@ -18,6 +18,8 @@ const {
   setSpotReentryCount,
   setEntrySizeSol,
   getEntrySizeSol,
+  getOpenPositionsForMint,
+  recordClose,
 } = await import("../src/state/positions.js");
 const {
   reentryBinRange,
@@ -37,7 +39,7 @@ const {
 } = await import("../src/meteora/spot-position.js");
 const { executeSpotEntry } = await import("../src/entry/execute.js");
 const { startSpotEntry } = await import("../src/entry/index.js");
-const { incrementEntryUsage, getEntryUsage } = await import("../src/entry/runtime.js");
+const { incrementEntryUsage, getEntryUsage, takeRecentActions } = await import("../src/entry/runtime.js");
 const { selectMostEfficientSpotPool, calcSpotPoolEfficiencyScore } = await import("../src/meteora/spot-position.js");
 
 const POOL = "PoolReentry11111111111111111111111111111111";
@@ -308,6 +310,7 @@ test("executeSpotEntry: buka posisi Spot instan, simpan entrySizeSol & range [-9
   assert.equal(getTrackedPosition(entryRes.position).binSpan, 1014 - 769);
 
   // Test redflag skip ketika -95% dan -90% sama-sama kena non-refundable rent
+  resetState();
   const redflagPool = {
     lbPair: { binStep: 100 },
     async getActiveBin() {
@@ -410,6 +413,7 @@ test("handleSpotOorKananReentry: warisi entrySizeSol, pakai range -95%..+15%, da
 });
 
 test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langsung ditandai # di pool.txt", async () => {
+  resetState();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spot-redflag-"));
   const poolFile = path.join(dir, "pool.txt");
   const poolAddr = "3C6qVymTAwWNKCSspmd1qbUH9avaqhsjgW2yntvEYBXt";
@@ -593,4 +597,128 @@ test("selectMostEfficientSpotPool: tetap di currentPool bila currentPool paling 
   assert.equal(res.chosenPoolAddress, CUR_POOL);
   assert.equal(res.switched, false);
   assert.equal(res.candidatesAudited.length, 2);
+});
+
+test("handleSpotOorKananReentry: tutup posisi duplikat di token yang sama sebelum buka posisi baru & tidak pernah ada 2 posisi terbuka di 1 token", async () => {
+  resetState();
+  const OLD_POOL = "HGJWK4PUjjPCGHJ9cxWPDUFWBaCgFr2n3boFGsk8WVoF";
+  const BEST_POOL = "FZWxV7C4JKKe3wX54MM6QpcVAHtyGrtnPFmihysWfiDB";
+  const DUP_POS = "DupPos1111111111111111111111111111111111111";
+  const MINT = "AhBidGAgv6QbKSWfrSCegGrzFLcBx4E5FNYTKHNQQj6C";
+  clearSpotReentryCooldown(OLD_POOL);
+  clearSpotReentryCooldown(BEST_POOL);
+
+  // Posisi 1 (yang sedang direposisi) + Posisi 2 duplikat di token yang sama
+  trackPosition(POS, OLD_POOL, "LAUNCH-SOL", MINT, 1, "spot", false);
+  recordTrackedRange(POS, -278, -148);
+  setEntrySizeSol(POS, 0.15);
+
+  trackPosition(DUP_POS, BEST_POOL, "LAUNCH-SOL", MINT, 1, "spot", false);
+  recordTrackedRange(DUP_POS, -714, -399);
+  setEntrySizeSol(DUP_POS, 0.125);
+
+  const wallet = Keypair.generate();
+  const eventsOrder = [];
+
+  const makeMockPool = (activeBinId) => ({
+    lbPair: { binStep: 100 },
+    async getActiveBin() {
+      return { binId: activeBinId };
+    },
+    async getBinsBetweenLowerAndUpperBound(lo, hi) {
+      const bins = [];
+      for (let id = lo; id <= hi; id++) {
+        bins.push({ binId: id, xAmount: "0", yAmount: String(5 * 1e9) });
+      }
+      return { bins };
+    },
+    async getLbPairPositionsByUser() {
+      return Array.from({ length: 50 }, (_, i) => ({ publicKey: `pos_${i}` }));
+    },
+    async quoteCreatePosition() {
+      return { binArrayCost: 0, bitmapExtensionCost: 0, positionCost: 0.0574 };
+    },
+    async initializePositionAndAddLiquidityByStrategy() {
+      eventsOrder.push("open_new_position");
+      return { tx: "init" };
+    },
+    async addLiquidityByStrategy() {
+      return { tx: "add" };
+    },
+  });
+
+  const res = await handleSpotOorKananReentry(
+    { position: POS, pool: OLD_POOL, pair: "LAUNCH-SOL", baseMint: MINT, mode: "spot" },
+    {
+      dryRun: false,
+      closeDuplicatePosition: async (dup) => {
+        eventsOrder.push(`close_dup_${dup.position}`);
+        recordClose(dup.position, "reposition_dedup_close", 0);
+        return { success: true };
+      },
+      discoverCandidatePools: async () => [
+        { address: BEST_POOL, tvlUsd: 140000, fees24hUsd: 6000, cumFeesUsd: 6000 },
+        { address: OLD_POOL, tvlUsd: 45000, fees24hUsd: 5000, cumFeesUsd: 5000 },
+      ],
+      getPoolInfo: async (addr) => ({
+        pool: makeMockPool(addr === BEST_POOL ? -400 : -200),
+        baseMint: MINT,
+        baseIsX: true,
+        unsupported: false,
+        collectFeeMode: 1,
+      }),
+      getDlmmSdk: async () => ({ StrategyType: { Spot: 0 } }),
+      getConnection: () => ({}),
+      getWallet: () => wallet,
+      getSolBalance: async () => 5,
+      buildFeePlan: () => ({ mode: "none" }),
+      checkFeeCap: () => ({ ok: true, estimatedSol: 0, maxSol: 0.002 }),
+      sendAndConfirmRobust: async () => "tx_dedup_reentry",
+    }
+  );
+
+  assert.equal(res.success, true);
+  // Pastikan posisi duplikat ditutup SEBELUM posisi baru dibuka
+  assert.deepEqual(eventsOrder, [`close_dup_${DUP_POS}`, "open_new_position"]);
+  // Pastikan hanya ada TEPAT 1 posisi terbuka untuk token MINT
+  const openForMint = getOpenPositionsForMint(MINT);
+  assert.equal(openForMint.length, 1);
+  assert.equal(openForMint[0].position, res.position);
+  assert.equal(getTrackedPosition(POS).closed, true);
+  assert.equal(getTrackedPosition(DUP_POS).closed, true);
+
+  // Pastikan recordAction berupa string bersih (bukan [object Object])
+  const actions = takeRecentActions(60_000);
+  assert.ok(actions.some((a) => a.includes("RE-ENTRY LAUNCH-SOL") && !a.includes("[object Object]")));
+});
+
+test("executeSpotEntry: tolak buka posisi ke-2 bila token (baseMint) sudah punya posisi terbuka di pool lain", async () => {
+  resetState();
+  const POOL_1 = "PoolOne111111111111111111111111111111111111";
+  const POOL_2 = "PoolTwo222222222222222222222222222222222222";
+  const MINT = "TokenSameMint111111111111111111111111111111";
+
+  // Sudah ada posisi aktif di POOL_1 untuk MINT
+  trackPosition("OpenPosPool1", POOL_1, "TEST-SOL", MINT, 1, "spot", false);
+
+  const res = await executeSpotEntry(POOL_2, 0.1, {
+    dryRun: false,
+    getPoolInfo: async () => ({
+      pool: {
+        lbPair: { binStep: 100 },
+        async getActiveBin() {
+          return { binId: 100 };
+        },
+      },
+      baseMint: MINT,
+      baseIsX: true,
+      unsupported: false,
+      pairName: "TEST-SOL",
+    }),
+  });
+
+  assert.equal(res.success, false);
+  assert.equal(res.skipped, true);
+  assert.equal(res.duplicateMint, true);
+  assert.equal(getOpenPositionsForMint(MINT).length, 1);
 });

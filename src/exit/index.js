@@ -26,7 +26,16 @@ import { processTrailing, clearTrailingTimer } from "./trailing.js";
 import { processBounceRecovery } from "./bounce.js";
 import { clearBounceRecovery } from "../state/bounce.js";
 import { clearDcaState, resetStaleDcaPools, getPoolDcaCount, effectiveDcaArmPct } from "../state/dca.js";
-import { getEntryInProgressPools, getClosingPools, takeRecentActions, recordAction } from "../entry/runtime.js";
+import {
+  getEntryInProgressPools,
+  getClosingPools,
+  addEntryInProgressPool,
+  removeEntryInProgressPool,
+  addEntryInProgressMint,
+  removeEntryInProgressMint,
+  takeRecentActions,
+  recordAction,
+} from "../entry/runtime.js";
 import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
 import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
@@ -316,8 +325,21 @@ export async function mainLoop(opts = {}) {
         // ditandai '#' saat kita mau langsung membuka posisi lagi.
         const willReenter = !handled && canSpotReenter(pos, exit.reason);
         if (!handled) {
-          const closeRes = await handleClose(pos, exit.reason, { skipDeactivate: willReenter });
-          if (closeRes?.success && willReenter) await handleSpotOorKananReentry(pos);
+          if (willReenter) {
+            if (pos.pool) addEntryInProgressPool(pos.pool);
+            if (pos.baseMint) addEntryInProgressMint(pos.baseMint);
+          }
+          try {
+            const closeRes = await handleClose(pos, exit.reason, { skipDeactivate: willReenter });
+            if (closeRes?.success && willReenter) {
+              await handleSpotOorKananReentry(pos);
+            }
+          } finally {
+            if (willReenter) {
+              if (pos.pool) removeEntryInProgressPool(pos.pool);
+              if (pos.baseMint) removeEntryInProgressMint(pos.baseMint);
+            }
+          }
         }
       } else {
         if (exit.action === "arm_indicator_trailing") {

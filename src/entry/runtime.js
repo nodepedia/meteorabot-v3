@@ -223,6 +223,10 @@ export function getEntryInProgressMints() {
   return entryInProgressMints;
 }
 
+export function isEntryInProgressMint(mint) {
+  return entryInProgressMints.has(mint);
+}
+
 export function addEntryInProgressMint(mint) {
   if (mint) entryInProgressMints.add(mint);
 }
@@ -325,18 +329,41 @@ export function transferPoolEntryUsage(oldPool, newPool) {
 
 // Buffer aksi terakhir (entry/DCA/close/sweep) untuk baris "AKSI" di ringkasan log
 // sekaligus mencatat otomatis ke logs/important.log & logs/important-events.jsonl.
+function formatActionText(text) {
+  if (typeof text === "string") return text;
+  if (text && typeof text === "object") {
+    if (text.type === "spot_reentry") {
+      const switchSuffix = text.switchedPool && text.previousPool && text.pool
+        ? ` [pindah pool ${String(text.previousPool).slice(0, 8)}→${String(text.pool).slice(0, 8)}]`
+        : "";
+      return `RE-ENTRY ${text.pair || "?"} — ${text.sizeSol ?? "?"} SOL (${text.count ?? "?"}/${text.max ?? "?"})${switchSuffix}`;
+    }
+    if (text.type === "entry") {
+      return `ENTRY ${text.pair || "?"} — ${text.sizeSol ?? "?"} SOL (${text.mode || "spot"})`;
+    }
+    if (typeof text.message === "string") return text.message;
+    try {
+      return JSON.stringify(text);
+    } catch {
+      return String(text);
+    }
+  }
+  return String(text);
+}
+
 export function recordAction(text) {
   if (!text) return;
+  const formatted = formatActionText(text);
   let recordedAt = Date.now();
   mutateRuntimeState((state, now) => {
     recordedAt = now;
-    state.recentActions.push({ at: now, text: String(text) });
+    state.recentActions.push({ at: now, text: formatted });
     if (state.recentActions.length > 200) {
       state.recentActions.splice(0, state.recentActions.length - 200);
     }
   });
   try {
-    recordImportantFromAction(String(text), recordedAt);
+    recordImportantFromAction(formatted, recordedAt);
   } catch {
     // silent
   }

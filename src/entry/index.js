@@ -1,7 +1,7 @@
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
-import { countOpenBotPositionsByPool } from "../state/positions.js";
+import { countOpenBotPositionsByPool, countOpenBotPositionsByMint } from "../state/positions.js";
 import { loadPoolList, commentPoolInList } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
@@ -11,9 +11,11 @@ import { selectWatchCandidates } from "./candidates.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
+  isEntryInProgressMint,
   addEntryInProgressPool,
   removeEntryInProgressPool,
   isPoolClosing,
+  isMintClosing,
   getEntryUsage,
   getEntryInProgressPools,
   setWatchSnapshot,
@@ -110,6 +112,8 @@ export async function refreshCandidates() {
     // memblokir entry.
     const openBotByPool = countOpenBotPositionsByPool(ENTRY_MODE);
     const openSpotByPool = countOpenBotPositionsByPool("spot");
+    const openByMint = countOpenBotPositionsByMint();
+    const seenMintsInBatch = new Set();
     const now = Date.now();
     const candidates = [];
     const stillOpen = new Set();
@@ -170,6 +174,29 @@ export async function refreshCandidates() {
         log.warn(`Pool ${poolAddress.slice(0, 8)} has no base mint — skip`);
         continue;
       }
+
+      // Guard 1-token-1-posisi: cegah 2 posisi terbuka di token (baseMint) yang sama
+      // walaupun di alamat pool DLMM yang berbeda.
+      const existingOpenForMint = openByMint.get(info.baseMint) || 0;
+      if (existingOpenForMint >= 1) {
+        if (openCount === 0) {
+          log.info(
+            `Pool ${poolAddress.slice(0, 8)} (${info.pairName || info.baseMint.slice(0, 8)}) dilewati — token sudah punya posisi aktif di pool lain`
+          );
+          deactivatePool(poolAddress, "token sudah punya posisi aktif di pool lain");
+        }
+        stillOpen.add(poolAddress);
+        continue;
+      }
+      if (
+        isEntryInProgressMint(info.baseMint) ||
+        isMintClosing(info.baseMint) ||
+        seenMintsInBatch.has(info.baseMint)
+      ) {
+        stillOpen.add(poolAddress);
+        continue;
+      }
+      seenMintsInBatch.add(info.baseMint);
 
       if (mode === "spot") {
         startSpotEntry({
@@ -252,7 +279,16 @@ export async function watchAndEnter() {
 // mencegah retrigger selama swap/tx (10-30s) saat harga masih <= garis.
 function startEntry(trigger, candidate) {
   const { pool, mint, sizeSol, pairName } = candidate;
-  if (inFlightPools.has(pool) || isPoolClosing(pool) || enteredPools.has(pool)) return;
+  if (
+    inFlightPools.has(pool) ||
+    isPoolClosing(pool) ||
+    enteredPools.has(pool) ||
+    isEntryInProgressMint(mint) ||
+    isMintClosing(mint) ||
+    (countOpenBotPositionsByMint().get(mint) || 0) >= 1
+  ) {
+    return;
+  }
 
   const pair = pairName || `${mint.slice(0, 4)}-SOL`;
   log.info(
@@ -374,7 +410,16 @@ function startEntry(trigger, candidate) {
 // tanpa menunggu sinyal Supertrend 15m.
 export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry) {
   const { pool, mint, sizeSol, pairName } = candidate;
-  if (inFlightPools.has(pool) || isPoolClosing(pool) || enteredPools.has(pool)) return null;
+  if (
+    inFlightPools.has(pool) ||
+    isPoolClosing(pool) ||
+    enteredPools.has(pool) ||
+    isEntryInProgressMint(mint) ||
+    isMintClosing(mint) ||
+    (countOpenBotPositionsByMint().get(mint) || 0) >= 1
+  ) {
+    return null;
+  }
 
   const pair = pairName || `${mint.slice(0, 4)}-SOL`;
   log.info(`Pool ${pool.slice(0, 8)} (${pair}) mode=spot — entry instan tanpa tunggu Supertrend (${sizeSol} SOL)`);

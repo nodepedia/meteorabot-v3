@@ -21,7 +21,7 @@ import {
   selectMostEfficientSpotPool,
 } from "../meteora/spot-position.js";
 import { getPoolInfo } from "../entry/pool-info.js";
-import { replacePoolInList } from "../entry/pool-list.js";
+import { replacePoolInList, commentPoolInList } from "../entry/pool-list.js";
 import {
   trackPosition,
   getTrackedPosition,
@@ -29,9 +29,19 @@ import {
   getSpotReentryCount,
   setSpotReentryCount,
   setEntrySizeSol,
+  getOpenPositionsForMint,
+  recordClose,
 } from "../state/positions.js";
-import { recordAction, transferPoolEntryUsage } from "../entry/runtime.js";
+import {
+  recordAction,
+  transferPoolEntryUsage,
+  addEntryInProgressPool,
+  removeEntryInProgressPool,
+  addEntryInProgressMint,
+  removeEntryInProgressMint,
+} from "../entry/runtime.js";
 import { deactivatePool } from "../entry/index.js";
+import { handleClose } from "./close.js";
 
 export {
   nonRefundableCost,
@@ -170,9 +180,25 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
 
   let targetPoolAddress = pos.pool;
   let switchedPool = false;
+  const lockedPools = new Set();
+  const lockedMints = new Set();
+
+  const lockPool = (p) => {
+    if (p) {
+      addEntryInProgressPool(p);
+      lockedPools.add(p);
+    }
+  };
+  const lockMint = (m) => {
+    if (m) {
+      addEntryInProgressMint(m);
+      lockedMints.add(m);
+    }
+  };
 
   const fail = async (reason) => {
     log.warn(`${pair}: re-entry spot gagal (#${nextCount}/${cfg.maxReentries}) — ${reason}`);
+    recordAction(`RE-ENTRY ${pair} GAGAL (${nextCount}/${cfg.maxReentries}) — ${reason}`);
     deactivatePool(targetPoolAddress || pos.pool, `re-entry spot gagal: ${reason}`);
     await tg.notifySpotReentryFailed({
       pair,
@@ -192,6 +218,9 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
   }
 
   try {
+    lockPool(pos.pool);
+    lockMint(pos.baseMint || tracked?.baseMint || null);
+
     const connection = getConnectionFn();
     let initialPoolInfo = null;
     let baseMint = pos.baseMint || tracked?.baseMint || null;
@@ -203,6 +232,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       }
       baseMint = initialPoolInfo.baseMint;
     }
+    lockMint(baseMint);
 
     // Evaluasi kandidat pool paling efisien bila di produksi (!opts.getPoolInfo)
     // atau bila pemanggil menyediakan hook discovery/seleksi pool.
@@ -258,6 +288,41 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     const finalBaseMint = resolvedPoolInfo?.baseMint || baseMint;
     if (unsupported || !finalBaseMint || !pool) {
       return await fail("pool tidak didukung (bukan pair SOL)");
+    }
+    lockPool(targetPoolAddress);
+    lockMint(finalBaseMint);
+
+    // Pastikan posisi sebelumnya dan/atau posisi duplikat di token yang sama (baseMint)
+    // sudah ditutup terlebih dahulu sebelum membuka posisi baru (agar tidak pernah ada 2 posisi di 1 token).
+    const closeOldPositionFn =
+      opts.closeOldPositionFn ||
+      (pos.mustCloseFirst
+        ? (p) => handleClose(p, switchedPool ? "reposition_switch_pool_close" : "oor_kanan", { skipDeactivate: true })
+        : null);
+    if (closeOldPositionFn && pos.position && !getTrackedPosition(pos.position)?.closed) {
+      const oldCloseRes = await closeOldPositionFn(pos);
+      if (!oldCloseRes?.success) {
+        return await fail("gagal menutup posisi sebelumnya sebelum reposisi");
+      }
+    }
+
+    const closeDuplicatePositionFn =
+      opts.closeDuplicatePosition ||
+      ((dupPos) => handleClose(dupPos, "reposition_dedup_close", { skipDeactivate: false }));
+    const otherOpenPositions = getOpenPositionsForMint(finalBaseMint, pos.position);
+    for (const dupPos of otherOpenPositions) {
+      log.warn(
+        `${pair}: ditemukan posisi aktif lain ${dupPos.position.slice(0, 8)} di pool ${dupPos.pool?.slice(0, 8) || "?"} pada token yang sama (${finalBaseMint.slice(0, 8)}) — tutup dulu sebelum buka posisi reposisi`
+      );
+      const dupCloseRes = await closeDuplicatePositionFn(dupPos);
+      if (!dupCloseRes?.success) {
+        return await fail(
+          `gagal menutup posisi aktif lain (${dupPos.position.slice(0, 8)}) pada token yang sama sebelum reposisi`
+        );
+      }
+      if (dupPos.pool && dupPos.pool !== targetPoolAddress) {
+        commentPoolInList(dupPos.pool);
+      }
     }
 
     const activeBin = chosenAudit?.activeBin || (await pool.getActiveBin());
@@ -440,8 +505,13 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       `${pair}: OOR kanan re-entry #${nextCount}/${cfg.maxReentries} berhasil → ${newAddr.slice(0, 8)} di pool ${targetPoolAddress.slice(0, 8)} (${sizeSol} SOL, bins [${minBinId}..${maxBinId}], deposit [${depositMinBinId}..${depositMaxBinId}])`
     );
 
+    if (pos.position && !getTrackedPosition(pos.position)?.closed) {
+      recordClose(pos.position, switchedPool ? "oor_kanan_switch_pool" : "oor_kanan", null);
+    }
+
     if (switchedPool) {
       replacePoolInList(pos.pool, targetPoolAddress);
+      commentPoolInList(pos.pool);
       transferPoolEntryUsage(pos.pool, targetPoolAddress);
     }
 
@@ -453,25 +523,12 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     setLastSpotReentryAt(pos.pool, nowTs);
     if (targetPoolAddress !== pos.pool) setLastSpotReentryAt(targetPoolAddress, nowTs);
 
-    recordAction({
-      type: "spot_reentry",
-      oldPosition: pos.position,
-      position: newAddr,
-      pool: targetPoolAddress,
-      previousPool: pos.pool,
-      switchedPool,
-      pair,
-      sizeSol,
-      minBin: minBinId,
-      maxBin: maxBinId,
-      depositMinBin: depositMinBinId,
-      depositMaxBin: depositMaxBinId,
-      span: effectiveSpan,
-      count: nextCount,
-      max: cfg.maxReentries,
-      txSig: lastSig,
-      dryRun: false,
-    });
+    const switchNote = switchedPool
+      ? ` [pindah pool ${pos.pool.slice(0, 8)}→${targetPoolAddress.slice(0, 8)}]`
+      : "";
+    recordAction(
+      `RE-ENTRY ${pair} — ${sizeSol} SOL (${nextCount}/${cfg.maxReentries}, bin ${minBinId}..${maxBinId})${switchNote}`
+    );
 
     await tg.notifySpotReentry({
       pair,
@@ -506,6 +563,9 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       txSig: lastSig,
     };
   } catch (err) {
-    return fail(err.message);
+    return await fail(err.message);
+  } finally {
+    for (const p of lockedPools) removeEntryInProgressPool(p);
+    for (const m of lockedMints) removeEntryInProgressMint(m);
   }
 }

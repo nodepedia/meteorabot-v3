@@ -310,6 +310,22 @@ export function countOpenBotPositionsByPool(mode) {
   return countOpenByPoolAndMode(getOpenTrackedPositions(), mode);
 }
 
+export function getOpenPositionsForMint(baseMint, excludePositionAddress = null) {
+  if (!baseMint) return [];
+  return getOpenTrackedPositions().filter(
+    (p) => p && !p.closed && p.baseMint === baseMint && (!excludePositionAddress || p.position !== excludePositionAddress)
+  );
+}
+
+export function countOpenBotPositionsByMint() {
+  const counts = new Map();
+  for (const p of getOpenTrackedPositions()) {
+    if (!p || p.closed === true || !p.baseMint) continue;
+    counts.set(p.baseMint, (counts.get(p.baseMint) || 0) + 1);
+  }
+  return counts;
+}
+
 export function registerMissedCycle(positionAddress) {
   if (!positionAddress) return 0;
   const state = readState();

@@ -12,7 +12,7 @@ import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { getPoolInfo } from "./pool-info.js";
 import { guardPoolPrice, poolPriceSolPerToken } from "./price-guard.js";
-import { trackPosition, setEntryPoolPrice, recordTrackedRange, setEntrySizeSol } from "../state/positions.js";
+import { trackPosition, setEntryPoolPrice, recordTrackedRange, setEntrySizeSol, getOpenPositionsForMint } from "../state/positions.js";
 import { resolveSpotRangeWithRentCheck, openSpotSolPosition } from "../meteora/spot-position.js";
 import { incrementEntryUsage, getEntryUsage, recordAction } from "./runtime.js";
 
@@ -285,6 +285,18 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
       };
     }
 
+    if (!opts.allowDuplicateMint && getOpenPositionsForMint(baseMint).length > 0) {
+      const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
+      return {
+        success: false,
+        skipped: true,
+        duplicateMint: true,
+        reason: `token ${pair} (${baseMint.slice(0, 8)}) sudah memiliki posisi aktif`,
+        baseMint,
+        pair,
+      };
+    }
+
     const activeBin = await pool.getActiveBin();
     const activeBinId = Number(activeBin.binId);
     const binStep = Number(pool.lbPair?.binStep) || 100;
@@ -399,22 +411,9 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
     if (entryPoolPrice != null) setEntryPoolPrice(positionAddress, entryPoolPrice);
     incrementEntryUsage(poolAddress);
 
-    recordAction({
-      type: "entry",
-      position: positionAddress,
-      pool: poolAddress,
-      pair,
-      mode: "spot",
-      sizeSol,
-      lowerPctUsed,
-      upperPctUsed,
-      minBinId,
-      maxBinId,
-      depositMinBinId,
-      depositMaxBinId,
-      txSig: lastSig,
-      dryRun: false,
-    });
+    recordAction(
+      `ENTRY ${pair} — spot ${sizeSol} SOL (${lowerPctUsed}%..+${upperPctUsed}%, bin ${minBinId}..${maxBinId})`
+    );
 
     await tg.notifyEntry({
       pool: poolAddress,
