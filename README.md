@@ -119,6 +119,33 @@ npm run pm2:logrotate   # install pm2-logrotate (max 10M, compress, retain 7)
 | `npm run lint` | ESLint |
 | `npm run format` | Prettier |
 
+### Individual PM2 workers
+
+`ecosystem.config.cjs` defines three workers (logs in `./logs/`):
+
+| PM2 name | Script | Role |
+|---|---|---|
+| `meteorabot-entry` | `src/worker-entry.js` | Screening + open positions |
+| `meteorabot-exit` | `src/worker-exit.js` | Monitor + close positions |
+| `meteorabot-wallet` | `src/worker-wallet.js` | Wallet balance / housekeeping |
+
+```bash
+pm2 start ecosystem.config.cjs                              # all workers
+pm2 start ecosystem.config.cjs --only meteorabot-entry      # one worker
+pm2 restart meteorabot-exit
+pm2 logs meteorabot-wallet
+pm2 save && pm2 startup                                     # persist on reboot
+```
+
+### Scripts
+
+| Command | Function |
+|---|---|
+| `node scripts/runner-alert-scan.js` | Runner alert scan |
+| `node scripts/pnl-report.js` | PnL report (read-only) |
+| `node scripts/scan-pnl.js` | PnL scan |
+| `node scripts/patch-anchor.js` | Patch Anchor dependency (post-install) |
+
 ## PnL Report
 
 `scripts/pnl-report.js` pulls position PnL from the Meteora datapi and prints a table (WIB, SOL + USD) along with a summary of closed/open positions and total realized. Read-only — it doesn't touch `state.json` and doesn't send transactions.
