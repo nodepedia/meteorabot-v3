@@ -845,7 +845,18 @@ async function main() {
   };
 
   fs.writeFileSync("/tmp/latest-runner-alert-scan.json", JSON.stringify(summary, null, 2));
-  console.log(JSON.stringify(summary, null, 2));
+  const recBySym = new Map(fullResults.map((r) => [r.mint || r.symbol, r]));
+  const f = summary.funnel;
+  console.log(`[scan] ${scanNowWib} pools=${f.meteoraPoolsFetched} S1=${f.stage1PassedCount} S2=${f.stage2PassedCount} S3=${f.stage3PassedCount} ALL=${f.passedAllStagesCount}`);
+  for (const it of stage2Results) {
+    const c = it.candidate || {};
+    const r = recBySym.get(c.mint || c.symbol);
+    const s3 = Boolean(r?.gmgnAudit?.passedStage3);
+    const all = Boolean(r?.passedAllStages);
+    const conf = r?.confluence?.multiplier ? ` (${r.confluence.multiplier})` : "";
+    console.log(`${c.symbol || "?"} : passStage1 [true], passStage2 [${Boolean(it.passedStage2)}], passStage3 [${s3}], passAll [${all}]${all ? conf : ""}`);
+  }
+  for (const u of poolUpdates) console.log(`pool.txt: ${u.symbol} ${u.action || "added"}`);
 }
 
 main().catch((err) => {
