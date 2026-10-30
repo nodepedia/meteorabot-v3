@@ -1,5 +1,8 @@
 # Meteora Bot
 
+> Full VPS setup (Main + Runner): see [SETUP.md](SETUP.md)
+
+
 Live trading bot for **Meteora DLMM** pools on Solana: auto-entry + deterministic exit, DCA, and auto-swap.
 
 ## Features
