@@ -57,7 +57,7 @@ pm2 save && pm2 startup
 ```
 
 ## 4. Verify
-- Runner: `pm2 logs meteorabot-runner` shows `scan mulai` / `scan selesai` (`off — idle` = toggle is off). Debug: `timeout 60 node src/worker-runner.js`.
+- Runner: `pm2 logs meteorabot-runner` shows `worker start`, a `heartbeat alive` line every 60s (`RUNNER_HEARTBEAT_SEC`), and `scan mulai` / `scan selesai` (`off — idle` = toggle is off). Debug: `timeout 60 node src/worker-runner.js`.
 - Main: `tail ~/grokbot/meteorabot-v3/pool.txt` shows new `...,spot` lines; `pm2 logs meteorabot-entry` shows the entry.
 
 ## 5. Sizing rule (Runner)

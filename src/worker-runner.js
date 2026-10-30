@@ -54,4 +54,16 @@ async function loop() {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) loop();
+const isMain =
+  process.env.pm_id !== undefined || // PM2 (argv[1] = PM2 container, bukan file ini)
+  (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url));
+
+if (isMain) {
+  console.log(`[runner] ${ts()} worker start (pid ${process.pid})`);
+  const hbSec = Number(process.env.RUNNER_HEARTBEAT_SEC) || 60;
+  setInterval(() => {
+    const s = readRunnerSettings();
+    console.log(`[runner] ${ts()} heartbeat alive — RUNNER_AUTO_ENTRY=${s.enabled ? "on" : "off"}`);
+  }, hbSec * 1000).unref?.();
+  loop();
+}
