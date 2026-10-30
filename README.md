@@ -191,6 +191,13 @@ node scripts/pnl-report.js --wallet <address>           # override wallet
 ## Runner di VPS terpisah
 
 Di VPS worker:
+0. Dependency: Node.js 24 + npm, PM2 (`npm i -g pm2`), git, openssh-client:
+   ```
+   apt update && apt install -y git openssh-client curl
+   curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && apt install -y nodejs
+   npm i -g pm2
+   ```
+   Lalu salin file wallet GMGN Tier S/A (`gmgn_import_S.json`, `gmgn_import_A.json`, `wallets_report.json` dari lowcap-hunter) ke satu folder dan isi `GMGN_WALLETS_DIR=/path/folder` di `.env` (tanpa ini confluence GMGN tidak terdeteksi).
 1. `ssh-keygen -t ed25519`
 2. `ssh-copy-id root@MAIN_IP`
 3. Tes: `ssh root@MAIN_IP echo ok`
