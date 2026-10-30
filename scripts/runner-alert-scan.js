@@ -76,9 +76,9 @@ function sendTelegram(botToken, chatId, text) {
 
 function loadSmartWallets() {
   const gmgnSmartMap = new Map();
-  const sPath = path.join(process.env.GMGN_WALLETS_DIR || "/workspace/lowcap-hunter-exports", "gmgn_import_S.json");
-  const aPath = path.join(process.env.GMGN_WALLETS_DIR || "/workspace/lowcap-hunter-exports", "gmgn_import_A.json");
-  const repPath = path.join(process.env.GMGN_WALLETS_DIR || "/workspace/lowcap-hunter-exports", "wallets_report.json");
+  const sPath = path.join(process.env.GMGN_WALLETS_DIR || parseEnvFile(path.join(ROOT, ".env")).GMGN_WALLETS_DIR || "/workspace/lowcap-hunter-exports", "gmgn_import_S.json");
+  const aPath = path.join(process.env.GMGN_WALLETS_DIR || parseEnvFile(path.join(ROOT, ".env")).GMGN_WALLETS_DIR || "/workspace/lowcap-hunter-exports", "gmgn_import_A.json");
+  const repPath = path.join(process.env.GMGN_WALLETS_DIR || parseEnvFile(path.join(ROOT, ".env")).GMGN_WALLETS_DIR || "/workspace/lowcap-hunter-exports", "wallets_report.json");
 
   if (fs.existsSync(sPath)) {
     for (const w of JSON.parse(fs.readFileSync(sPath, "utf8"))) {
