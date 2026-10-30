@@ -449,16 +449,21 @@ async function main() {
   const auditAllStage1 = args.includes("--audit-stage1");
   const dryRun = args.includes("--dry-run");
 
-  const scannerEnv = parseEnvFile("/workspace/lowcap-hunter-exports/.env.scanner");
+  // Prioritas: process.env > .env > output/.env.scanner > SCANNER_ENV_FILE (legacy).
   const botEnv = parseEnvFile(path.join(ROOT, ".env"));
+  const scannerEnv = {
+    ...parseEnvFile(process.env.SCANNER_ENV_FILE || "/workspace/lowcap-hunter-exports/.env.scanner"),
+    ...parseEnvFile(path.join(ROOT, "output", ".env.scanner")),
+    ...botEnv,
+  };
 
   const gmgnApiKey = process.env.SCANNER_GMGN_API_KEY || scannerEnv.SCANNER_GMGN_API_KEY;
   const rpcUrl = process.env.SCANNER_RPC_URL || scannerEnv.SCANNER_RPC_URL;
-  const tgToken = botEnv.TELEGRAM_BOT_TOKEN;
-  const tgChatId = botEnv.TELEGRAM_CHAT_ID;
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN || botEnv.TELEGRAM_BOT_TOKEN;
+  const tgChatId = process.env.TELEGRAM_CHAT_ID || botEnv.TELEGRAM_CHAT_ID;
 
   if (!gmgnApiKey || !rpcUrl) {
-    throw new Error("Missing separate scanner API keys in /workspace/lowcap-hunter-exports/.env.scanner");
+    throw new Error("Missing SCANNER_GMGN_API_KEY / SCANNER_RPC_URL (isi di .env)");
   }
 
   const conn = new Connection(rpcUrl, "confirmed");

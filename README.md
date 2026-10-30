@@ -128,14 +128,23 @@ npm run pm2:logrotate   # install pm2-logrotate (max 10M, compress, retain 7)
 | `meteorabot-entry` | `src/worker-entry.js` | Screening + open positions |
 | `meteorabot-exit` | `src/worker-exit.js` | Monitor + close positions |
 | `meteorabot-wallet` | `src/worker-wallet.js` | Wallet balance / housekeeping |
+| `meteorabot-runner` | `src/worker-runner.js` | Runner Alert scan → auto-append to `pool.txt` (toggle) |
 
 ```bash
 pm2 start ecosystem.config.cjs                              # all workers
 pm2 start ecosystem.config.cjs --only meteorabot-entry      # one worker
 pm2 restart meteorabot-exit
 pm2 logs meteorabot-wallet
+pm2 logs meteorabot-runner
 pm2 save && pm2 startup                                     # persist on reboot
 ```
+
+### Runner Alert auto-entry (`meteorabot-runner`)
+
+- `strat.conf`: `RUNNER_AUTO_ENTRY=off` (default) or `on`; `RUNNER_SCAN_INTERVAL_SEC=300`. Re-read every cycle, no restart needed.
+- `.env`: `SCANNER_GMGN_API_KEY`, `SCANNER_RPC_URL` (separate from the main bot keys); Telegram alerts use `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
+- Check status: `pm2 logs meteorabot-runner` shows `RUNNER_AUTO_ENTRY=off — idle` or `scan mulai` / `scan selesai`.
+- Manual one-shot still works: `node scripts/runner-alert-scan.js [--dry-run]`.
 
 ### Scripts
 
