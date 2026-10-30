@@ -706,20 +706,22 @@ async function main() {
 
     const gmgnSmartMatches = gmgnAudit?.matchedGmgnSmart || [];
     const lpSmartMatches = onchain?.onChainPositions?.matchedSmartLps || [];
-    const hasGmgnSmart = gmgnSmartMatches.length > 0;
-    const hasLpSmart = lpSmartMatches.length > 0;
+    // Tier S = syarat confluence; Tier A hanya bonus (A tanpa S tidak dihitung).
+    const allSmart = [...gmgnSmartMatches, ...lpSmartMatches];
+    const hasTierS = allSmart.some((w) => w?.tier === "S");
+    const hasTierA = allSmart.some((w) => w?.tier === "A");
 
     let confluenceLevel = 1;
     let multiplier = "1x";
     let label = "✅ RUNNER LOLOS FILTER";
-    if (hasGmgnSmart && hasLpSmart) {
+    if (hasTierS && hasTierA) {
       confluenceLevel = 3;
       multiplier = "1.5x";
-      label = "🔥🔥 DOUBLE CONFLUENCE RUNNER (GMGN Trader + lpagent LP Tier S/A)";
-    } else if (hasGmgnSmart || hasLpSmart) {
+      label = "🔥🔥 DOUBLE CONFLUENCE RUNNER (Tier S + Tier A)";
+    } else if (hasTierS) {
       confluenceLevel = 2;
       multiplier = "1.25x";
-      label = "🔥 HIGH CONFLUENCE RUNNER (Tier S/A Detected)";
+      label = "🔥 HIGH CONFLUENCE RUNNER (Tier S)";
     }
 
     // Verify true token age if GMGN creation_timestamp is older than 24h
