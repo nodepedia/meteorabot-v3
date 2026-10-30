@@ -187,3 +187,16 @@ node scripts/pnl-report.js --wallet <address>           # override wallet
 ## Security
 
 `.env`, `state.json`, `pnl-history.json`, and logs are git-ignored — never commit secrets. `strat.conf` is deliberately committed so strategy tuning persists. Restrict permissions with `chmod 600 .env` and always test with `DRY_RUN=true` before going live.
+
+## Runner di VPS terpisah
+
+Di VPS worker:
+1. `ssh-keygen -t ed25519`
+2. `ssh-copy-id root@MAIN_IP`
+3. Tes: `ssh root@MAIN_IP echo ok`
+4. Clone repo, `npm install`
+5. `.env`: isi `SCANNER_GMGN_API_KEY`, `SCANNER_RPC_URL`, `MAIN_VPS_HOST=root@MAIN_IP` (opsional `MAIN_VPS_SSH_KEY`, `MAIN_POOL_PATH`, `MAIN_STATE_PATH=~/grokbot/meteorabot-v3/state.json` untuk skip token yang posisinya masih open)
+6. `strat.conf`: `RUNNER_AUTO_ENTRY=on`
+7. `pm2 start ecosystem.config.cjs --only meteorabot-runner`
+
+Di VPS main: biarkan `RUNNER_AUTO_ENTRY=off` atau jangan jalankan `meteorabot-runner`.

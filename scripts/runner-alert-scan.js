@@ -6,6 +6,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import DLMM_PKG from "@meteora-ag/dlmm";
 import { OpenApiClient } from "../node_modules/gmgn-cli/dist/client/OpenApiClient.js";
 import { createGmgnLimiter } from "../src/market/gmgn-limiter.js";
+import { remoteConfig, remoteUpdatePool } from "../src/runner/remote-pool.js";
 import { resolveSpotRangeWithRentCheck } from "../src/meteora/spot-position.js";
 
 const DLMM = DLMM_PKG.default || DLMM_PKG;
@@ -781,7 +782,15 @@ async function main() {
   const poolUpdates = [];
   if (!dryRun && passedAll.length > 0) {
     for (const winner of passedAll) {
-      const upd = updatePoolTxtFile(
+      const remoteCfg = remoteConfig({ ...parseEnvFile(path.join(ROOT, ".env")), ...process.env });
+      const upd = remoteCfg
+        ? remoteUpdatePool(remoteCfg, {
+            poolAddress: winner.bestPool,
+            multiplierStr: winner.confluence.multiplier,
+            allTokenPoolAddresses: winner.allTokenPoolAddresses || (winner.allPoolsAudited || []).map((x) => x.pool || x.address),
+            mint: winner.mint,
+          })
+        : updatePoolTxtFile(
         poolTxtPath,
         winner.bestPool,
         winner.confluence.multiplier,
