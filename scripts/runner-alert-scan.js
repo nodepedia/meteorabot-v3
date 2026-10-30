@@ -467,7 +467,17 @@ async function main() {
     throw new Error("Missing SCANNER_GMGN_API_KEY / SCANNER_RPC_URL (isi di .env)");
   }
 
-  const conn = new Connection(rpcUrl, "confirmed");
+  // Throttle RPC (Helius free ~10 req/s) agar tidak 429: jeda minimal antar request.
+  const rpcGapMs = Number(process.env.RUNNER_RPC_MIN_GAP_MS || botEnv.RUNNER_RPC_MIN_GAP_MS) || 150;
+  let rpcNext = 0;
+  const throttledFetch = async (url, opts) => {
+    const now = Date.now();
+    const wait = Math.max(0, rpcNext - now);
+    rpcNext = Math.max(now, rpcNext) + rpcGapMs;
+    if (wait) await sleep(wait);
+    return fetch(url, opts);
+  };
+  const conn = new Connection(rpcUrl, { commitment: "confirmed", fetch: throttledFetch });
   const gmgnClient = new OpenApiClient({
     apiKey: gmgnApiKey,
     host: "https://openapi.gmgn.ai",
