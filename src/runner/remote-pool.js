@@ -10,7 +10,7 @@ export function remoteConfig(env = process.env) {
   return {
     host,
     key: exp((env.MAIN_VPS_SSH_KEY || "~/.ssh/id_ed25519").trim()),
-    poolPath: (env.MAIN_POOL_PATH || "~/grokbot/meteorabot-v3/pool.txt").trim(),
+    poolPath: (env.MAIN_POOL_PATH || "~/meteorabot-v3/pool.txt").trim(),
     statePath: (env.MAIN_STATE_PATH || "").trim(),
   };
 }

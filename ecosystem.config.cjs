@@ -32,12 +32,5 @@ module.exports = {
       error_file: "./logs/wallet-error.log",
       out_file: "./logs/wallet-out.log",
     },
-    {
-      ...baseConfig,
-      name: "meteorabot-runner",
-      script: "src/worker-runner.js",
-      error_file: "./logs/runner-error.log",
-      out_file: "./logs/runner-out.log",
-    },
   ],
 };

@@ -9,8 +9,8 @@ Two Ubuntu VPS:
 apt update && apt install -y git openssh-client curl
 curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && apt install -y nodejs
 npm i -g pm2
-git clone https://github.com/nodepedia/meteorabot-v3.git ~/grokbot/meteorabot-v3
-cd ~/grokbot/meteorabot-v3 && npm install
+git clone https://github.com/nodepedia/meteorabot-v3.git ~/meteorabot-v3
+cd ~/meteorabot-v3 && npm install
 cp .env.example .env
 ```
 
@@ -29,11 +29,11 @@ pm2 save && pm2 startup
 ```bash
 ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519
 ssh-copy-id root@MAIN_IP
-ssh -o BatchMode=yes root@MAIN_IP "cat ~/grokbot/meteorabot-v3/pool.txt"   # must print without password
+ssh -o BatchMode=yes root@MAIN_IP "cat ~/meteorabot-v3/pool.txt"   # must print without password
 ```
 2. GMGN smart wallets (Tier S/A from lowcap-hunter):
 ```bash
-mkdir -p /root/grokbot/gmgn-wallets
+mkdir -p /root/gmgn-wallets
 # copy gmgn_import_S.json, gmgn_import_A.json, wallets_report.json here
 ```
 3. `.env` (only these needed):
@@ -42,9 +42,9 @@ SCANNER_GMGN_API_KEY=...
 SCANNER_RPC_URL=https://mainnet.helius-rpc.com/?api-key=...
 MAIN_VPS_HOST=root@MAIN_IP
 MAIN_VPS_SSH_KEY=/root/.ssh/id_ed25519
-MAIN_POOL_PATH=~/grokbot/meteorabot-v3/pool.txt
-MAIN_STATE_PATH=~/grokbot/meteorabot-v3/state.json
-GMGN_WALLETS_DIR=/root/grokbot/gmgn-wallets
+MAIN_POOL_PATH=~/meteorabot-v3/pool.txt
+MAIN_STATE_PATH=~/meteorabot-v3/state.json
+GMGN_WALLETS_DIR=/root/gmgn-wallets
 TELEGRAM_BOT_TOKEN=...   # optional alerts
 TELEGRAM_CHAT_ID=...
 ```
@@ -52,13 +52,13 @@ Use absolute paths (no `~`) for `MAIN_VPS_SSH_KEY` and `GMGN_WALLETS_DIR`.
 4. `strat.conf`: `RUNNER_AUTO_ENTRY=on` (live toggle, no restart needed). Interval: `RUNNER_SCAN_INTERVAL_SEC=300`.
 5. Start:
 ```bash
-pm2 start ecosystem.config.cjs --only meteorabot-runner
+pm2 start ecosystem.runner.config.cjs
 pm2 save && pm2 startup
 ```
 
 ## 4. Verify
 - Runner: `pm2 logs meteorabot-runner` shows `worker start`, a `heartbeat alive` line every 60s (`RUNNER_HEARTBEAT_SEC`), and `scan mulai` / `scan selesai` (`off — idle` = toggle is off). Debug: `timeout 60 node src/worker-runner.js`.
-- Main: `tail ~/grokbot/meteorabot-v3/pool.txt` shows new `...,spot` lines; `pm2 logs meteorabot-entry` shows the entry.
+- Main: `tail ~/meteorabot-v3/pool.txt` shows new `...,spot` lines; `pm2 logs meteorabot-entry` shows the entry.
 
 ## 5. Sizing rule (Runner)
 - Tier S + Tier A wallets: 1.5x
@@ -67,6 +67,6 @@ pm2 save && pm2 startup
 
 ## 6. Update
 ```bash
-cd ~/grokbot/meteorabot-v3 && git pull && npm install && pm2 restart all
+cd ~/meteorabot-v3 && git pull && npm install && pm2 restart all
 ```
 Never commit `.env`.

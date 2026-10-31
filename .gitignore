@@ -19,3 +19,5 @@ gmgn-kline-cache.json
 gmgn-rate-state.json
 gmgn-wallets/
 *.lock
+gmgn-wallets/
+.env.scanner

@@ -131,7 +131,7 @@ npm run pm2:logrotate   # install pm2-logrotate (max 10M, compress, retain 7)
 | `meteorabot-entry` | `src/worker-entry.js` | Screening + open positions |
 | `meteorabot-exit` | `src/worker-exit.js` | Monitor + close positions |
 | `meteorabot-wallet` | `src/worker-wallet.js` | Wallet balance / housekeeping |
-| `meteorabot-runner` | `src/worker-runner.js` | Runner Alert scan → auto-append to `pool.txt` (toggle) |
+| `meteorabot-runner` (optional, `ecosystem.runner.config.cjs`, separate VPS) | `src/worker-runner.js` | Runner Alert scan → auto-append to `pool.txt` (toggle) |
 
 ```bash
 pm2 start ecosystem.config.cjs                              # all workers
@@ -205,8 +205,8 @@ Di VPS worker:
 2. `ssh-copy-id root@MAIN_IP`
 3. Tes: `ssh root@MAIN_IP echo ok`
 4. Clone repo, `npm install`
-5. `.env`: isi `SCANNER_GMGN_API_KEY`, `SCANNER_RPC_URL`, `MAIN_VPS_HOST=root@MAIN_IP` (opsional `MAIN_VPS_SSH_KEY`, `MAIN_POOL_PATH`, `MAIN_STATE_PATH=~/grokbot/meteorabot-v3/state.json` untuk skip token yang posisinya masih open)
+5. `.env`: isi `SCANNER_GMGN_API_KEY`, `SCANNER_RPC_URL`, `MAIN_VPS_HOST=root@MAIN_IP` (opsional `MAIN_VPS_SSH_KEY`, `MAIN_POOL_PATH`, `MAIN_STATE_PATH=~/meteorabot-v3/state.json` untuk skip token yang posisinya masih open)
 6. `strat.conf`: `RUNNER_AUTO_ENTRY=on`
-7. `pm2 start ecosystem.config.cjs --only meteorabot-runner`
+7. `pm2 start ecosystem.runner.config.cjs`
 
 Di VPS main: biarkan `RUNNER_AUTO_ENTRY=off` atau jangan jalankan `meteorabot-runner`.
