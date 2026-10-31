@@ -5,8 +5,10 @@ import os from "os";
 import path from "path";
 import { readRunnerSettings } from "../src/worker-runner.js";
 
-test("runner: strat.conf default off, interval 300", () => {
-  assert.deepEqual(readRunnerSettings(path.resolve("strat.conf")), { enabled: false, intervalSec: 300 });
+test("runner: saklar off, interval default 300 (tmp file, tak tergantung strat.conf produksi)", () => {
+  const f = path.join(os.tmpdir(), "rs-off-" + process.pid + ".conf");
+  fs.writeFileSync(f, "RUNNER_AUTO_ENTRY=off\n");
+  assert.deepEqual(readRunnerSettings(f), { enabled: false, intervalSec: 300 });
 });
 
 test("runner: toggle on + interval", () => {

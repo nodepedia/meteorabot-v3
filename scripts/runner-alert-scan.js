@@ -382,7 +382,7 @@ async function auditGmgnToken(gmgnClient, limiter, mint, knownPoolAddrs, gmgnSma
   const blacklist = Number(security?.blacklist || 0);
   const burnRatio = Number(security?.burn_ratio ?? 0);
 
-  const activeHolders = holders.filter((h) => Number(h.amount_cur ?? h.balance ?? 0) > 0).slice(0, 30);
+  const activeHolders = holders.filter((h) => Number(h.amount_cur ?? h.balance ?? 0) > 0).slice(0, 20);
   const zeroBuyOffenders = [];
   for (let i = 0; i < activeHolders.length; i++) {
     const h = activeHolders[i];
@@ -413,12 +413,12 @@ async function auditGmgnToken(gmgnClient, limiter, mint, knownPoolAddrs, gmgnSma
   const checks = {
     feesGe30Sol: totalFeeSol >= 30,
     top10Le40Pct: top10Rate <= 0.40,
-    sniperZero: sniperRate === 0,
-    insiderZero: insiderRate === 0,
+    sniperLe5Pct: sniperRate <= 0.05,
+    insiderLe5Pct: insiderRate <= 0.05,
     noMint: renouncedMint,
     noBlacklistFreeze: renouncedFreeze && blacklist === 0,
     burnt100Pct: burnRatio >= 0.99,
-    top30NoZeroBuy: zeroBuyOffenders.length === 0,
+    top20NoZeroBuy: zeroBuyOffenders.length === 0,
   };
 
   const passedStage3 = Object.values(checks).every(Boolean);
@@ -435,7 +435,7 @@ async function auditGmgnToken(gmgnClient, limiter, mint, knownPoolAddrs, gmgnSma
     renouncedFreeze,
     blacklist,
     burnRatioPct: Number((burnRatio * 100).toFixed(2)),
-    top30CheckedCount: activeHolders.length,
+    top20CheckedCount: activeHolders.length,
     zeroBuyOffendersCount: zeroBuyOffenders.length,
     zeroBuyOffenders: zeroBuyOffenders.slice(0, 5),
     checks,
@@ -443,6 +443,33 @@ async function auditGmgnToken(gmgnClient, limiter, mint, knownPoolAddrs, gmgnSma
     matchedGmgnSmart,
     gmgnCreationTsSec: Number(info?.creation_timestamp || info?.open_timestamp || 0),
   };
+}
+
+function stage3FailReasons(gmgnAudit) {
+  if (!gmgnAudit) return [];
+  if (gmgnAudit.error) return [`GMGN error: ${gmgnAudit.error}`];
+  const checks = gmgnAudit.checks || {};
+  const reasons = [];
+  if (!checks.feesGe30Sol) reasons.push(`fees ${gmgnAudit.totalFeeSol ?? "?"} SOL < 30 SOL`);
+  if (!checks.top10Le40Pct) reasons.push(`top10 ${gmgnAudit.top10Pct ?? "?"}% > 40%`);
+  if (!checks.sniperLe5Pct) reasons.push(`sniper ${gmgnAudit.sniperPct ?? "?"}% > 5%`);
+  if (!checks.insiderLe5Pct) {
+    reasons.push(
+      `insider ${gmgnAudit.insiderPct ?? "?"}% > 5% ` +
+        `(rat ${gmgnAudit.ratTraderPct ?? "?"}%, dev ${gmgnAudit.devHoldPct ?? "?"}%, ` +
+        `creator ${gmgnAudit.creatorHoldPct ?? "?"}%)`
+    );
+  }
+  if (!checks.noMint) reasons.push(`mint belum renounced`);
+  if (!checks.noBlacklistFreeze) {
+    reasons.push(
+      `freeze renounced=${gmgnAudit.renouncedFreeze}, blacklist=${gmgnAudit.blacklist} ` +
+        `(syarat: freeze renounced dan blacklist 0)`
+    );
+  }
+  if (!checks.burnt100Pct) reasons.push(`burnt ${gmgnAudit.burnRatioPct ?? "?"}% < 99%`);
+  if (!checks.top20NoZeroBuy) reasons.push(`top20 0-buy ${gmgnAudit.zeroBuyOffendersCount ?? "?"} holder`);
+  return reasons;
 }
 
 async function main() {
@@ -824,7 +851,7 @@ async function main() {
           `Total Fees: ${winner.gmgnAudit?.totalFeeSol ?? winner.sumCumFeesSolEst} SOL`,
           `LP Aktif: ${winner.onchain.onChainPositions.positionAccountCount} posisi (${winner.onchain.onChainPositions.uniqueOwnerCount} owner)`,
           `Bin Wajib (activeBin-34..activeBin-4): ${winner.onchain.bins35Stats.bins31RequiredGe1SolCount}/31 bin >= 1 SOL (Total 35 bin: ${winner.onchain.bins35Stats.totalSolIn35Bins} SOL)`,
-          `GMGN Security: Top10 ${winner.gmgnAudit.top10Pct}% | Sniper ${winner.gmgnAudit.sniperPct}% | Insider ${winner.gmgnAudit.insiderPct}% | Burnt ${winner.gmgnAudit.burnRatioPct}% | Top30 0-buy: ${winner.gmgnAudit.zeroBuyOffendersCount}`,
+          `GMGN Security: Top10 ${winner.gmgnAudit.top10Pct}% | Sniper ${winner.gmgnAudit.sniperPct}% | Insider ${winner.gmgnAudit.insiderPct}% | Burnt ${winner.gmgnAudit.burnRatioPct}% | Top20 0-buy: ${winner.gmgnAudit.zeroBuyOffendersCount}`,
           `Sizing Tier: Level ${winner.confluence.level} (${winner.confluence.multiplier}, mode spot)`,
           `Perubahan pool.txt: ditambahkan baris ${upd.targetLine}`,
         ];
@@ -861,10 +888,33 @@ async function main() {
   for (const it of stage2Results) {
     const c = it.candidate || {};
     const r = recBySym.get(c.mint || c.symbol);
-    const s3 = Boolean(r?.gmgnAudit?.passedStage3);
-    const all = Boolean(r?.passedAllStages);
-    const conf = r?.confluence?.multiplier ? ` (${r.confluence.multiplier})` : "";
-    console.log(`${c.symbol || "?"} : passStage1 [true], passStage2 [${Boolean(it.passedStage2)}], passStage3 [${s3}], passAll [${all}]${all ? conf : ""}`);
+    const symbol = c.symbol || "?";
+    if (r?.passedAllStages) {
+      const conf = r?.confluence?.multiplier ? ` (${r.confluence.multiplier})` : "";
+      console.log(`${symbol} : lolos semua${conf}`);
+      continue;
+    }
+    if (!it.passedStage2) {
+      const reasons = it.stage2Reasons?.length ? it.stage2Reasons : ["alasan tidak diketahui"];
+      console.log(`${symbol} : gagal Stage2 — ${reasons.join("; ")}`);
+      continue;
+    }
+    const s3Reasons = stage3FailReasons(r?.gmgnAudit);
+    if (s3Reasons.length) {
+      if (r && !r.ageStillValid) {
+        s3Reasons.push(`umur sebenarnya ${r.trueAgeHours} jam di luar 4-24 jam`);
+      }
+      console.log(`${symbol} : gagal Stage3 — ${s3Reasons.join("; ")}`);
+      continue;
+    }
+    if (r && !r.ageStillValid) {
+      console.log(`${symbol} : gagal umur — umur sebenarnya ${r.trueAgeHours} jam di luar 4-24 jam`);
+      continue;
+    }
+    console.log(
+      `${symbol} : gagal — passStage1 [true], passStage2 [${Boolean(it.passedStage2)}], ` +
+        `passStage3 [${Boolean(r?.gmgnAudit?.passedStage3)}], passAll [false]`
+    );
   }
   for (const u of poolUpdates) console.log(`pool.txt: ${u.symbol} ${u.action || "added"}`);
 }

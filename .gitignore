@@ -17,4 +17,5 @@ runtime-state.json
 logs/
 gmgn-kline-cache.json
 gmgn-rate-state.json
+gmgn-wallets/
 *.lock
