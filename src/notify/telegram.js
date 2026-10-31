@@ -94,22 +94,22 @@ export function notifyFallback({ pair, pool, success, amount, error }) {
 export function notifySpotTokenBidask({
   pair,
   pool,
-  position,
   stepPct,
-  tokenBinPct,
   fromBinId,
   toBinId,
-  amount,
+  tokenPct,
+  solPct,
+  feePct24h,
   success,
   error,
 }) {
   const label = pair || pool?.slice(0, 8) || "";
-  const pctStr = Number.isFinite(Number(tokenBinPct)) ? `${Number(tokenBinPct).toFixed(1)}%` : `${stepPct ?? "?"}%`;
   const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
   if (success) {
-    send(
-      `📐 SPOT TOKEN BIDASK ${label}\nStep: ${stepPct}% (bin token ${pctStr})\nRange token: ${rangeStr}\nToken: ${amount ?? "?"}\nPosition: ${position || "?"}\nPool: ${pool || "?"}`
-    );
+    const tokenPctStr = Number.isFinite(Number(tokenPct)) ? `${Number(tokenPct).toFixed(1)}%` : "?";
+    const solPctStr = Number.isFinite(Number(solPct)) ? `${Number(solPct).toFixed(1)}%` : "?";
+    const yieldStr = Number.isFinite(Number(feePct24h)) ? `${Number(feePct24h).toFixed(2)}%` : "-";
+    send(`🔄 ${label} Rebalance : ${tokenPctStr} - ${solPctStr}\nYield = ${yieldStr}`);
   } else {
     send(
       `⚠️ SPOT TOKEN BIDASK ${label} GAGAL (step ${stepPct}%)\n${error ? `Alasan: ${error}\n` : ""}Range token: ${rangeStr}\nPool: ${pool || "?"}`
@@ -121,24 +121,23 @@ export function notifySpotTokenBidask({
 export function notifySpotSolRebalance({
   pair,
   pool,
-  position,
   lastPct,
   stepPct,
   fromBinId,
   toBinId,
-  amountSol,
-  amount,
+  tokenPct,
+  solPct,
+  feePct24h,
   success,
   error,
 }) {
   const label = pair || pool?.slice(0, 8) || "";
   const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
-  const solVal = amountSol ?? amount;
-  const solStr = Number.isFinite(Number(solVal)) ? `${Number(solVal).toFixed(4)} SOL` : `${solVal ?? "?"} SOL`;
   if (success) {
-    send(
-      `🔄 SPOT SOL REBALANCE ${label}\nRecover: ${lastPct ?? "?"}% → ${stepPct ?? 0}%\nRange SOL: ${rangeStr}\nSOL: ${solStr} (mode Spot)\nPosition: ${position || "?"}\nPool: ${pool || "?"}`
-    );
+    const tokenPctStr = Number.isFinite(Number(tokenPct)) ? `${Number(tokenPct).toFixed(1)}%` : "?";
+    const solPctStr = Number.isFinite(Number(solPct)) ? `${Number(solPct).toFixed(1)}%` : "?";
+    const yieldStr = Number.isFinite(Number(feePct24h)) ? `${Number(feePct24h).toFixed(2)}%` : "-";
+    send(`🔄 ${label} Rebalance : ${tokenPctStr} - ${solPctStr}\nYield = ${yieldStr}`);
   } else {
     send(
       `⚠️ SPOT SOL REBALANCE ${label} GAGAL (recover ${lastPct ?? "?"}% → ${stepPct ?? 0}%)\n${error ? `Alasan: ${error}\n` : ""}Range SOL: ${rangeStr}\nPool: ${pool || "?"}`

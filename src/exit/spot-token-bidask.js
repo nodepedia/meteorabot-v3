@@ -11,6 +11,7 @@ import { buildFeePlan, checkFeeCap } from "../solana/fees.js";
 import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { getPoolInfo } from "../entry/pool-info.js";
+import { poolPriceSolPerToken } from "../entry/price-guard.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -479,6 +480,35 @@ export function extractSolSideLiquidity(positionData, lowerBinId, activeBinId, b
   };
 }
 
+// Pure: komposisi nilai posisi spot — persen sisi token vs sisi SOL dari total
+// nilai posisi. Sisi token dihargai dengan harga SOL-per-token di bin aktif.
+// Mengembalikan { tokenPct, solPct } (1 desimal) atau null bila data tidak cukup.
+export function computeSpotComposition({
+  positionData,
+  lowerBinId,
+  upperBinId,
+  activeBinId,
+  baseIsX,
+  tokenDecimals,
+  solPerToken,
+}) {
+  const price = Number(solPerToken);
+  const tokDec = Number(tokenDecimals);
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(tokDec) || tokDec < 0) return null;
+  const tokenSide = extractTokenSideLiquidity(positionData, activeBinId + 1, upperBinId, baseIsX);
+  const solSide = extractSolSideLiquidity(positionData, lowerBinId, activeBinId, baseIsX);
+  const tokenUi = Number(tokenSide.totalTokenRaw.toString()) / Math.pow(10, tokDec);
+  const solUi = Number(solSide.totalSolLamports.toString()) / 1e9;
+  if (!Number.isFinite(tokenUi) || !Number.isFinite(solUi) || tokenUi < 0 || solUi < 0) return null;
+  const tokenVal = tokenUi * price;
+  const totalVal = tokenVal + solUi;
+  if (!Number.isFinite(totalVal) || totalVal <= 0) return null;
+  const tokenPct = (tokenVal * 100) / totalVal;
+  if (!Number.isFinite(tokenPct)) return null;
+  const rounded = Number(tokenPct.toFixed(1));
+  return { tokenPct: rounded, solPct: Number(Math.max(0, 100 - rounded).toFixed(1)) };
+}
+
 async function fetchPositionOnChain(pool, positionPubKey, walletPubKey) {
   if (typeof pool.getPosition === "function") {
     return await pool.getPosition(positionPubKey);
@@ -710,6 +740,25 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       ? Number(onChainPos.positionData.upperBinId)
       : Number(pos.upperBin);
 
+    // Komposisi nilai posisi (token vs SOL) sekarang + yield fee 24 jam — untuk notifikasi.
+    let comp = null;
+    try {
+      const liveBin = typeof pool.getActiveBin === "function" ? await pool.getActiveBin() : null;
+      const tokDec = await getMintDecimalsFn(baseMint);
+      comp = computeSpotComposition({
+        positionData: onChainPos.positionData,
+        lowerBinId,
+        upperBinId,
+        activeBinId,
+        baseIsX,
+        tokenDecimals: tokDec,
+        solPerToken: poolPriceSolPerToken(liveBin, baseIsX),
+      });
+    } catch (err) {
+      log.warn(`Spot Rebalance ${pair}: komposisi gagal dihitung (${err.message || err}) — notifikasi tanpa komposisi`);
+    }
+    const feePct24h = Number.isFinite(Number(pos.feePct24h)) ? Number(pos.feePct24h) : null;
+
     // --- JALUR A: Rebalance sisi SOL kembali ke Spot murni saat harga naik +step% dari posisi rebalance ---
     if (isSolSpotRebalance) {
       if (activeBinId < lowerBinId || activeBinId > upperBinId) {
@@ -929,6 +978,9 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
         toBinId,
         amountSol: depositedSolUi,
         amount: depositedSolUi,
+        tokenPct: comp?.tokenPct ?? null,
+        solPct: comp?.solPct ?? null,
+        feePct24h,
         success: true,
       });
 
@@ -1105,6 +1157,9 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       fromBinId,
       toBinId,
       amount: depositedUi,
+      tokenPct: comp?.tokenPct ?? null,
+      solPct: comp?.solPct ?? null,
+      feePct24h,
       success: true,
     });
 

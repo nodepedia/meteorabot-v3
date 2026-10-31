@@ -22,6 +22,7 @@ const {
   patchRebalanceNoShrink,
   extractTokenSideLiquidity,
   extractSolSideLiquidity,
+  computeSpotComposition,
   handleSpotTokenBidask,
 } = await import("../src/exit/spot-token-bidask.js");
 
@@ -285,6 +286,43 @@ test("extractTokenSideLiquidity & extractSolSideLiquidity: mendeteksi likuiditas
   assert.equal(solPure.fromBinId, 100);
   assert.equal(solPure.toBinId, 270);
   assert.equal(solPure.totalSolLamports.toString(), "550000000");
+});
+
+test("computeSpotComposition: komposisi nilai token vs SOL (persen, 1 desimal) + null bila data tidak cukup", () => {
+  const posData = {
+    positionBinData: [
+      { binId: 100, positionXAmount: "0", positionYAmount: "200000000" },
+      { binId: 269, positionXAmount: "0", positionYAmount: "300000000" },
+      { binId: 271, positionXAmount: "120000", positionYAmount: "0" },
+      { binId: 272, positionXAmount: "380000", positionYAmount: "0" },
+    ],
+  };
+  const base = {
+    positionData: posData,
+    lowerBinId: 100,
+    upperBinId: 300,
+    activeBinId: 270,
+    baseIsX: true,
+    tokenDecimals: 6,
+  };
+
+  // 0.5 token * 1 SOL/token + 0.5 SOL = 50/50
+  assert.deepEqual(computeSpotComposition({ ...base, solPerToken: 1 }), { tokenPct: 50, solPct: 50 });
+  // 0.5 token * 2 SOL/token = 1.0 dari total 1.5 → 66.7% token, 33.3% SOL
+  assert.deepEqual(computeSpotComposition({ ...base, solPerToken: 2 }), { tokenPct: 66.7, solPct: 33.3 });
+  // Posisi baru 100% SOL → 0% token
+  const pureSol = {
+    positionBinData: [{ binId: 100, positionXAmount: "0", positionYAmount: "450000000" }],
+  };
+  assert.deepEqual(computeSpotComposition({ ...base, positionData: pureSol, solPerToken: 2 }), {
+    tokenPct: 0,
+    solPct: 100,
+  });
+  // Harga/desimal tidak valid → null
+  assert.equal(computeSpotComposition({ ...base, solPerToken: 0 }), null);
+  assert.equal(computeSpotComposition({ ...base, tokenDecimals: -1 }), null);
+  // Bin data kosong → null (total nilai 0)
+  assert.equal(computeSpotComposition({ ...base, positionData: { positionBinData: [] }, solPerToken: 1 }), null);
 });
 
 test("handleSpotTokenBidask: sisi Token rebalance ke BidAsk mulus (>70 bin pakai addLiquidityByStrategyChunkable), sisi SOL rebalance ke Spot merata", async () => {
