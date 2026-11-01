@@ -22,11 +22,15 @@ export function sshRun(cfg, cmd, exec = execFileSync) {
   return String(exec("ssh", ["-i", cfg.key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", cfg.host, cmd], { encoding: "utf8" }));
 }
 
-// Token sudah pernah entry+exit final (ledger tradedLock di state.json main).
-export function isTradedLocked(st, mint, pools) {
-  const t = st?.tradedLock || {};
-  if (mint && t.mints?.[mint]) return true;
-  for (const p of pools) if (p && t.pools?.[p]) return true;
+// Baris spot Runner yang sudah di-'#' (entry+exit selesai) → token tidak boleh
+// di-entry lagi oleh Runner. Baris manual (bidask/tanpa mode spot) tidak dihitung.
+export function hasClosedSpotLine(raw, pools) {
+  for (const l of String(raw).split("\n")) {
+    const t = l.trim();
+    if (!t.startsWith("#")) continue;
+    const parts = t.replace(/^#+\s*/, "").split(",").map((x) => x.trim());
+    if (pools.has(parts[0]) && (parts[3] || "").split(/[\s#]/)[0].toLowerCase() === "spot") return true;
+  }
   return false;
 }
 
@@ -38,10 +42,10 @@ export function remoteUpdatePool(cfg, { poolAddress, multiplierStr, allTokenPool
     const a = l.trim().split(",")[0]?.trim();
     if (a && !l.trim().startsWith("#") && pools.has(a)) return { changed: false, action: "unchanged_remote", targetLine };
   }
+  if (hasClosedSpotLine(raw, pools)) return { changed: false, action: "skipped_already_traded", targetLine };
   if (cfg.statePath) {
     try {
       const st = JSON.parse(sshRun(cfg, `cat ${rp(cfg.statePath)}`, exec) || "{}");
-      if (isTradedLocked(st, mint, pools)) return { changed: false, action: "skipped_already_traded", targetLine };
       for (const p of Object.values(st.positions || {})) {
         if (p && !p.closed && ((mint && p.baseMint === mint) || pools.has(p.pool)))
           return { changed: false, action: "skipped_token_already_open", targetLine };

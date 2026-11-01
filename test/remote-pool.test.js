@@ -21,13 +21,15 @@ test("skip bila token open di state", () => {
   const r = remoteUpdatePool(remoteConfig({ MAIN_VPS_HOST: "h", MAIN_STATE_PATH: "/r/state.json" }), { poolAddress: "P", multiplierStr: "2x", mint: "M" }, m.exec);
   assert.equal(r.action, "skipped_token_already_open");
 });
-test("skip bila token sudah pernah entry+exit (tradedLock)", () => {
-  const cfg = remoteConfig({ MAIN_VPS_HOST: "h", MAIN_STATE_PATH: "/r/state.json" });
-  const byMint = mk({ pool: "#P,1x,1,spot\n", state: JSON.stringify({ positions: {}, tradedLock: { mints: { M: 1 } } }) });
-  assert.equal(remoteUpdatePool(cfg, { poolAddress: "Q", multiplierStr: "1x", mint: "M" }, byMint.exec).action, "skipped_already_traded");
-  const byPool = mk({ pool: "", state: JSON.stringify({ positions: {}, tradedLock: { pools: { Z: 1 } } }) });
-  assert.equal(remoteUpdatePool(cfg, { poolAddress: "P", multiplierStr: "1x", allTokenPoolAddresses: ["Z"] }, byPool.exec).action, "skipped_already_traded");
-  assert.ok(!byPool.calls.some((a) => a.at(-1).includes(">>")));
-  const free = mk({ pool: "#P,1x,1,spot\n", state: JSON.stringify({ positions: {}, tradedLock: { mints: { X: 1 } } }) });
-  assert.equal(remoteUpdatePool(cfg, { poolAddress: "P", multiplierStr: "1x", mint: "M" }, free.exec).action, "added_remote");
+test("skip bila baris spot runner sudah di-# (sekali entry)", () => {
+  const cfg = remoteConfig({ MAIN_VPS_HOST: "h" });
+  for (const pool of ["# P,1x,1,spot\n", "#Z,2x,1,spot  # entry+exit selesai\n"]) {
+    const m = mk({ pool });
+    const r = remoteUpdatePool(cfg, { poolAddress: "P", multiplierStr: "1x", allTokenPoolAddresses: ["Z"] }, m.exec);
+    assert.equal(r.action, "skipped_already_traded"); assert.ok(!m.calls.some((a) => a.at(-1).includes(">>")));
+  }
+  for (const pool of ["# P,1x,1,bidask\n", "#P\n", "# P,1x,1\n"]) {
+    const m = mk({ pool });
+    assert.equal(remoteUpdatePool(cfg, { poolAddress: "P", multiplierStr: "1x" }, m.exec).action, "added_remote");
+  }
 });

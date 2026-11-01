@@ -24,7 +24,6 @@ import {
   recordAction,
 } from "../entry/runtime.js";
 import { deactivatePool } from "../entry/index.js";
-import { lockTraded } from "../state/positions.js";
 import { humanReason, fmtPct } from "../core/report.js";
 
 // Guard per-posisi: cegah beberapa close paralel untuk posisi yang sama
@@ -129,10 +128,7 @@ export async function handleClose(pos, reason, opts = {}) {
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.
       const stillOpenInPool = getOpenTrackedPositions().some((p) => p.pool === pos.pool);
-      if (!skipDeactivate && !stillOpenInPool) {
-        deactivatePool(pos.pool, "entry+exit selesai");
-        lockTraded(pos.baseMint || result.baseMint, pos.pool);
-      }
+      if (!skipDeactivate && !stillOpenInPool) deactivatePool(pos.pool, "entry+exit selesai");
       return { success: true, swapInfo };
     } else {
       const brief = String(result?.error || "unknown").split("\n")[0];
