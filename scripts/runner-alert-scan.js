@@ -6,6 +6,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import DLMM_PKG from "@meteora-ag/dlmm";
 import { OpenApiClient } from "../node_modules/gmgn-cli/dist/client/OpenApiClient.js";
 import { createGmgnLimiter } from "../src/market/gmgn-limiter.js";
+import { readAdded, isAlreadyAdded, recordAdded } from "../src/runner/added-ledger.js";
 import { remoteConfig, remoteUpdatePool, hasClosedSpotLine } from "../src/runner/remote-pool.js";
 import { resolveSpotRangeWithRentCheck } from "../src/meteora/spot-position.js";
 
@@ -825,8 +826,13 @@ async function main() {
   const poolUpdates = [];
   if (!dryRun && passedAll.length > 0) {
     for (const winner of passedAll) {
-      const remoteCfg = remoteConfig({ ...parseEnvFile(path.join(ROOT, ".env")), ...process.env });
-      const upd = remoteCfg
+      const envAll = { ...parseEnvFile(path.join(ROOT, ".env")), ...process.env };
+      const remoteCfg = remoteConfig(envAll);
+      const addedPath = (envAll.RUNNER_ADDED_PATH || "").trim() || path.join(ROOT, "runner-added.json");
+      const tokenPools = [winner.bestPool, ...(winner.allTokenPoolAddresses || (winner.allPoolsAudited || []).map((x) => x.pool || x.address) || [])];
+      const upd = isAlreadyAdded(readAdded(addedPath), winner.mint, tokenPools)
+        ? { changed: false, action: "skipped_already_added", targetLine: `${winner.bestPool},${winner.confluence.multiplier},1,spot` }
+        : remoteCfg
         ? remoteUpdatePool(remoteCfg, {
             poolAddress: winner.bestPool,
             multiplierStr: winner.confluence.multiplier,
@@ -840,6 +846,7 @@ async function main() {
         winner.allTokenPoolAddresses || (winner.allPoolsAudited || []).map((x) => x.pool || x.address),
         winner.mint
       );
+      if (upd.action === "added" || upd.action === "added_remote") recordAdded(addedPath, winner.mint, tokenPools);
       poolUpdates.push({ symbol: winner.symbol, pool: winner.bestPool, ...upd });
 
       if (upd.changed) {
