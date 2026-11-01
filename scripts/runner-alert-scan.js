@@ -6,7 +6,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import DLMM_PKG from "@meteora-ag/dlmm";
 import { OpenApiClient } from "../node_modules/gmgn-cli/dist/client/OpenApiClient.js";
 import { createGmgnLimiter } from "../src/market/gmgn-limiter.js";
-import { remoteConfig, remoteUpdatePool } from "../src/runner/remote-pool.js";
+import { remoteConfig, remoteUpdatePool, isTradedLocked } from "../src/runner/remote-pool.js";
 import { resolveSpotRangeWithRentCheck } from "../src/meteora/spot-position.js";
 
 const DLMM = DLMM_PKG.default || DLMM_PKG;
@@ -144,6 +144,9 @@ function updatePoolTxtFile(poolTxtPath, poolAddress, multiplierStr, allTokenPool
     const statePath = path.join(ROOT, "state.json");
     if (fs.existsSync(statePath)) {
       const stateJson = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      if (isTradedLocked(stateJson, mint, tokenPoolSet)) {
+        return { changed: false, action: "skipped_already_traded", before: rawBefore.trim(), after: rawBefore.trim(), targetLine: `${poolAddress},${multiplierStr},1,spot` };
+      }
       for (const p of Object.values(stateJson.positions || {})) {
         if (!p || p.closed) continue;
         if ((mint && p.baseMint === mint) || (p.pool && tokenPoolSet.has(p.pool))) {

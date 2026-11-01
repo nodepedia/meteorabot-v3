@@ -376,3 +376,15 @@ export function setEntrySizeSol(positionAddress, sizeSol) {
     writeState(state);
   }
 }
+
+// Ledger token/pool yang sudah selesai (entry+exit final). Dibaca Runner Alert
+// (lokal & remote via MAIN_STATE_PATH) agar token tidak di-entry lagi.
+export function lockTraded(mint, pool) {
+  if (!mint && !pool) return;
+  const state = readState();
+  const t = (state.tradedLock ||= { mints: {}, pools: {} });
+  t.mints ||= {}; t.pools ||= {};
+  if (mint) t.mints[mint] = Date.now();
+  if (pool) t.pools[pool] = Date.now();
+  writeState(state);
+}

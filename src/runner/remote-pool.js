@@ -22,6 +22,14 @@ export function sshRun(cfg, cmd, exec = execFileSync) {
   return String(exec("ssh", ["-i", cfg.key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", cfg.host, cmd], { encoding: "utf8" }));
 }
 
+// Token sudah pernah entry+exit final (ledger tradedLock di state.json main).
+export function isTradedLocked(st, mint, pools) {
+  const t = st?.tradedLock || {};
+  if (mint && t.mints?.[mint]) return true;
+  for (const p of pools) if (p && t.pools?.[p]) return true;
+  return false;
+}
+
 export function remoteUpdatePool(cfg, { poolAddress, multiplierStr, allTokenPoolAddresses = [], mint = "" }, exec = execFileSync) {
   const pools = new Set([poolAddress, ...allTokenPoolAddresses.filter(Boolean)]);
   const targetLine = `${poolAddress},${multiplierStr},1,spot`;
@@ -33,6 +41,7 @@ export function remoteUpdatePool(cfg, { poolAddress, multiplierStr, allTokenPool
   if (cfg.statePath) {
     try {
       const st = JSON.parse(sshRun(cfg, `cat ${rp(cfg.statePath)}`, exec) || "{}");
+      if (isTradedLocked(st, mint, pools)) return { changed: false, action: "skipped_already_traded", targetLine };
       for (const p of Object.values(st.positions || {})) {
         if (p && !p.closed && ((mint && p.baseMint === mint) || pools.has(p.pool)))
           return { changed: false, action: "skipped_token_already_open", targetLine };
