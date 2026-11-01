@@ -316,6 +316,13 @@ export function incrementEntryUsage(pool) {
   return uses;
 }
 
+export function resetEntryUsage(pool) {
+  if (!pool) return;
+  mutateRuntimeState((state) => {
+    delete state.entryUsage[pool];
+  });
+}
+
 export function transferPoolEntryUsage(oldPool, newPool) {
   if (!oldPool || !newPool || oldPool === newPool) return 0;
   let uses = 0;

@@ -17,6 +17,7 @@ import {
   isPoolClosing,
   isMintClosing,
   getEntryUsage,
+  resetEntryUsage,
   getEntryInProgressPools,
   setWatchSnapshot,
   getSharedWatchSnapshot,
@@ -82,6 +83,8 @@ export function deactivatePool(pool, reason) {
   dryRunNoted.delete(pool);
   if (commentPoolInList(pool)) {
     skipped.delete(pool);
+    // Hitungan entry mulai dari nol saat '#' dihapus lagi.
+    resetEntryUsage(pool);
     log.info(
       `Pool ${pool.slice(0, 8)} ditandai '#' di ${config.entry.poolListFile}${reason ? ` (${reason})` : ""} — hapus '#' untuk memantau lagi`
     );
