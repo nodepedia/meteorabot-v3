@@ -22,3 +22,5 @@ gmgn-wallets/
 gmgn-wallets/
 .env.scanner
 runner-added.json
+runner-added.cache.json
+runner-added.json.lock

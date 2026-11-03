@@ -6,8 +6,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import DLMM_PKG from "@meteora-ag/dlmm";
 import { OpenApiClient } from "../node_modules/gmgn-cli/dist/client/OpenApiClient.js";
 import { createGmgnLimiter } from "../src/market/gmgn-limiter.js";
-import { addOnce } from "../src/runner/added-ledger.js";
-import { remoteConfig, remoteUpdatePool, hasClosedSpotLine } from "../src/runner/remote-pool.js";
+import { mainConfig, addViaMain } from "../src/runner/main-ledger.js";
 import { resolveSpotRangeWithRentCheck } from "../src/meteora/spot-position.js";
 
 const DLMM = DLMM_PKG.default || DLMM_PKG;
@@ -126,220 +125,6 @@ function loadSmartWallets() {
   return { gmgnSmartMap, lpSmartMap };
 }
 
-function multRank(multStr) {
-  const m = String(multStr || "1x").trim().toLowerCase();
-  if (m === "1.5x" || m === "tier3") return 3;
-  if (m === "1.25x" || m === "tier2") return 2;
-  return 1;
-}
-
-function updatePoolTxtFile(poolTxtPath, poolAddress, multiplierStr, allTokenPoolAddresses = [], mint = "") {
-  const rawBefore = fs.existsSync(poolTxtPath) ? fs.readFileSync(poolTxtPath, "utf8") : "";
-  const lines = rawBefore.split("\n");
-  const tokenPoolSet = new Set([poolAddress, ...(allTokenPoolAddresses || []).filter(Boolean)]);
-
-  // Check state.json for any currently open position on the same token (baseMint) or any of its pools
-  let hasOpenPositionForToken = false;
-  let openPositionPool = null;
-  try {
-    const statePath = path.join(ROOT, "state.json");
-    if (fs.existsSync(statePath)) {
-      const stateJson = JSON.parse(fs.readFileSync(statePath, "utf8"));
-      for (const p of Object.values(stateJson.positions || {})) {
-        if (!p || p.closed) continue;
-        if ((mint && p.baseMint === mint) || (p.pool && tokenPoolSet.has(p.pool))) {
-          hasOpenPositionForToken = true;
-          openPositionPool = p.pool || null;
-          if (openPositionPool) tokenPoolSet.add(openPositionPool);
-          break;
-        }
-      }
-    }
-  } catch {
-    // ignore state read errors
-  }
-
-  let foundActiveIdx = -1;
-  let foundPoolAddr = poolAddress;
-  let existingMult = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const parts = trimmed.split(",").map((s) => s.trim());
-    if (tokenPoolSet.has(parts[0])) {
-      foundActiveIdx = i;
-      foundPoolAddr = parts[0];
-      existingMult = parts[1] || "1x";
-      break;
-    }
-  }
-
-  const activePoolToKeep = foundActiveIdx !== -1 ? foundPoolAddr : openPositionPool || poolAddress;
-  const targetLine = `${activePoolToKeep},${multiplierStr},1,spot`;
-  let action = "unchanged";
-
-  if (foundActiveIdx === -1 && hasClosedSpotLine(rawBefore, tokenPoolSet)) {
-    return { changed: false, action: "skipped_already_traded", before: rawBefore.trim(), after: rawBefore.trim(), targetLine };
-  }
-
-  // Jika token sudah punya posisi terbuka di state.json, JANGAN tambahkan baris pool baru ke pool.txt
-  if (hasOpenPositionForToken && foundActiveIdx === -1) {
-    return {
-      changed: false,
-      action: "skipped_token_already_open",
-      before: rawBefore.trim(),
-      after: rawBefore.trim(),
-      targetLine,
-    };
-  }
-
-  if (foundActiveIdx === -1) {
-    const cleanLines = lines.filter((l, idx) => !(idx === lines.length - 1 && l === ""));
-    cleanLines.push(targetLine);
-    const rawAfter = cleanLines.join("\n") + "\n";
-    fs.writeFileSync(poolTxtPath, rawAfter);
-    return { changed: true, action: "added", before: rawBefore.trim(), after: rawAfter.trim(), targetLine };
-  }
-
-  if (multRank(multiplierStr) > multRank(existingMult)) {
-    lines[foundActiveIdx] = targetLine;
-    const rawAfter = lines.join("\n");
-    fs.writeFileSync(poolTxtPath, rawAfter);
-    action = `upgraded (${existingMult} -> ${multiplierStr})`;
-    return { changed: true, action, before: rawBefore.trim(), after: rawAfter.trim(), targetLine };
-  }
-
-  return { changed: false, action, before: rawBefore.trim(), after: rawBefore.trim(), targetLine };
-}
-
-async function fetchMeteoraPages(maxPages = 10, pageSize = 100) {
-  const pools = [];
-  for (let page = 1; page <= maxPages; page++) {
-    try {
-      const res = await fetch(`https://dlmm.datapi.meteora.ag/pools?page=${page}&page_size=${pageSize}`, {
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!res.ok) break;
-      const json = await res.json();
-      const data = json.data || [];
-      if (!data.length) break;
-      pools.push(...data);
-    } catch {
-      break;
-    }
-  }
-  return pools;
-}
-
-async function fetchDexScreenerPairs(mint) {
-  try {
-    const res = await fetch(`https://api.dexscreener.com/token-pairs/v1/solana/${mint}`, {
-      signal: AbortSignal.timeout(12000),
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-async function auditPoolOnChain(conn, poolAddr, lpSmartMap) {
-  const dlmmPool = await DLMM.create(conn, new PublicKey(poolAddr));
-  const activeBin = await dlmmPool.getActiveBin();
-  const activeBinId = Number(activeBin.binId);
-  const xIsSol = dlmmPool.tokenX.publicKey.toBase58() === WSOL;
-  const binStep = Number(dlmmPool.lbPair.binStep);
-
-  const around = await dlmmPool.getBinsAroundActiveBin(40, 40);
-  const binsList = around.bins || [];
-  const binMap = new Map(binsList.map((b) => [Number(b.binId), b]));
-
-  let bins35Ge1Sol = 0;
-  let bins35Gt0Sol = 0;
-  let bins31RequiredGe1Sol = 0;
-  let minBinSol35 = Infinity;
-  let minBinSol31Req = Infinity;
-  let maxBinSol35 = 0;
-  let totalSolIn35Bins = 0;
-  const binSolDetails = [];
-
-  for (let offset = 0; offset <= 34; offset++) {
-    const bid = xIsSol ? activeBinId + offset : activeBinId - offset;
-    const b = binMap.get(bid);
-    const rawLamports = b ? Number(xIsSol ? b.xAmount.toString() : b.yAmount.toString()) : 0;
-    const solAmt = rawLamports / 1e9;
-    totalSolIn35Bins += solAmt;
-    if (solAmt > 0) bins35Gt0Sol++;
-    if (solAmt >= 1.0) bins35Ge1Sol++;
-    if (solAmt < minBinSol35) minBinSol35 = solAmt;
-    if (solAmt > maxBinSol35) maxBinSol35 = solAmt;
-
-    if (offset >= 4) {
-      if (solAmt >= 1.0) bins31RequiredGe1Sol++;
-      if (solAmt < minBinSol31Req) minBinSol31Req = solAmt;
-    }
-    binSolDetails.push({ offset, binId: bid, sol: Number(solAmt.toFixed(4)), inToleranceZone: offset <= 3 });
-  }
-
-  const rentCheck = await resolveSpotRangeWithRentCheck({
-    pool: dlmmPool,
-    activeBinId,
-    binStep,
-    lowerPctPrimary: -95,
-    lowerPctFallback: -90,
-    upperPct: 15,
-    skipNonRefundable: true,
-    maxNonRefundableSol: 0,
-  });
-
-  const posAccts = await conn.getProgramAccounts(DLMM_PROG, {
-    dataSlice: { offset: 40, length: 32 },
-    filters: [{ memcmp: { offset: 8, bytes: poolAddr } }],
-  });
-  const owners = new Set(posAccts.map((a) => new PublicKey(a.account.data).toBase58()));
-  const matchedSmartLps = [];
-  for (const o of owners) {
-    if (lpSmartMap.has(o)) {
-      matchedSmartLps.push(lpSmartMap.get(o));
-    }
-  }
-
-  return {
-    pool: poolAddr,
-    binStep,
-    xIsSol,
-    activeBinId,
-    activePrice: String(activeBin.price),
-    activePricePerToken: String(activeBin.pricePerToken),
-    bins35Stats: {
-      all35BinsGe1Sol: bins35Ge1Sol === 35,
-      binsGe1SolCount: bins35Ge1Sol,
-      binsGt0SolCount: bins35Gt0Sol,
-      bins31RequiredGe1SolCount: bins31RequiredGe1Sol,
-      passes3BinToleranceRule: bins31RequiredGe1Sol === 31,
-      minBinSol35: Number((minBinSol35 === Infinity ? 0 : minBinSol35).toFixed(4)),
-      minBinSol31Req: Number((minBinSol31Req === Infinity ? 0 : minBinSol31Req).toFixed(4)),
-      maxBinSol: Number(maxBinSol35.toFixed(4)),
-      avgBinSol: Number((totalSolIn35Bins / 35).toFixed(4)),
-      totalSolIn35Bins: Number(totalSolIn35Bins.toFixed(4)),
-    },
-    rentCheck: {
-      ok: Boolean(rentCheck.ok),
-      usedFallback: Boolean(rentCheck.usedFallback),
-      redflagNonRefundable: Boolean(rentCheck.redflagNonRefundable),
-      lowerPctUsed: rentCheck.lowerPctUsed ?? null,
-      upperPctUsed: rentCheck.upperPctUsed ?? 15,
-      nonRefundableSol: rentCheck.nonRefundableSol ?? rentCheck.costPrimarySol ?? 0,
-    },
-    onChainPositions: {
-      positionAccountCount: posAccts.length,
-      uniqueOwnerCount: owners.size,
-      matchedSmartLps,
-    },
-  };
-}
 
 function isOfficialPoolOrProgramHolder(h, knownPoolAddrs) {
   if (!h) return false;
@@ -827,26 +612,12 @@ async function main() {
   if (!dryRun && passedAll.length > 0) {
     for (const winner of passedAll) {
       const envAll = { ...parseEnvFile(path.join(ROOT, ".env")), ...process.env };
-      const remoteCfg = remoteConfig(envAll);
-      const addedPath = (envAll.RUNNER_ADDED_PATH || "").trim() || path.join(ROOT, "runner-added.json");
+      // Add-once per token di VPS MAIN (ledger + pool.txt di bawah flock). Lihat setup.md.
+      const mainCfg = mainConfig(envAll, { cachePath: path.join(ROOT, "runner-added.cache.json") });
       const tokenPools = [winner.bestPool, ...(winner.allTokenPoolAddresses || (winner.allPoolsAudited || []).map((x) => x.pool || x.address) || [])];
       const targetLine = `${winner.bestPool},${winner.confluence.multiplier},1,spot`;
-      const upd0 = await addOnce(addedPath, { mint: winner.mint, pools: tokenPools, by: "runner-alert" }, () =>
-        remoteCfg
-          ? remoteUpdatePool(remoteCfg, {
-              poolAddress: winner.bestPool,
-              multiplierStr: winner.confluence.multiplier,
-              allTokenPoolAddresses: winner.allTokenPoolAddresses || (winner.allPoolsAudited || []).map((x) => x.pool || x.address),
-              mint: winner.mint,
-            })
-          : updatePoolTxtFile(
-              poolTxtPath,
-              winner.bestPool,
-              winner.confluence.multiplier,
-              winner.allTokenPoolAddresses || (winner.allPoolsAudited || []).map((x) => x.pool || x.address),
-              winner.mint
-            )
-      );
+      const res = addViaMain(mainCfg, { mint: winner.mint, pool: winner.bestPool, pools: tokenPools, line: targetLine, by: "runner-alert" });
+      const upd0 = { changed: res.status === "added", action: res.status === "added" ? "added" : res.status, ...(res.error ? { error: res.error } : {}) };
       const upd = { targetLine, ...upd0 };
       poolUpdates.push({ symbol: winner.symbol, pool: winner.bestPool, ...upd });
 
