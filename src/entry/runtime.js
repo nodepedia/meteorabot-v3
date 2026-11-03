@@ -30,6 +30,8 @@ function emptyState() {
     entryInProgressPools: {},
     closingPools: {},
     closingMints: {},
+    protectedMints: {},
+    pendingSwaps: {},
     dcaCooldownUntil: {},
     entryUsage: {},
     recentActions: [],
@@ -53,6 +55,27 @@ function normalizeLockMap(raw, now) {
   return { map: out, changed };
 }
 
+// Versi ketat untuk pengecekan proteksi swap: file tidak ada = state kosong,
+// tetapi file rusak/tidak terbaca = error (fail closed, jangan swap).
+export function readRuntimeStateStrict(now = Date.now()) {
+  const file = getRuntimeFile();
+  let raw;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return emptyState();
+    throw new Error(`runtime state tidak terbaca: ${err.message}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`runtime state rusak: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object") throw new Error("runtime state bukan object");
+  return normalizeParsed(parsed, now);
+}
+
 function readDiskState(now = Date.now()) {
   const file = getRuntimeFile();
   let parsed = null;
@@ -62,12 +85,23 @@ function readDiskState(now = Date.now()) {
     return emptyState();
   }
   if (!parsed || typeof parsed !== "object") return emptyState();
+  return normalizeParsed(parsed, now);
+}
+
+function normalizeParsed(parsed, now) {
 
   const mints = normalizeLockMap(parsed.entryInProgressMints, now);
   const pools = normalizeLockMap(parsed.entryInProgressPools, now);
   const closing = normalizeLockMap(parsed.closingPools, now);
   const closingM = normalizeLockMap(parsed.closingMints, now);
   const cooldowns = normalizeLockMap(parsed.dcaCooldownUntil, now);
+  const protectedM = normalizeLockMap(parsed.protectedMints, now);
+  const pendingSwaps = {};
+  if (parsed.pendingSwaps && typeof parsed.pendingSwaps === "object") {
+    for (const [k, v] of Object.entries(parsed.pendingSwaps)) {
+      if (k && v && typeof v === "object") pendingSwaps[k] = v;
+    }
+  }
 
   const usage = {};
   if (parsed.entryUsage && typeof parsed.entryUsage === "object") {
@@ -89,6 +123,8 @@ function readDiskState(now = Date.now()) {
     entryInProgressPools: pools.map,
     closingPools: closing.map,
     closingMints: closingM.map,
+    protectedMints: protectedM.map,
+    pendingSwaps,
     dcaCooldownUntil: cooldowns.map,
     entryUsage: usage,
     recentActions: actions,
@@ -116,9 +152,10 @@ function writeDiskState(state) {
 }
 
 class RuntimeLockSet extends Set {
-  constructor(field) {
+  constructor(field, ttlFn = getLockTtlMs) {
     super();
     this._field = field;
+    this._ttlFn = ttlFn;
   }
 
   _replaceFromKeys(keys) {
@@ -129,7 +166,7 @@ class RuntimeLockSet extends Set {
   add(value) {
     if (!value) return this;
     mutateRuntimeState((state, now) => {
-      state[this._field][value] = now + getLockTtlMs();
+      state[this._field][value] = now + this._ttlFn();
     });
     return this;
   }
@@ -196,11 +233,21 @@ const closingPools = new RuntimeLockSet("closingPools");
 // Mint yang sedang ditutup/di-swap pasca-close (cegah sweep bertabrakan dengan swap close).
 const closingMints = new RuntimeLockSet("closingMints");
 
+// Proteksi swap eksplisit (key `mint::tag`) untuk alur panjang yang menahan
+// token di wallet (rebalance/reentry OOR kanan, fallback OOR kiri). TTL lebih
+// panjang dari lock entry agar tidak kedaluwarsa di tengah proses.
+export const PROTECT_TTL_MS = 30 * 60 * 1000;
+const protectedMints = new RuntimeLockSet("protectedMints", () => {
+  const v = Number(process.env.SWAP_PROTECT_TTL_MS);
+  return Number.isFinite(v) && v > 0 ? v : PROTECT_TTL_MS;
+});
+
 function applyStateToMemory(state) {
   entryInProgressMints._replaceFromKeys(Object.keys(state.entryInProgressMints));
   entryInProgressPools._replaceFromKeys(Object.keys(state.entryInProgressPools));
   closingPools._replaceFromKeys(Object.keys(state.closingPools));
   closingMints._replaceFromKeys(Object.keys(state.closingMints));
+  protectedMints._replaceFromKeys(Object.keys(state.protectedMints || {}));
 }
 
 function syncRuntimeFromDisk(now = Date.now()) {
@@ -405,6 +452,43 @@ export function setWalletStatus(status) {
 export function getWalletStatus() {
   const state = syncRuntimeFromDisk();
   return state.walletStatus || null;
+}
+
+export function protectMint(mint, tag = "protected") {
+  if (mint) protectedMints.add(`${mint}::${tag}`);
+}
+
+export function releaseMint(mint, tag = "protected") {
+  if (mint) protectedMints.delete(`${mint}::${tag}`);
+}
+
+// --- Swap tertunda pasca-close (lihat exit/pending-swaps.js) ---
+
+export function getPendingSwaps() {
+  return { ...(syncRuntimeFromDisk().pendingSwaps || {}) };
+}
+
+export function upsertPendingSwap(mint, patch) {
+  if (!mint) return;
+  mutateRuntimeState((state) => {
+    state.pendingSwaps[mint] = { ...(state.pendingSwaps[mint] || {}), ...patch, mint };
+  });
+}
+
+export function removePendingSwap(mint) {
+  if (!mint) return;
+  mutateRuntimeState((state) => {
+    delete state.pendingSwaps[mint];
+  });
+}
+
+export function isPoolSwapPending(pool) {
+  if (!pool) return false;
+  return Object.values(getPendingSwaps()).some((p) => Array.isArray(p.pools) && p.pools.includes(pool));
+}
+
+export function isMintSwapPending(mint) {
+  return Boolean(mint) && Object.prototype.hasOwnProperty.call(getPendingSwaps(), mint);
 }
 
 export function resetRuntimeState() {

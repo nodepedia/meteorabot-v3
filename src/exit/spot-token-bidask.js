@@ -15,6 +15,8 @@ import { poolPriceSolPerToken } from "../entry/price-guard.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
+  protectMint,
+  releaseMint,
   addEntryInProgressPool,
   removeEntryInProgressPool,
   recordAction,
@@ -704,6 +706,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
   // CRITICAL: Lindungi baseMint dan pool di runtime-state.json sebelum withdraw
   // agar worker wallet (runSafetySweep) TIDAK men-swap token ke SOL saat proses berlangsung!
   addEntryInProgressMint(baseMint);
+  protectMint(baseMint, "spot_rebalance");
   addEntryInProgressPool(poolAddress);
 
   try {
@@ -1202,6 +1205,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     };
   } finally {
     removeEntryInProgressMint(baseMint);
+    releaseMint(baseMint, "spot_rebalance");
     removeEntryInProgressPool(poolAddress);
     rebalanceInProgress.delete(positionAddress);
   }

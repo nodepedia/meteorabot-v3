@@ -1,7 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 import config from "../config/index.js";
 import log from "../core/logger.js";
-import { WSOL_MINT, TOKEN_PROGRAM_ID } from "../core/constants.js";
+import { WSOL_MINT, TOKEN_PROGRAM_IDS } from "../core/constants.js";
 import { getConnection } from "./connection.js";
 import { getWallet } from "./wallet.js";
 
@@ -36,25 +36,55 @@ export async function getMintDecimals(mint) {
   }
 }
 
-export async function getTokenBalance(mint) {
-  const connection = getConnection();
-  const wallet = getWallet();
+// Saldo token = jumlah SEMUA token account milik wallet untuk mint ini
+// (Token Program klasik maupun Token-2022; filter `mint` mencakup keduanya).
+// Versi strict melempar error RPC (dipakai alur swap agar fail closed).
+export async function getTokenBalanceStrict(mint, deps = {}) {
+  const connection = deps.connection || getConnection();
+  const wallet = deps.wallet || getWallet();
 
   if (mint === WSOL_MINT || mint === "SOL") {
     const balance = await connection.getBalance(wallet.publicKey);
     return balance / 1e9;
   }
 
-  try {
-    const tokenMint = new PublicKey(mint);
-    const tokenAccounts = await connection.getTokenAccountsByOwner(wallet.publicKey, { mint: tokenMint });
-    if (tokenAccounts.value.length === 0) return 0;
+  const { value } = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, { mint: new PublicKey(mint) });
+  let total = 0;
+  for (const ta of value || []) {
+    total += Number(ta?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0);
+  }
+  return total;
+}
 
-    const accountInfo = await connection.getTokenAccountBalance(tokenAccounts.value[0].pubkey);
-    return Number(accountInfo.value.uiAmount || 0);
+export async function getTokenBalance(mint) {
+  try {
+    return await getTokenBalanceStrict(mint);
   } catch {
     return 0;
   }
+}
+
+// Semua saldo token non-WSOL wallet, digabung per mint, dari Token Program
+// klasik + Token-2022. Melempar error bila salah satu RPC gagal.
+export async function listWalletTokenBalances(deps = {}) {
+  const connection = deps.connection || getConnection();
+  const wallet = deps.wallet || getWallet();
+  const byMint = new Map();
+  for (const programId of TOKEN_PROGRAM_IDS) {
+    const { value } = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
+      programId: new PublicKey(programId),
+    });
+    for (const ta of value || []) {
+      const info = ta?.account?.data?.parsed?.info;
+      const mint = info?.mint;
+      const ui = Number(info?.tokenAmount?.uiAmount || 0);
+      if (!mint || mint === WSOL_MINT || !(ui > 0)) continue;
+      const cur = byMint.get(mint) || { mint, balance: 0, programId };
+      cur.balance += ui;
+      byMint.set(mint, cur);
+    }
+  }
+  return [...byMint.values()];
 }
 
 export async function getTokenValueUsd(mint, amount) {
@@ -83,20 +113,11 @@ export async function getWalletBalances() {
       tokens: [],
     };
 
-    const tokenProgramId = new PublicKey(TOKEN_PROGRAM_ID);
-    const { value: tokenAccounts } = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
-      programId: tokenProgramId,
-    });
-
     const mints = [];
     const balanceByMint = {};
-    for (const ta of tokenAccounts) {
-      const info = ta.account.data.parsed?.info;
-      const mint = info?.mint;
-      const uiAmount = info?.tokenAmount?.uiAmount || 0;
-      if (!mint || mint === WSOL_MINT || uiAmount <= 0) continue;
-      mints.push(mint);
-      balanceByMint[mint] = uiAmount;
+    for (const t of await listWalletTokenBalances()) {
+      mints.push(t.mint);
+      balanceByMint[t.mint] = t.balance;
     }
 
     let priceMap = {};

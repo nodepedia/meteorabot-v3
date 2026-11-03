@@ -8,6 +8,18 @@ import { getWallet } from "../solana/wallet.js";
 import { getTokenBalance } from "../solana/balances.js";
 import { getDlmmSdk } from "./sdk.js";
 
+const DEFAULT_PUBKEY = "11111111111111111111111111111111";
+
+// Mint reward aktif dari lbPair.rewardInfos (slot kosong = PublicKey.default).
+export function rewardMintsOf(lbPair) {
+  const out = [];
+  for (const r of lbPair?.rewardInfos || []) {
+    const m = r?.mint?.toString?.() || (typeof r?.mint === "string" ? r.mint : "");
+    if (m && m !== DEFAULT_PUBKEY && m !== WSOL_MINT && !out.includes(m)) out.push(m);
+  }
+  return out;
+}
+
 export async function closePosition(positionAddress) {
   const connection = getConnection();
   const wallet = getWallet();
@@ -158,6 +170,8 @@ export async function closePosition(positionAddress) {
 
     let baseMint = null;
     let baseAmount = 0;
+    // Mint reward LM (farm) yang ikut di-claim oleh shouldClaimAndClose.
+    const rewardMints = rewardMintsOf(pool.lbPair);
     if (pool.lbPair) {
       const xMint = pool.lbPair.tokenXMint?.toString() || "";
       const yMint = pool.lbPair.tokenYMint?.toString() || "";
@@ -178,6 +192,7 @@ export async function closePosition(positionAddress) {
       txs: closeTxHashes,
       baseMint,
       baseAmount,
+      rewardMints: rewardMints.filter((m) => m !== baseMint),
     };
   } catch (err) {
     log.error(`closePosition failed: ${err.message}`);

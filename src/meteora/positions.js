@@ -54,6 +54,24 @@ export async function getOpenPositionCountsByPool() {
   return counts;
 }
 
+// Ringan (tanpa enrich API): semua posisi DLMM wallet beserta mint pool-nya.
+// Melempar error bila RPC gagal — dipakai proteksi swap (fail closed).
+export async function getOpenPositionMints() {
+  const connection = getConnection();
+  const wallet = getWallet();
+  const { DLMM } = await getDlmmSdk();
+  const map = await DLMM.getAllLbPairPositionsByUser(connection, wallet.publicKey);
+  const out = [];
+  for (const [lbPairKey, info] of map) {
+    const x = info?.tokenX?.mint?.address?.toString?.() ?? info?.lbPair?.tokenXMint?.toString?.() ?? "";
+    const y = info?.tokenY?.mint?.address?.toString?.() ?? info?.lbPair?.tokenYMint?.toString?.() ?? "";
+    for (const p of info?.lbPairPositionsData || []) {
+      out.push({ position: p.publicKey?.toString() || "", pool: String(lbPairKey), mints: [x, y].filter(Boolean) });
+    }
+  }
+  return out;
+}
+
 export async function getOpenPositions() {
   const connection = getConnection();
   const wallet = getWallet();

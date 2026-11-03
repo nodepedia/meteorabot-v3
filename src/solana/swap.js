@@ -2,10 +2,16 @@ import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import { sleep } from "../core/utils.js";
-import { WSOL_MINT, TOKEN_PROGRAM_ID } from "../core/constants.js";
+import { WSOL_MINT } from "../core/constants.js";
 import { getConnection } from "./connection.js";
 import { getWallet } from "./wallet.js";
-import { getMintDecimals, getTokenBalance, getTokenValueUsd } from "./balances.js";
+import {
+  getMintDecimals,
+  getTokenBalance,
+  getTokenBalanceStrict,
+  getTokenValueUsd,
+  listWalletTokenBalances,
+} from "./balances.js";
 
 const JUPITER_SWAP_V2 = "https://api.jup.ag/swap/v2";
 
@@ -145,7 +151,7 @@ export async function swapSolToToken(baseMint, solAmount) {
 /**
  * Swap a token back to SOL with retries. Dust (<= DUST_USD_THRESHOLD) is treated as success.
  */
-export async function swapToSol(baseMint, amount) {
+export async function swapToSol(baseMint, amount, opts = {}) {
   if (!baseMint || !amount || amount <= 0) {
     return { success: false, error: "no token to swap" };
   }
@@ -155,7 +161,7 @@ export async function swapToSol(baseMint, amount) {
     return { success: true, dryRun: true };
   }
 
-  const maxAttempts = Math.max(1, Number(config.swap.retryAttempts ?? 3));
+  const maxAttempts = Math.max(1, Number(opts.maxAttempts ?? config.swap.retryAttempts ?? 3));
   const delays = [5000, 15000, 30000];
   const decimals = await getMintDecimals(baseMint);
 
@@ -199,72 +205,102 @@ export async function swapToSol(baseMint, amount) {
   return { success: false, error: `failed after ${maxAttempts} attempts` };
 }
 
-export async function sweepToSol({ excludeMints = config.swap.excludeMints || [] } = {}) {
-  const connection = getConnection();
-  const wallet = getWallet();
+/**
+ * Safety sweep: swap setiap saldo token (Token Program klasik + Token-2022,
+ * dijumlah per mint) ke SOL.
+ * - `excludeMints`: mint yang tidak boleh disentuh (proteksi + cooldown).
+ * - `isProtected(mint)`: dicek ulang tepat sebelum tiap swap; melempar error =
+ *   status proteksi tidak diketahui → sweep berhenti (fail closed).
+ * Return { swapped, totalAmount, failedMints, unpricedFailedMints, protectedSkipped }.
+ */
+export async function sweepToSol({
+  excludeMints = config.swap.excludeMints || [],
+  isProtected = null,
+  listBalances = listWalletTokenBalances,
+  swapFn = swapToSol,
+  valueFn = getTokenValueUsd,
+  balanceFn = getTokenBalanceStrict,
+  sleepFn = sleep,
+} = {}) {
   const exclude = new Set([WSOL_MINT, ...excludeMints]);
+  let swapped = 0;
+  let totalAmount = 0;
+  const failedMints = [];
+  const unpricedFailedMints = [];
+  const protectedSkipped = [];
 
+  let balances;
   try {
-    const tokenProgramId = new PublicKey(TOKEN_PROGRAM_ID);
-    const { value: tokenAccounts } = await connection.getParsedTokenAccountsByOwner(wallet.publicKey, {
-      programId: tokenProgramId,
-    });
-
-    let swapped = 0;
-    let totalAmount = 0;
-    const failedMints = [];
-
-    for (const ta of tokenAccounts) {
-      const info = ta.account.data.parsed?.info;
-      const mint = info?.mint;
-      if (!mint || exclude.has(mint)) continue;
-
-      let mintBalance = info?.tokenAmount?.uiAmount || 0;
-      if (mintBalance <= 0) continue;
-
-      const valueUsd = await getTokenValueUsd(mint, mintBalance);
-      if (valueUsd != null && valueUsd <= config.swap.dustUsdThreshold) {
-        log.debug(
-          `[detail] Skipping dust ${mintBalance} ${mint.slice(0, 8)} ($${valueUsd.toFixed(3)} <= $${config.swap.dustUsdThreshold})`
-        );
-        continue;
-      }
-
-      let tokenSwapped = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        if (mintBalance <= 0) break;
-
-        log.info(`Sweeping ${mintBalance} ${mint.slice(0, 8)} → SOL (attempt ${attempt})`);
-        const result = await swapToSol(mint, mintBalance);
-        if (result.success) {
-          swapped++;
-          totalAmount += mintBalance;
-          const dustLabel = result.dust ? " (dust)" : "";
-          log.info(`Swept ${mintBalance} ${mint.slice(0, 8)} → SOL${dustLabel}`);
-          tokenSwapped = true;
-          break;
-        }
-
-        log.warn(`Sweep attempt ${attempt} failed for ${mint.slice(0, 8)}: ${result.error}`);
-        if (attempt < 3) {
-          await sleep(5000);
-          mintBalance = await getTokenBalance(mint);
-        }
-      }
-
-      if (!tokenSwapped) {
-        failedMints.push(mint);
-        log.warn(`Sweep failed for ${mint.slice(0, 8)} after 3 attempts — token left unsold`);
-      }
-    }
-
-    if (swapped > 0) {
-      log.info(`Sweep complete: ${swapped} token(s) swapped → SOL (total ${totalAmount})`);
-    }
-
-    return { swapped, totalAmount, failedMints };
+    balances = await listBalances();
   } catch (err) {
     log.error(`sweepToSol failed: ${err.message}`);
-    return { swapped: 0, totalAmount: 0, failedMints: [], error: err.message };
+    return { swapped: 0, totalAmount: 0, failedMints, unpricedFailedMints, protectedSkipped, error: err.message };
   }
+
+  for (const { mint, balance } of balances) {
+    if (!mint || exclude.has(mint)) continue;
+    let mintBalance = balance;
+    if (!(mintBalance > 0)) continue;
+
+    const valueUsd = await valueFn(mint, mintBalance);
+    if (valueUsd != null && valueUsd <= config.swap.dustUsdThreshold) {
+      log.debug(
+        `[detail] Skipping dust ${mintBalance} ${mint.slice(0, 8)} ($${valueUsd.toFixed(3)} <= $${config.swap.dustUsdThreshold})`
+      );
+      continue;
+    }
+
+    let tokenSwapped = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (!(mintBalance > 0)) {
+        tokenSwapped = true;
+        break;
+      }
+      if (isProtected) {
+        let prot;
+        try {
+          prot = await isProtected(mint);
+        } catch (err) {
+          log.warn(`Sweep dihentikan: status proteksi tidak diketahui (${err.message}) — fail closed`);
+          return { swapped, totalAmount, failedMints, unpricedFailedMints, protectedSkipped, error: err.message, failClosed: true };
+        }
+        if (prot) {
+          protectedSkipped.push(mint);
+          tokenSwapped = null;
+          break;
+        }
+      }
+
+      log.info(`Sweeping ${mintBalance} ${mint.slice(0, 8)} → SOL (attempt ${attempt})`);
+      const result = await swapFn(mint, mintBalance);
+      if (result?.success) {
+        swapped++;
+        totalAmount += mintBalance;
+        log.info(`Swept ${mintBalance} ${mint.slice(0, 8)} → SOL${result.dust ? " (dust)" : ""}`);
+        tokenSwapped = true;
+        break;
+      }
+
+      log.warn(`Sweep attempt ${attempt} failed for ${mint.slice(0, 8)}: ${result?.error}`);
+      if (attempt < 3) {
+        await sleepFn(5000);
+        try {
+          mintBalance = await balanceFn(mint);
+        } catch {
+          break;
+        }
+      }
+    }
+
+    if (tokenSwapped === false) {
+      failedMints.push(mint);
+      if (valueUsd == null) unpricedFailedMints.push(mint);
+      log.warn(`Sweep failed for ${mint.slice(0, 8)} after 3 attempts — token left unsold`);
+    }
+  }
+
+  if (swapped > 0) {
+    log.info(`Sweep complete: ${swapped} token(s) swapped → SOL (total ${totalAmount})`);
+  }
+  return { swapped, totalAmount, failedMints, unpricedFailedMints, protectedSkipped };
 }

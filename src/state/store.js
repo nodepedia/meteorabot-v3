@@ -9,6 +9,20 @@ export function readState() {
   }
 }
 
+// Versi ketat untuk proteksi swap: file tidak ada = kosong, file rusak = error.
+export function readStateStrict() {
+  let raw;
+  try {
+    raw = fs.readFileSync(STATE_FILE, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return { positions: {} };
+    throw new Error(`state posisi tidak terbaca: ${err.message}`);
+  }
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object") throw new Error("state posisi bukan object");
+  return { positions: {}, ...parsed };
+}
+
 export function writeState(data) {
   const payload = JSON.stringify(data, null, 2);
   const tmpFile = `${STATE_FILE}.${process.pid}.tmp`;

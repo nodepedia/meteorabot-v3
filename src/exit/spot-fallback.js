@@ -4,7 +4,13 @@ import { sleep } from "../core/utils.js";
 import * as tg from "../notify/telegram.js";
 import { getTokenBalance } from "../solana/balances.js";
 import { openTokenOnlyPosition } from "../meteora/open-token-position.js";
-import { addEntryInProgressMint, removeEntryInProgressMint, recordAction } from "../entry/runtime.js";
+import {
+  addEntryInProgressMint,
+  removeEntryInProgressMint,
+  protectMint,
+  releaseMint,
+  recordAction,
+} from "../entry/runtime.js";
 import { handleClose } from "./close.js";
 
 // Guard per-posisi: cegah fallback jalan dobel untuk posisi yang sama.
@@ -32,6 +38,7 @@ export async function handleSpotOorKiri(pos) {
   // Lindungi token dari safety sweep selama proses (token ada di wallet sampai
   // posisi token-only berhasil dibuka).
   addEntryInProgressMint(baseMint);
+  protectMint(baseMint, "oor_kiri_fallback");
 
   try {
     // Tutup tanpa swap & tanpa menonaktifkan pool.
@@ -80,6 +87,7 @@ export async function handleSpotOorKiri(pos) {
     return true;
   } finally {
     removeEntryInProgressMint(baseMint);
+    releaseMint(baseMint, "oor_kiri_fallback");
     if (positionAddress) fallbackInProgress.delete(positionAddress);
   }
 }

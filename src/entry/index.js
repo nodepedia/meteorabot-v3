@@ -15,6 +15,8 @@ import {
   addEntryInProgressPool,
   removeEntryInProgressPool,
   isPoolClosing,
+  isPoolSwapPending,
+  isMintSwapPending,
   isMintClosing,
   getEntryUsage,
   resetEntryUsage,
@@ -285,6 +287,8 @@ function startEntry(trigger, candidate) {
   if (
     inFlightPools.has(pool) ||
     isPoolClosing(pool) ||
+    isPoolSwapPending(pool) ||
+    isMintSwapPending(mint) ||
     enteredPools.has(pool) ||
     isEntryInProgressMint(mint) ||
     isMintClosing(mint) ||
@@ -416,6 +420,8 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry)
   if (
     inFlightPools.has(pool) ||
     isPoolClosing(pool) ||
+    isPoolSwapPending(pool) ||
+    isMintSwapPending(mint) ||
     enteredPools.has(pool) ||
     isEntryInProgressMint(mint) ||
     isMintClosing(mint) ||

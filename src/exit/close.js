@@ -3,8 +3,7 @@ import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
 import { closePosition } from "../meteora/close.js";
 import { waitClosedPositionPnl } from "../meteora/positions.js";
-import { getTokenBalance } from "../solana/balances.js";
-import { swapToSol } from "../solana/swap.js";
+import { swapMintsToSol, enqueuePendingSwap } from "./pending-swaps.js";
 import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
 import { clearTrailingState } from "../state/trailing.js";
 import { clearBounceRecovery } from "../state/bounce.js";
@@ -31,7 +30,11 @@ import { humanReason, fmtPct } from "../core/report.js";
 const closingPositions = new Set();
 
 export async function handleClose(pos, reason, opts = {}) {
-  const { skipAutoSwap = false, skipDeactivate = false } = opts;
+  const { skipAutoSwap = false, skipDeactivate = false, deps = {} } = opts;
+  const closeFn = deps.closePosition || closePosition;
+  const waitPnlFn = deps.waitClosedPositionPnl || waitClosedPositionPnl;
+  const deactivateFn = deps.deactivatePool || deactivatePool;
+  const notifyCloseFn = deps.notifyClose || tg.notifyClose;
   const pairLabel = pos.pair || pos.position?.slice(0, 8) || "?";
   const positionAddress = pos.position;
 
@@ -50,7 +53,7 @@ export async function handleClose(pos, reason, opts = {}) {
   addClosingPool(pos.pool);
 
   try {
-    const result = await closePosition(positionAddress);
+    const result = await closeFn(positionAddress);
     if (result?.baseMint && !lockedMints.has(result.baseMint)) {
       lockedMints.add(result.baseMint);
       addClosingMint(result.baseMint);
@@ -59,7 +62,7 @@ export async function handleClose(pos, reason, opts = {}) {
     if (result?.success) {
       // PnL final dari endpoint closed Meteora (agar alert sama dengan dashboard).
       // Dijalankan paralel dengan swap; fallback ke PnL live bila belum ter-index.
-      const realizedPnlPromise = result.dryRun ? Promise.resolve(null) : waitClosedPositionPnl(pos.pool, pos.position);
+      const realizedPnlPromise = result.dryRun ? Promise.resolve(null) : waitPnlFn(pos.pool, pos.position);
       // Ambil tracked sebelum clearTrailingState agar referensi trailing masih tersedia.
       const trackedClose = getTrackedPosition(pos.position);
       const wasDca = trackedClose?.isDca === true;
@@ -94,23 +97,38 @@ export async function handleClose(pos, reason, opts = {}) {
         }
       }
 
-      // Auto-swap base token to SOL (Jupiter V2, with retries)
+      // Auto-swap base + reward token ke SOL, dijaga proteksi mint
+      // (exit/protection.js). Gagal / proteksi tak terbaca → "swap tertunda":
+      // dicoba ulang tiap siklus, pool BELUM dinonaktifkan.
       let swapInfo = null;
-      if (!skipAutoSwap && config.swap.autoSwapAfterClose && result.baseMint) {
-        const balance = await getTokenBalance(result.baseMint);
-        if (balance > 0) {
-          const swapResult = await swapToSol(result.baseMint, balance);
-          swapInfo = {
-            mint: result.baseMint.slice(0, 8),
-            success: swapResult?.success === true,
-            error: swapResult?.success ? null : String(swapResult?.error || "unknown").split("\n")[0],
-          };
-          if (swapResult?.success) {
-            log.debug(`[detail] swap ${pairLabel} proceeds → SOL`);
-          } else {
-            log.warn(`Swap failed for ${pairLabel}: ${swapResult?.error}`);
+      let swapPending = false;
+      const swapMints = [result.baseMint, ...(result.rewardMints || [])].filter(Boolean);
+      if (!skipAutoSwap && config.swap.autoSwapAfterClose && swapMints.length > 0) {
+        for (const m of swapMints) {
+          if (!lockedMints.has(m)) {
+            lockedMints.add(m);
+            addClosingMint(m);
           }
         }
+        const sw = await swapMintsToSol(swapMints, { ignorePositions: [positionAddress], deps: deps.swapDeps || {} });
+        if (sw.failed.length > 0) {
+          swapPending = true;
+          for (const f of sw.failed) {
+            enqueuePendingSwap({ mint: f.mint, pool: pos.pool, pair: pairLabel, reason, deactivate: !skipDeactivate });
+          }
+          log.warn(`Swap failed for ${pairLabel}: ${sw.failed.map((f) => `${f.mint.slice(0, 8)} ${f.error}`).join("; ")}`);
+        }
+        if (sw.swapped.length > 0 || sw.failed.length > 0) {
+          swapInfo = {
+            mint: result.baseMint ? result.baseMint.slice(0, 8) : sw.failed[0]?.mint?.slice(0, 8),
+            success: sw.failed.length === 0,
+            pending: swapPending,
+            error: sw.failed[0]?.error || null,
+            swapped: sw.swapped,
+            protected: sw.protected,
+          };
+        }
+        if (sw.swapped.length > 0) log.debug(`[detail] swap ${pairLabel} proceeds → SOL (${sw.swapped.length} mint)`);
       }
 
       const finalPnl = await realizedPnlPromise;
@@ -118,18 +136,22 @@ export async function handleClose(pos, reason, opts = {}) {
       if (finalPnl == null) log.warn(`${pairLabel}: PnL final Meteora belum tersedia — pakai PnL live`);
       recordClose(pos.position, reason, realizedPnl);
 
-      const swapTxt = swapInfo ? (swapInfo.success ? "token di-swap ke SOL" : "token GAGAL di-swap") : "tanpa swap";
+      const swapTxt = swapInfo
+        ? swapInfo.success
+          ? "token di-swap ke SOL"
+          : "swap TERTUNDA (dicoba ulang)"
+        : "tanpa swap";
       log.info(`🔒 CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(realizedPnl)} | ${swapTxt}`);
       log.debug(`[detail] reason=${reason} | position ${positionAddress} | peakRef=${peakPnl ?? "-"}`);
       recordAction(`CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(realizedPnl)}`);
 
-      tg.notifyClose(pairLabel, reason, realizedPnl, swapInfo, lowestPnl, peakPnl);
+      notifyCloseFn(pairLabel, reason, realizedPnl, swapInfo, lowestPnl, peakPnl);
 
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.
       const stillOpenInPool = getOpenTrackedPositions().some((p) => p.pool === pos.pool);
-      if (!skipDeactivate && !stillOpenInPool) deactivatePool(pos.pool, "entry+exit selesai");
-      return { success: true, swapInfo };
+      if (!skipDeactivate && !stillOpenInPool && !swapPending) deactivateFn(pos.pool, "entry+exit selesai");
+      return { success: true, swapInfo, swapPending };
     } else {
       const brief = String(result?.error || "unknown").split("\n")[0];
       log.error(`Close failed for ${pairLabel}: ${brief}`);

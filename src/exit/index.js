@@ -3,8 +3,6 @@ import log from "../core/logger.js";
 import { sleep, minutes } from "../core/utils.js";
 import { getOpenPositions } from "../meteora/positions.js";
 import { fetchCandles, fetchVolume } from "../market/candles.js";
-import { getTokenBalance } from "../solana/balances.js";
-import { swapToSol } from "../solana/swap.js";
 import * as tg from "../notify/telegram.js";
 import {
   trackPosition,
@@ -35,7 +33,10 @@ import {
   removeEntryInProgressMint,
   takeRecentActions,
   recordAction,
+  protectMint,
+  releaseMint,
 } from "../entry/runtime.js";
+import { enqueuePendingSwap, processPendingSwaps } from "./pending-swaps.js";
 import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
 import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
@@ -48,13 +49,11 @@ let cycleCount = 0;
 let lastStatusSent = 0;
 let lastSummaryAt = 0;
 
-// Best-effort: saat posisi dianggap ditutup manual, coba swap sisa token ke SOL.
-// Kalau tidak ada saldo atau gagal, abaikan (safety sweep per-siklus tetap jalan).
-function sweepClosedPosition(baseMint, label) {
+// Posisi dianggap ditutup manual: antrekan swap sisa token (dijaga proteksi
+// mint; pool sudah dinonaktifkan oleh pemanggil).
+function sweepClosedPosition(baseMint, label, pool) {
   if (!baseMint) return;
-  getTokenBalance(baseMint)
-    .then((balance) => (balance > 0 ? swapToSol(baseMint, balance) : null))
-    .catch((err) => log.warn(`${label}: best-effort swap gagal: ${err.message}`));
+  enqueuePendingSwap({ mint: baseMint, pool, pair: label, reason: "not_detected", deactivate: false, now: Date.now() - 3_600_000 });
 }
 
 // Posisi yang tidak lagi terbaca on-chain selama `missingCycleThreshold`
@@ -82,7 +81,7 @@ function handleMissingPositions(seen) {
     log.warn(`${label}: position tidak terbaca ${count} cycle — dianggap ditutup manual`);
     recordAction(`CLOSE ${label} — ${humanReason("not_detected")} | PnL puncak ${fmtPct(p.lastPnlPeak)}`);
     tg.notifyPositionMissing(p.position, p.pair, count);
-    sweepClosedPosition(p.baseMint, label);
+    sweepClosedPosition(p.baseMint, label, p.pool);
     if (!getOpenTrackedPositions().some((t) => t.pool === p.pool)) {
       deactivatePool(p.pool, "posisi ditutup manual / hilang");
     }
@@ -180,6 +179,12 @@ export async function mainLoop(opts = {}) {
   while (true) {
     cycleCount++;
     log.debug(`[detail] exit cycle #${cycleCount}`);
+
+    try {
+      await processPendingSwaps();
+    } catch (err) {
+      log.warn(`processPendingSwaps error: ${err.message}`);
+    }
 
     if (runSweep) {
       await runSafetySweep();
@@ -328,6 +333,8 @@ export async function mainLoop(opts = {}) {
           if (willReenter) {
             if (pos.pool) addEntryInProgressPool(pos.pool);
             if (pos.baseMint) addEntryInProgressMint(pos.baseMint);
+            // Proteksi sebelum token mendarat di wallet (close) sampai reentry selesai.
+            if (pos.baseMint) protectMint(pos.baseMint, "oor_kanan_reentry");
           }
           try {
             const closeRes = await handleClose(pos, exit.reason, { skipDeactivate: willReenter });
@@ -338,6 +345,7 @@ export async function mainLoop(opts = {}) {
             if (willReenter) {
               if (pos.pool) removeEntryInProgressPool(pos.pool);
               if (pos.baseMint) removeEntryInProgressMint(pos.baseMint);
+              if (pos.baseMint) releaseMint(pos.baseMint, "oor_kanan_reentry");
             }
           }
         }

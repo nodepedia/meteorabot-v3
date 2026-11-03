@@ -188,7 +188,9 @@ export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = 
   if (peakPnl != null) lines.push(row("Peak", signedPct(peakPnl)));
   if (drawdownPnl != null) lines.push(row("Drawdown", signedPct(drawdownPnl)));
   lines.push("", row("Realized PnL", signedPct(pnlPct)));
-  if (swapInfo && swapInfo.success === false) {
+  if (swapInfo?.pending) {
+    lines.push(`⏳ Swap ke SOL TERTUNDA${swapInfo.error ? `: ${swapInfo.error}` : ""} — dicoba ulang otomatis`);
+  } else if (swapInfo && swapInfo.success === false) {
     const detail = swapInfo.error ? `: ${swapInfo.error}` : " — perlu swap manual";
     lines.push(`⚠️ Swap GAGAL${detail}`);
   }
@@ -197,6 +199,13 @@ export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = 
 
 export function notifyClose(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null) {
   send(buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl, peakPnl));
+}
+
+export function notifySwapGiveUp({ mint, pair, attempts, reason, error }) {
+  const short = mint ? `${mint.slice(0, 8)}…` : "?";
+  send(
+    `⚠️ Swap ${pair || short} → SOL DIHENTIKAN (${reason || `gagal ${attempts}x`}).\nMint: ${mint}\n${error ? `Error: ${error}\n` : ""}Token tertinggal di wallet — perlu swap manual.`
+  );
 }
 
 export function notifyError(msg) {

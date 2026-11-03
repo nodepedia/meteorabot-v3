@@ -45,6 +45,7 @@ Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kal
 - `ENTRY_MAX_FAILURES=3`: pool di-`#` setelah gagal entry sebanyak ini
 - `POOL_LIST_FILE=pool.txt`
 - `SPOT_INDICATOR_EXIT=immediate`: posisi spot langsung close saat sinyal indikator (RSI+MACD / RSI+BB). Isi `trailing` untuk perilaku lama (arm trailing dulu). BidAsk tidak terpengaruh.
+- Swap ke SOL saat close: token base **dan** reward di-swap ke SOL, kecuali mint yang dilindungi (posisi aktif, entry/rebalance/reentry OOR kanan/fallback OOR kiri yang sedang berjalan, USDC). Swap gagal → "swap tertunda", dicoba ulang tiap `SWAP_PENDING_RETRY_SEC` (90s); pool baru ditandai `#` setelah swap tuntas atau dihentikan (alert Telegram). Safety sweep juga memindai token Token-2022.
 
 ## `pool.txt`
 Satu pool per baris, formatnya `address,size,max,mode`. Hanya `address` yang wajib.

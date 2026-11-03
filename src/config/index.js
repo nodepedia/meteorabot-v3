@@ -203,6 +203,12 @@ export function buildConfig(e = {}) {
             .filter(Boolean)
         : [USDC_MINT],
     failureCooldownSec: num(e.SWEEP_FAILURE_COOLDOWN_SEC, 1800),
+    // Swap pasca-close yang gagal → antrean "swap tertunda" (dicoba ulang tiap
+    // SWAP_PENDING_RETRY_SEC; pool baru dinonaktifkan setelah swap tuntas/give-up).
+    pendingRetrySec: num(e.SWAP_PENDING_RETRY_SEC, 90),
+    pendingMaxAttempts: num(e.SWAP_PENDING_MAX_ATTEMPTS, 10),
+    // Token tanpa harga: berhenti setelah N kegagalan + alert Telegram.
+    unpricedMaxAttempts: num(e.SWAP_UNPRICED_MAX_ATTEMPTS, 3),
   };
 
   return {

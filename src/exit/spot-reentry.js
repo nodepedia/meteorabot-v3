@@ -39,6 +39,8 @@ import {
   removeEntryInProgressPool,
   addEntryInProgressMint,
   removeEntryInProgressMint,
+  protectMint,
+  releaseMint,
 } from "../entry/runtime.js";
 import { deactivatePool } from "../entry/index.js";
 import { handleClose } from "./close.js";
@@ -192,6 +194,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
   const lockMint = (m) => {
     if (m) {
       addEntryInProgressMint(m);
+      protectMint(m, "oor_kanan_reentry_open");
       lockedMints.add(m);
     }
   };
@@ -566,6 +569,9 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     return await fail(err.message);
   } finally {
     for (const p of lockedPools) removeEntryInProgressPool(p);
-    for (const m of lockedMints) removeEntryInProgressMint(m);
+    for (const m of lockedMints) {
+      removeEntryInProgressMint(m);
+      releaseMint(m, "oor_kanan_reentry_open");
+    }
   }
 }
