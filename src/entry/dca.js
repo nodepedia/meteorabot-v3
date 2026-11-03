@@ -33,6 +33,7 @@ import {
   getDcaCooldownUntil,
   setDcaCooldown,
   recordAction,
+  getPoolAlias,
 } from "./runtime.js";
 
 // DCA hanya untuk mode yang terdaftar di config.dca.eligibleModes (default
@@ -193,7 +194,8 @@ export function maybeStartDca(pos, tracked, pairLabel) {
     return false;
   }
 
-  const entry = loadPoolList().find((x) => x.pool === pos.pool);
+  const alias = getPoolAlias(pos.pool);
+  const entry = loadPoolList().find((x) => x.pool === pos.pool || (alias && x.ca && x.pool === alias));
   if (!entry || !(entry.sizeSol > 0)) {
     log.warn(`Pool ${pos.pool.slice(0, 8)} DCA skip: entry_size tidak ditemukan di pool.txt`);
     return false;

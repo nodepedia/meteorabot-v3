@@ -12,7 +12,8 @@ export async function getPoolNames() {
   try {
     const pools = loadPoolList();
     return await Promise.all(
-      pools.map(async ({ pool }) => {
+      pools.map(async ({ pool, ca }) => {
+        if (ca) return `CA:${pool.slice(0, 8)}`;
         const cached = pairNameCache.get(pool);
         if (cached) return cached;
         try {

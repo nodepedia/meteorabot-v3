@@ -35,6 +35,8 @@ import {
 import {
   recordAction,
   transferPoolEntryUsage,
+  transferPoolAlias,
+  getPoolAlias,
   addEntryInProgressPool,
   removeEntryInProgressPool,
   addEntryInProgressMint,
@@ -323,7 +325,9 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
           `gagal menutup posisi aktif lain (${dupPos.position.slice(0, 8)}) pada token yang sama sebelum reposisi`
         );
       }
-      if (dupPos.pool && dupPos.pool !== targetPoolAddress) {
+      const dupAlias = dupPos.pool ? getPoolAlias(dupPos.pool) : null;
+      // Pool lain dari baris CA yang sama: jangan '#' baris CA.
+      if (dupPos.pool && dupPos.pool !== targetPoolAddress && !(dupAlias && dupAlias === getPoolAlias(pos.pool))) {
         commentPoolInList(dupPos.pool);
       }
     }
@@ -513,6 +517,8 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     }
 
     if (switchedPool) {
+      // Baris CA: alias pindah ke pool baru dulu, supaya '#' pool lama tidak kena baris CA.
+      transferPoolAlias(pos.pool, targetPoolAddress);
       replacePoolInList(pos.pool, targetPoolAddress);
       commentPoolInList(pos.pool);
       transferPoolEntryUsage(pos.pool, targetPoolAddress);

@@ -1,4 +1,11 @@
-// Remote mode: tulis baris pool ke pool.txt di VPS main lewat ssh.
+// Tambah baris CA ke pool.txt (lokal atau di VPS main lewat ssh) — sekali per token.
+// File ini identik dengan meteora-pool-monitor/src/remote-pool.js — ubah keduanya bersamaan.
+//
+// Satu perintah POSIX sh di bawah `flock` pada pool.txt:
+//   - kalau CA, atau salah satu pool address milik token itu, sudah ada di baris mana pun
+//     (termasuk yang di-'#') → skip "already_in_pool"
+//   - kalau belum → append `<CA>,<mult>,1,spot,ca`
+// Tidak ada ledger: kalau baris CA dihapus total, token boleh ditambahkan lagi.
 import { execFileSync } from "child_process";
 import os from "os";
 
@@ -11,47 +18,52 @@ export function remoteConfig(env = process.env) {
     host,
     key: exp((env.MAIN_VPS_SSH_KEY || "~/.ssh/id_ed25519").trim()),
     poolPath: (env.MAIN_POOL_PATH || "~/meteorabot-v3/pool.txt").trim(),
-    statePath: (env.MAIN_STATE_PATH || "").trim(),
   };
 }
 
-const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+export const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const rp = (p) => (p.startsWith("~/") ? `"$HOME"/${q(p.slice(2))}` : q(p));
+const ADDR = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-export function sshRun(cfg, cmd, exec = execFileSync) {
-  return String(exec("ssh", ["-i", cfg.key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", cfg.host, cmd], { encoding: "utf8" }));
+export function caLine(mint, multiplierStr) {
+  return `${mint},${multiplierStr || "1x"},1,spot,ca`;
 }
 
-// Baris spot Runner yang sudah di-'#' (entry+exit selesai) → token tidak boleh
-// di-entry lagi oleh Runner. Baris manual (bidask/tanpa mode spot) tidak dihitung.
-export function hasClosedSpotLine(raw, pools) {
-  for (const l of String(raw).split("\n")) {
-    const t = l.trim();
-    if (!t.startsWith("#")) continue;
-    const parts = t.replace(/^#+\s*/, "").split(",").map((x) => x.trim());
-    if (pools.has(parts[0]) && (parts[3] || "").split(/[\s#]/)[0].toLowerCase() === "spot") return true;
-  }
-  return false;
+// Script sh: cek + append di bawah flock pada pool.txt. Output baris pertama: added | already_in_pool <addr> | lock_timeout.
+export function buildAddCaScript(poolPath, { mint, multiplierStr, knownPools = [] }) {
+  if (!ADDR.test(String(mint || ""))) throw new Error(`CA invalid: ${mint}`);
+  const keys = [...new Set([mint, ...knownPools.filter((p) => ADDR.test(String(p || "")))])];
+  return [
+    `f=${rp(poolPath)}`,
+    `mkdir -p "$(dirname "$f")" && touch "$f" || exit 2`,
+    `exec 9>>"$f"`,
+    `flock -w 30 9 || { echo lock_timeout; exit 3; }`,
+    `for a in ${keys.map(q).join(" ")}; do`,
+    `  if grep -qF -- "$a" "$f"; then echo "already_in_pool $a"; exit 0; fi`,
+    `done`,
+    `if [ -s "$f" ] && [ -n "$(tail -c1 "$f")" ]; then printf '\\n' >> "$f"; fi`,
+    `printf '%s\\n' ${q(caLine(mint, multiplierStr))} >> "$f"`,
+    `echo added`,
+  ].join("\n");
 }
 
-export function remoteUpdatePool(cfg, { poolAddress, multiplierStr, allTokenPoolAddresses = [], mint = "" }, exec = execFileSync) {
-  const pools = new Set([poolAddress, ...allTokenPoolAddresses.filter(Boolean)]);
-  const targetLine = `${poolAddress},${multiplierStr},1,spot`;
-  const raw = sshRun(cfg, `cat ${rp(cfg.poolPath)} 2>/dev/null || true`, exec);
-  for (const l of raw.split("\n")) {
-    const a = l.trim().split(",")[0]?.trim();
-    if (a && !l.trim().startsWith("#") && pools.has(a)) return { changed: false, action: "unchanged_remote", targetLine };
+export function parseAddCaOutput(out, targetLine) {
+  const first = String(out || "").trim().split("\n")[0] || "";
+  if (first === "added") return { changed: true, action: "added", targetLine };
+  if (first.startsWith("already_in_pool")) return { changed: false, action: "already_in_pool", match: first.split(" ")[1] || "", targetLine };
+  return { changed: false, action: "failed", error: first || "no output", targetLine };
+}
+
+// cfg = remoteConfig(...) untuk ssh ke VPS main, atau { localPath } untuk pool.txt lokal.
+export function addCaLine(cfg, { mint, multiplierStr, knownPools = [] }, exec = execFileSync) {
+  const targetLine = caLine(mint, multiplierStr);
+  try {
+    const script = buildAddCaScript(cfg.localPath || cfg.poolPath, { mint, multiplierStr, knownPools });
+    const out = cfg.localPath
+      ? exec("sh", ["-c", script], { encoding: "utf8" })
+      : exec("ssh", ["-i", cfg.key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", cfg.host, script], { encoding: "utf8" });
+    return parseAddCaOutput(out, targetLine);
+  } catch (err) {
+    return { changed: false, action: "failed", error: err.message, targetLine };
   }
-  if (hasClosedSpotLine(raw, pools)) return { changed: false, action: "skipped_already_traded", targetLine };
-  if (cfg.statePath) {
-    try {
-      const st = JSON.parse(sshRun(cfg, `cat ${rp(cfg.statePath)}`, exec) || "{}");
-      for (const p of Object.values(st.positions || {})) {
-        if (p && !p.closed && ((mint && p.baseMint === mint) || pools.has(p.pool)))
-          return { changed: false, action: "skipped_token_already_open", targetLine };
-      }
-    } catch {}
-  }
-  sshRun(cfg, `printf '%s\\n' ${q(targetLine)} >> ${rp(cfg.poolPath)}`, exec);
-  return { changed: true, action: "added_remote", targetLine };
 }

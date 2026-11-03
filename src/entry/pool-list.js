@@ -3,6 +3,7 @@ import path from "path";
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import { ROOT } from "../core/paths.js";
+import { getPoolAlias } from "./runtime.js";
 
 function poolListPath() {
   return path.resolve(ROOT, config.entry.poolListFile);
@@ -52,8 +53,14 @@ export function parsePoolList(raw) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
 
-    const [address, sizeRaw, maxRaw, modeRaw] = trimmed.split(",").map((s) => s.trim());
+    const [address, sizeRaw, maxRaw, modeRaw, kindRaw] = trimmed.split(",").map((s) => s.trim());
     if (!address) continue;
+    // Kolom ke-5 `ca`: kolom pertama adalah CA token (mint), pool dipilih saat entry.
+    const isCa = Boolean(kindRaw && kindRaw.split(/[\s#]/)[0].toLowerCase() === "ca");
+    if (kindRaw && !isCa) {
+      log.warn(`Pool ${address.slice(0, 8)} skipped: kolom ke-5 invalid "${kindRaw}" (hanya ca)`);
+      continue;
+    }
 
     const secondIsSpot = Boolean(sizeRaw && sizeRaw.toLowerCase() === "spot" && !modeRaw);
     const mode = secondIsSpot ? "spot" : resolveEntryMode(modeRaw);
@@ -72,7 +79,7 @@ export function parsePoolList(raw) {
 
     const maxNum = maxRaw ? Number(maxRaw) : defaultMax;
     const maxPositions = Number.isFinite(maxNum) && maxNum > 0 ? Math.floor(maxNum) : defaultMax;
-    entries.push({ pool: address, sizeSol, maxPositions, mode });
+    entries.push(isCa ? { pool: address, sizeSol, maxPositions, mode, ca: true } : { pool: address, sizeSol, maxPositions, mode });
   }
   return entries;
 }
@@ -89,8 +96,10 @@ export function loadPoolList() {
 // Beri `#` di depan semua baris aktif milik pool ini agar tidak dipantau lagi
 // (menu manual: hapus `#` untuk mengaktifkan kembali). Return false hanya bila
 // penulisan gagal, supaya pemanggil bisa fallback ke skip runtime.
-export function commentPoolInList(poolAddress) {
+export function commentPoolInList(poolAddress, alias = getPoolAlias(poolAddress)) {
   if (!poolAddress) return false;
+  // Pool hasil resolve baris CA: '#' baris CA-nya.
+  const targets = new Set([poolAddress, alias].filter(Boolean));
   const file = poolListPath();
   try {
     if (!fs.existsSync(file)) return false;
@@ -99,7 +108,7 @@ export function commentPoolInList(poolAddress) {
     const out = lines.map((line) => {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) return line;
-      if (trimmed.split(",")[0].trim() !== poolAddress) return line;
+      if (!targets.has(trimmed.split(",")[0].trim())) return line;
       active = true;
       return `#${line}`;
     });

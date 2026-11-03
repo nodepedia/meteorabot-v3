@@ -8,6 +8,7 @@ import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
 import { executeEntry, executeSpotEntry } from "./execute.js";
 import { selectWatchCandidates } from "./candidates.js";
+import { resolveCaPool } from "./ca-resolve.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -21,6 +22,9 @@ import {
   getEntryUsage,
   resetEntryUsage,
   getEntryInProgressPools,
+  setPoolAlias,
+  getPoolAlias,
+  clearPoolAliasesFor,
   setWatchSnapshot,
   getSharedWatchSnapshot,
 } from "./runtime.js";
@@ -83,10 +87,16 @@ export function deactivatePool(pool, reason) {
   failureCounts.delete(pool);
   failureCooldownUntil.delete(pool);
   dryRunNoted.delete(pool);
-  if (commentPoolInList(pool)) {
+  const alias = getPoolAlias(pool);
+  if (commentPoolInList(pool, alias)) {
     skipped.delete(pool);
     // Hitungan entry mulai dari nol saat '#' dihapus lagi.
     resetEntryUsage(pool);
+    if (alias) {
+      skipped.delete(alias);
+      firstSeenAt.delete(alias);
+      clearPoolAliasesFor(alias);
+    }
     log.info(
       `Pool ${pool.slice(0, 8)} ditandai '#' di ${config.entry.poolListFile}${reason ? ` (${reason})` : ""} — hapus '#' untuk memantau lagi`
     );
@@ -123,7 +133,9 @@ export async function refreshCandidates() {
     const candidates = [];
     const stillOpen = new Set();
 
-    for (const { pool: poolAddress, sizeSol, maxPositions, mode = ENTRY_MODE } of pools) {
+    for (const { pool: lineKey, sizeSol, maxPositions, mode = ENTRY_MODE, ca = false } of pools) {
+      // lineKey = kolom pertama baris pool.txt (alamat pool, atau CA untuk baris `,ca`).
+      let poolAddress = lineKey;
       if (skipped.has(poolAddress)) continue;
 
       const cooldownUntil = failureCooldownUntil.get(poolAddress) || 0;
@@ -148,6 +160,21 @@ export async function refreshCandidates() {
         log.info(`Pool ${poolAddress.slice(0, 8)} reached max position (${maxPositions}) — skip`);
         skipped.add(poolAddress);
         continue;
+      }
+
+      if (ca) {
+        // Token sudah punya posisi / sedang entry / close: tunggu, jangan '#' baris CA.
+        if ((openByMint.get(lineKey) || 0) >= 1 || isEntryInProgressMint(lineKey) || isMintClosing(lineKey)) continue;
+        const r = await resolveCaPool(lineKey);
+        if (!r.pool) {
+          log.info(`CA ${lineKey.slice(0, 8)} skip siklus ini: ${r.reason}`);
+          continue;
+        }
+        poolAddress = r.pool;
+        if (skipped.has(poolAddress) || now < (failureCooldownUntil.get(poolAddress) || 0)) continue;
+        // Simpan pool hasil resolve → CA, supaya usage/'#'/exit/re-entry ikut baris CA.
+        if (getPoolAlias(poolAddress) !== lineKey) setPoolAlias(poolAddress, lineKey);
+        log.info(`CA ${lineKey.slice(0, 8)} → pool ${poolAddress.slice(0, 8)} (fee/active TVL 30m ${r.ratio}%)`);
       }
 
       const openCount =

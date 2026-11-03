@@ -48,19 +48,26 @@ Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kal
 - Swap ke SOL saat close: token base **dan** reward di-swap ke SOL, kecuali mint yang dilindungi (posisi aktif, entry/rebalance/reentry OOR kanan/fallback OOR kiri yang sedang berjalan, USDC). Swap gagal → "swap tertunda", dicoba ulang tiap `SWAP_PENDING_RETRY_SEC` (90s); pool baru ditandai `#` setelah swap tuntas atau dihentikan (alert Telegram). Safety sweep juga memindai token Token-2022.
 
 ## `pool.txt`
-Satu pool per baris, formatnya `address,size,max,mode`. Hanya `address` yang wajib.
+Satu pool per baris, formatnya `address,size,max,mode[,ca]`. Hanya `address` yang wajib.
 
 | Kolom | Nilai | Default |
 |---|---|---|
 | `size` | angka SOL, `1x`, `1.25x`, `1.5x`, `tier1`/`tier2`/`tier3` (kali `ENTRY_DEFAULT_SIZE_SOL`) | `1x` (0.1 SOL) |
 | `max` | jumlah entry maksimal di pool itu | `1` |
 | `mode` | `bidask:double` (atau `bidask`), `spot` | `bidask:double` |
+| kolom ke-5 | `ca` = kolom pertama adalah **CA token (mint)**, bukan pool | kosong (alamat pool) |
 
 ```
 PoolAddr1                       # bidask:double, 0.1 SOL, max 1
 PoolAddr2,0.5,2                 # 0.5 SOL, max 2
 PoolAddr3,1.25x,1,spot          # spot, 0.125 SOL
+TokenMint,1.5x,1,spot,ca        # baris CA: pool dipilih bot saat entry
 ```
+Baris CA (`,ca`):
+- Saat entry, bot mengambil semua pool DLMM X/SOL token itu dari Meteora (`pool-discovery-api`, timeframe 30m, cache `CA_POOL_CACHE_SEC`=60s) dan memilih **fee/active TVL 30m tertinggi** di antara pool yang lolos filter `strat.conf`: `CA_POOL_MIN_VOLUME_30M`=2000, `CA_POOL_MIN_BASE_FEE_PCT`=1, `CA_POOL_MIN_FEE_ACTIVE_TVL_PCT`=1, `CA_POOL_MIN_BIN_STEP`..`CA_POOL_MAX_BIN_STEP`=100..200. Tidak ada yang lolos = skip siklus itu (tercatat di log).
+- `max` dan hitungan entry berlaku per baris CA. Pool hasil pilihan disimpan di state posisi dan di `runtime-state.json` (`poolAliases`), sehingga exit, re-entry/OOR kanan (termasuk pindah pool), dan DCA tetap memakai pool itu.
+- Saat posisi selesai/dinonaktifkan, **baris CA** yang diberi `#` dan hitungan entry di-reset, sama seperti baris pool.
+- Baris CA biasanya ditulis otomatis oleh Runner Alert / meteora-pool-monitor (lihat [setup.md](setup.md)), tapi bisa juga ditulis manual.
 - Baris yang diawali `#` dilewati.
 - Bot otomatis memberi `#` pada pool yang sudah selesai (entry+exit), gagal `ENTRY_MAX_FAILURES` kali, bukan pair SOL, atau kedaluwarsa tanpa entry.
 - Saat baris di-`#`, hitungan entry (`entryUsage`) pool itu di-reset. Jadi kalau `#` dihapus, pool bisa entry lagi dari nol.

@@ -34,6 +34,7 @@ function emptyState() {
     pendingSwaps: {},
     dcaCooldownUntil: {},
     entryUsage: {},
+    poolAliases: {},
     recentActions: [],
     watchSnapshot: [],
     walletStatus: null,
@@ -111,6 +112,14 @@ function normalizeParsed(parsed, now) {
     }
   }
 
+  // pool hasil resolve baris CA -> CA (kunci baris pool.txt). Lihat entry/ca-resolve.js.
+  const aliases = {};
+  if (parsed.poolAliases && typeof parsed.poolAliases === "object") {
+    for (const [k, v] of Object.entries(parsed.poolAliases)) {
+      if (k && typeof v === "string" && v) aliases[k] = v;
+    }
+  }
+
   const actions = Array.isArray(parsed.recentActions)
     ? parsed.recentActions.filter((a) => a && typeof a.text === "string" && Number.isFinite(Number(a.at))).slice(-200)
     : [];
@@ -127,6 +136,7 @@ function normalizeParsed(parsed, now) {
     pendingSwaps,
     dcaCooldownUntil: cooldowns.map,
     entryUsage: usage,
+    poolAliases: aliases,
     recentActions: actions,
     watchSnapshot,
     walletStatus,
@@ -347,18 +357,56 @@ export function setDcaCooldown(pool, ms) {
   }
 }
 
+// Baris CA di pool.txt: posisi dibuka di pool hasil resolve, tapi kuota/usage & '#'
+// mengikuti baris CA. poolAliases[pool] = CA.
+export function getPoolAlias(pool) {
+  if (!pool) return null;
+  return syncRuntimeFromDisk().poolAliases?.[pool] || null;
+}
+
+export function setPoolAlias(pool, ca) {
+  if (!pool || !ca || pool === ca) return;
+  mutateRuntimeState((state) => {
+    state.poolAliases = state.poolAliases || {};
+    state.poolAliases[pool] = ca;
+  });
+}
+
+export function clearPoolAliasesFor(key) {
+  if (!key) return;
+  mutateRuntimeState((state) => {
+    for (const [p, ca] of Object.entries(state.poolAliases || {})) {
+      if (p === key || ca === key) delete state.poolAliases[p];
+    }
+  });
+}
+
+// Reposisi pindah pool: alias ikut pindah supaya baris CA tetap terhubung.
+export function transferPoolAlias(oldPool, newPool) {
+  if (!oldPool || !newPool || oldPool === newPool) return;
+  mutateRuntimeState((state) => {
+    const ca = state.poolAliases?.[oldPool];
+    if (!ca) return;
+    delete state.poolAliases[oldPool];
+    if (newPool !== ca) state.poolAliases[newPool] = ca;
+  });
+}
+
+const usageKey = (state, pool) => state.poolAliases?.[pool] || pool;
+
 export function getEntryUsage(pool) {
   if (!pool) return 0;
   const state = syncRuntimeFromDisk();
-  return state.entryUsage[pool] || 0;
+  return state.entryUsage[usageKey(state, pool)] || 0;
 }
 
 export function incrementEntryUsage(pool) {
   if (!pool) return 0;
   let uses = 0;
   mutateRuntimeState((state) => {
-    uses = (state.entryUsage[pool] || 0) + 1;
-    state.entryUsage[pool] = uses;
+    const k = usageKey(state, pool);
+    uses = (state.entryUsage[k] || 0) + 1;
+    state.entryUsage[k] = uses;
   });
   return uses;
 }
@@ -366,6 +414,7 @@ export function incrementEntryUsage(pool) {
 export function resetEntryUsage(pool) {
   if (!pool) return;
   mutateRuntimeState((state) => {
+    delete state.entryUsage[usageKey(state, pool)];
     delete state.entryUsage[pool];
   });
 }
@@ -374,9 +423,12 @@ export function transferPoolEntryUsage(oldPool, newPool) {
   if (!oldPool || !newPool || oldPool === newPool) return 0;
   let uses = 0;
   mutateRuntimeState((state) => {
-    const prev = state.entryUsage[oldPool] || 0;
-    uses = Math.max(state.entryUsage[newPool] || 0, prev, 1);
-    state.entryUsage[newPool] = uses;
+    const ko = usageKey(state, oldPool);
+    const kn = usageKey(state, newPool);
+    if (ko === kn) { uses = state.entryUsage[ko] || 0; return; }
+    const prev = state.entryUsage[ko] || 0;
+    uses = Math.max(state.entryUsage[kn] || 0, prev, 1);
+    state.entryUsage[kn] = uses;
   });
   return uses;
 }
