@@ -2,7 +2,7 @@
 
 Bot trading LP otomatis untuk pool **Meteora DLMM** di Solana. Bot ini bisa berjalan sendiri: entry otomatis (Supertrend GMGN + harga Jupiter), exit otomatis (stop loss, OOR, trailing TP), DCA, auto swap token → SOL setelah posisi tutup, dan notifikasi Telegram. Ada `DRY_RUN` untuk mencoba tanpa transaksi sungguhan.
 
-> Integrasi Runner Alert / meteora-pool-monitor itu **OPSIONAL**, lihat [setup.md](setup.md).
+> Worker opsional yang bisa mengisi `pool.txt` otomatis: [runner-alert](https://github.com/nodepedia/runner-alert) dan [meteora-pool-monitor](https://github.com/nodepedia/meteora-pool-monitor). Lihat [setup.md](setup.md). Tanpa keduanya, bot jalan dengan pool manual.
 
 ## Kebutuhan
 - Ubuntu dengan **Node.js 24.x** (wajib untuk patch ESM di `scripts/patch-anchor.js`)
@@ -35,7 +35,6 @@ cp .env.example .env && chmod 600 .env
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | notifikasi Telegram |
 | `DRY_RUN` | `true` untuk tes, `false` untuk live |
 
-Variabel `SCANNER_*`, `MAIN_*`, `RUNNER_*`, `GMGN_WALLETS_DIR` hanya untuk integrasi opsional ([setup.md](setup.md)). Di bot utama biarkan kosong.
 
 ## `strat.conf` (strategi, di-commit)
 Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kalau key yang sama ada di `.env`, nilai `strat.conf` yang menang. Yang paling sering diubah:
