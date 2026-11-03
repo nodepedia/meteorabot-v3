@@ -44,6 +44,7 @@ Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kal
 - `ENTRY_EXPIRY_HOURS`: pool yang tidak entry dalam X jam akan di-`#`
 - `ENTRY_MAX_FAILURES=3`: pool di-`#` setelah gagal entry sebanyak ini
 - `POOL_LIST_FILE=pool.txt`
+- `SPOT_INDICATOR_EXIT=immediate`: posisi spot langsung close saat sinyal indikator (RSI+MACD / RSI+BB). Isi `trailing` untuk perilaku lama (arm trailing dulu). BidAsk tidak terpengaruh.
 
 ## `pool.txt`
 Satu pool per baris, formatnya `address,size,max,mode`. Hanya `address` yang wajib.

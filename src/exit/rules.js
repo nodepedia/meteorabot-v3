@@ -180,10 +180,19 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
   });
 
   if (reason) {
-    return { action: "arm_indicator_trailing", reason };
+    return indicatorAction(position.mode, reason, rules);
   }
 
   return { action: "hold", reason: "no_signal" };
+}
+
+// Pure: aksi saat sinyal indikator muncul. Spot + SPOT_INDICATOR_EXIT=immediate
+// → close langsung (tanpa arm trailing / konfirmasi 10s). Selain itu → arm trailing.
+export function indicatorAction(mode, reason, rules) {
+  if (mode === "spot" && rules?.indicatorExit !== "trailing") {
+    return { action: "close", reason: `indicator_${reason}` };
+  }
+  return { action: "arm_indicator_trailing", reason };
 }
 
 // Pure: buang candle berjalan (terakhir) sehingga hanya candle yang sudah

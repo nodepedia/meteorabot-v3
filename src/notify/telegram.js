@@ -171,6 +171,8 @@ export function exitLabel(reason) {
   const r = String(reason);
   if (r.startsWith("trailing_tp")) return "Trailing TP";
   if (r.startsWith("indicator_trailing")) return "Trailing Indikator";
+  if (r === "indicator_rsi_macd") return "Indikator RSI+MACD";
+  if (r.startsWith("indicator_rsi_bb")) return "Indikator RSI+BB";
   if (r === "stop_loss") return "Stop Loss";
   if (r === "oor_kanan") return "OOR Kanan";
   if (r === "oor_kiri") return "OOR Kiri";

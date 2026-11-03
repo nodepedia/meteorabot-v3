@@ -56,6 +56,10 @@ export function buildConfig(e = {}) {
     lowYieldDelayMinutes: 10,
   });
 
+  // Exit indikator spot: immediate (default) = langsung close saat sinyal;
+  // trailing = perilaku lama (arm trailing dari sinyal, exit saat drop terkonfirmasi).
+  spot.indicatorExit = String(e.SPOT_INDICATOR_EXIT || "immediate").trim().toLowerCase() === "trailing" ? "trailing" : "immediate";
+
   // Fallback OOR kiri spot: tutup tanpa swap, lalu buka posisi token-only
   // satu-sisi di pool yang sama memakai seluruh saldo token.
   const spotFallback = {
