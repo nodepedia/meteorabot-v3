@@ -43,6 +43,12 @@ export function isDcaModeEligible(mode) {
   return (config.dca.eligibleModes || []).includes(normalized);
 }
 
+// Satu-satunya predikat "DCA berlaku untuk posisi ini": fitur aktif + mode eligible.
+// Dipakai watcher DCA dan ringkasan status (spot tidak pernah DCA).
+export function isDcaApplicable(tracked, cfg = config.dca) {
+  return Boolean(cfg?.enabled) && Boolean(tracked) && isDcaModeEligible(tracked.mode);
+}
+
 // Dipanggil tiap tick watcher DCA. Satu request PnL per pool dipakai untuk
 // scan (arm/trail/queue) sekaligus konfirmasi rebound — tidak ada timer
 // terpisah. Posisi diambil dari state (tanpa RPC).
@@ -50,7 +56,7 @@ export async function tickDca() {
   const cfg = config.dca;
   if (!cfg.enabled) return;
 
-  const open = getOpenTrackedPositions().filter((t) => t && t.position && t.pool && isDcaModeEligible(t.mode));
+  const open = getOpenTrackedPositions().filter((t) => t && t.position && t.pool && isDcaApplicable(t, cfg));
   if (open.length === 0) return;
 
   const byPool = new Map();

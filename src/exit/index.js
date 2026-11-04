@@ -38,6 +38,7 @@ import {
 } from "../entry/runtime.js";
 import { enqueuePendingSwap, processPendingSwaps } from "./pending-swaps.js";
 import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
+import { isDcaApplicable } from "../entry/dca.js";
 import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
@@ -120,11 +121,12 @@ function buildPositionLines(positions) {
   });
 }
 
-function buildDcaLines(positions) {
+export function buildDcaLines(positions, getTracked = getTrackedPosition) {
   const byPool = new Map();
   for (const pos of positions) {
-    const tracked = getTrackedPosition(pos.position);
-    if (!tracked) continue;
+    const tracked = getTracked(pos.position);
+    // Spot / mode non-eligible / DCA nonaktif: tidak pernah DCA → jangan ditampilkan.
+    if (!isDcaApplicable(tracked)) continue;
     if (!byPool.has(pos.pool)) byPool.set(pos.pool, []);
     byPool.get(pos.pool).push(tracked);
   }
@@ -165,7 +167,8 @@ function emitSummary(positions) {
     now,
     watched: getWatchSnapshot(),
     positions: buildPositionLines(positions),
-    dcaLines: config.dca.enabled ? buildDcaLines(positions) : ["fitur DCA nonaktif"],
+    dcaLines: buildDcaLines(positions),
+    dcaActive: config.dca.enabled && positions.some((p) => isDcaApplicable(getTrackedPosition(p.position))),
     actionLines: takeRecentActions(intervalMs),
   });
   log.info("\n" + block);

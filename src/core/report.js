@@ -77,6 +77,7 @@ export function buildSummaryBlock({
   watched = [],
   positions = [],
   dcaLines = [],
+  dcaActive = dcaLines.length > 0,
   actionLines = [],
 }) {
   const bar = "═".repeat(60);
@@ -85,7 +86,9 @@ export function buildSummaryBlock({
   L.push(`  Meteora Bot — RINGKASAN   ${clock(now)}`);
   L.push(bar);
   L.push(`Mode    : ${mode} | PnL dihitung dalam SOL`);
-  L.push("Kerja   : pantau tren → cari titik masuk → atur exit → DCA saat posisi turun lalu memantul");
+  L.push(
+    `Kerja   : pantau tren → cari titik masuk → atur exit${dcaActive ? " → DCA saat posisi turun lalu memantul" : ""}`
+  );
   L.push("");
 
   L.push(`▸ SEDANG DIPANTAU (${watched.length} pool)`);
@@ -106,10 +109,12 @@ export function buildSummaryBlock({
   });
   L.push("");
 
-  L.push("▸ DCA");
-  if (dcaLines.length === 0) L.push("  belum ada posisi, jadi belum ada yang di-arm");
-  else dcaLines.forEach((line) => L.push(`  • ${line}`));
-  L.push("");
+  // Section DCA hanya muncul kalau ada posisi yang memang bisa DCA (spot tidak pernah DCA).
+  if (dcaLines.length > 0) {
+    L.push("▸ DCA");
+    dcaLines.forEach((line) => L.push(`  • ${line}`));
+    L.push("");
+  }
 
   L.push("▸ AKSI 5 MENIT TERAKHIR");
   if (actionLines.length === 0) L.push("  tidak ada entry / DCA / close");
