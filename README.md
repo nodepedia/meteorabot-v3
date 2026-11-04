@@ -63,7 +63,7 @@ PoolAddr3,1.25x,1,spot          # spot, 0.125 SOL
 TokenMint,1.5x,1,spot,ca        # baris CA: pool dipilih bot saat entry
 ```
 Baris CA (`,ca`):
-- Saat entry, bot mengambil semua pool DLMM X/SOL token itu dari Meteora (`pool-discovery-api`, timeframe 30m, cache `CA_POOL_CACHE_SEC`=60s) dan memilih **fee/active TVL 30m tertinggi** di antara pool yang lolos filter `strat.conf`: `CA_POOL_MIN_VOLUME_30M`=2000, `CA_POOL_MIN_BASE_FEE_PCT`=1, `CA_POOL_MIN_FEE_ACTIVE_TVL_PCT`=1, `CA_POOL_MIN_BIN_STEP`..`CA_POOL_MAX_BIN_STEP`=100..200. Tidak ada yang lolos = skip siklus itu (tercatat di log).
+- Saat entry, bot mengambil semua pool DLMM X/SOL token itu dari Meteora (`pool-discovery-api`, timeframe 30m, cache `CA_POOL_CACHE_SEC`=60s) dan memilih **fee/active TVL 30m tertinggi**, tanpa filter tambahan (penyaringan sudah dilakukan worker). Tidak ada pool X/SOL = skip siklus itu (log maksimal 1x per CA per 10 menit).
 - `max` dan hitungan entry berlaku per baris CA. Pool hasil pilihan disimpan di state posisi dan di `runtime-state.json` (`poolAliases`), sehingga exit, re-entry/OOR kanan (termasuk pindah pool), dan DCA tetap memakai pool itu.
 - Saat posisi selesai/dinonaktifkan, **baris CA** yang diberi `#` dan hitungan entry di-reset, sama seperti baris pool.
 - Baris CA biasanya ditulis otomatis oleh Runner Alert / meteora-pool-monitor (lihat [setup.md](setup.md)), tapi bisa juga ditulis manual.

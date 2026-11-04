@@ -1,5 +1,6 @@
 // Resolve baris CA pool.txt → pool DLMM paling efisien untuk mint itu.
 // Sumber: pool-discovery-api Meteora (sama dengan meteora-pool-monitor), timeframe 30m.
+// Tanpa filter: pool X/SOL dengan fee/active TVL 30m tertinggi.
 // Hasil per mint di-cache CA_POOL_CACHE_SEC (default 60s) supaya hemat request.
 import config from "../config/index.js";
 import log from "../core/logger.js";
@@ -14,32 +15,21 @@ const n = (v) => {
 const binStepOf = (p) => n(p?.dlmm_params?.bin_step ?? p?.bin_step);
 const SOL = "So11111111111111111111111111111111111111112";
 const mintsOf = (p) => [p?.token_x?.address, p?.token_y?.address].filter(Boolean);
+// API pool-discovery mengembalikan `pool_address`; `address` hanya fallback.
+export const addrOf = (p) => p?.pool_address || p?.address || null;
 // Bot hanya mendukung pair X/SOL, jadi pool non-SOL tidak dipertimbangkan.
 const isMintSolPool = (p, mint) => {
   const m = mintsOf(p);
   return m.includes(SOL) && (!mint || m.includes(mint));
 };
 
-export function poolPassesCaFilter(p, cfg = config.entry) {
-  const bs = binStepOf(p);
-  return (
-    n(p?.volume) >= cfg.caMinVolume30m &&
-    n(p?.fee_pct) >= cfg.caMinBaseFeePct &&
-    n(p?.fee_active_tvl_ratio) >= cfg.caMinFeeActiveTvlPct &&
-    bs >= cfg.caMinBinStep &&
-    bs <= cfg.caMaxBinStep
-  );
-}
-
-// Murni: pilih fee_active_tvl_ratio tertinggi di antara pool mint yang lolos filter.
-export function pickBestPool(pools, mint, cfg = config.entry) {
-  const own = (pools || []).filter((p) => p?.address && isMintSolPool(p, mint));
-  const ok = own.filter((p) => poolPassesCaFilter(p, cfg));
-  if (ok.length === 0) {
-    return { pool: null, reason: own.length === 0 ? "tidak ada pool DLMM X/SOL untuk CA ini" : `tidak ada dari ${own.length} pool yang lolos filter` };
-  }
-  ok.sort((a, b) => n(b.fee_active_tvl_ratio) - n(a.fee_active_tvl_ratio));
-  return { pool: ok[0].address, ratio: n(ok[0].fee_active_tvl_ratio), candidates: own.length };
+// Murni: baris CA tidak memakai filter apa pun — pilih pool DLMM X/SOL dengan
+// fee/active TVL 30m tertinggi (pool blacklist Meteora dilewati).
+export function pickBestPool(pools, mint) {
+  const own = (pools || []).filter((p) => addrOf(p) && isMintSolPool(p, mint) && p?.is_blacklisted !== true);
+  if (own.length === 0) return { pool: null, reason: "tidak ada pool DLMM X/SOL untuk CA ini" };
+  const best = [...own].sort((a, b) => (n(b.fee_active_tvl_ratio) || 0) - (n(a.fee_active_tvl_ratio) || 0))[0];
+  return { pool: addrOf(best), ratio: n(best.fee_active_tvl_ratio), candidates: own.length };
 }
 
 export async function fetchMintPools(mint, fetchFn = fetch) {
@@ -61,9 +51,19 @@ export async function resolveCaPool(mint, { fetchFn = fetch, now = Date.now(), c
       return { pool: null, reason: err.message };
     }
   }
-  return pickBestPool(hit.pools, mint, cfg);
+  return pickBestPool(hit.pools, mint);
+}
+
+// Rate-limit log skip: maksimal 1x per CA per intervalMs (default 10 menit).
+const skipLogAt = new Map();
+export function shouldLogCaSkip(mint, now = Date.now(), intervalMs = 10 * 60 * 1000) {
+  const last = skipLogAt.get(mint);
+  if (last !== undefined && now - last < intervalMs) return false;
+  skipLogAt.set(mint, now);
+  return true;
 }
 
 export function _clearCaCache() {
   cache.clear();
+  skipLogAt.clear();
 }

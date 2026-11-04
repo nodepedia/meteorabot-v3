@@ -8,7 +8,7 @@ import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
 import { executeEntry, executeSpotEntry } from "./execute.js";
 import { selectWatchCandidates } from "./candidates.js";
-import { resolveCaPool } from "./ca-resolve.js";
+import { resolveCaPool, shouldLogCaSkip } from "./ca-resolve.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -167,7 +167,7 @@ export async function refreshCandidates() {
         if ((openByMint.get(lineKey) || 0) >= 1 || isEntryInProgressMint(lineKey) || isMintClosing(lineKey)) continue;
         const r = await resolveCaPool(lineKey);
         if (!r.pool) {
-          log.info(`CA ${lineKey.slice(0, 8)} skip siklus ini: ${r.reason}`);
+          if (shouldLogCaSkip(lineKey, now)) log.info(`CA ${lineKey.slice(0, 8)} skip: ${r.reason} (log berikutnya ≥10 menit lagi)`);
           continue;
         }
         poolAddress = r.pool;

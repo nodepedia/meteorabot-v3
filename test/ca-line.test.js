@@ -10,14 +10,17 @@ process.env.STATE_FILE = path.join(dir, "state.json");
 
 const { default: config } = await import("../src/config/index.js");
 const { parsePoolList, commentPoolInList } = await import("../src/entry/pool-list.js");
-const { pickBestPool, resolveCaPool, _clearCaCache } = await import("../src/entry/ca-resolve.js");
+const { pickBestPool, resolveCaPool, shouldLogCaSkip, _clearCaCache } = await import("../src/entry/ca-resolve.js");
 const rt = await import("../src/entry/runtime.js");
 
 const CA = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
 const POOL = "3C6qVymTAwWNKCSspmd1qbUH9avaqhsjgW2yntvEYBXt";
 const SOL = "So11111111111111111111111111111111111111112";
-const pool = (address, o = {}) => ({
-  address,
+// Bentuk asli API pool-discovery: field `pool_address` (bukan `address`).
+const FIXTURE = JSON.parse(fs.readFileSync(new URL("./fixtures/meteora-pools-query-stonks.json", import.meta.url), "utf8"));
+const STONKS = "22r9JGoWRBYc4Z1pkSFw8p2tdjefS2ZZshw1vr8bBC2K";
+const pool = (pool_address, o = {}) => ({
+  pool_address,
   token_x: { address: CA },
   token_y: { address: SOL },
   volume: 5000,
@@ -43,13 +46,19 @@ test("parse baris CA (kolom ke-5 ca)", () => {
   }
 });
 
-test("pickBestPool: fee/active TVL tertinggi di antara pool yang lolos filter", () => {
+test("pickBestPool: fixture asli query=<mint> → pool fee/active TVL tertinggi tanpa filter", () => {
+  const r = pickBestPool(FIXTURE.data, STONKS);
+  // FuEy: fee/TVL ~0.23%, bin step 80 — dulu ditolak filter, sekarang dipilih.
+  assert.equal(r.pool, "FuEywnbx7JQSzxMxrMrQoxWkJETJAx5bp446qx3SoXM");
+  assert.equal(r.candidates, 5);
+});
+
+test("pickBestPool: tanpa filter, hanya X/SOL mint ini, lewati blacklist", () => {
   const r = pickBestPool(
     [
-      pool("A", { fee_active_tvl_ratio: 9, volume: 100 }), // gagal volume
-      pool("B", { fee_active_tvl_ratio: 8, dlmm_params: { bin_step: 250 } }), // gagal bin step
-      pool("C", { fee_active_tvl_ratio: 4 }),
-      pool("D", { fee_active_tvl_ratio: 6 }),
+      pool("A", { fee_active_tvl_ratio: 0.1, volume: 0, fee_pct: 0.1, dlmm_params: { bin_step: 1 } }),
+      pool("D", { fee_active_tvl_ratio: 0.3, dlmm_params: { bin_step: 80 } }),
+      pool("B", { fee_active_tvl_ratio: 9, is_blacklisted: true }),
       pool("E", { fee_active_tvl_ratio: 7, token_y: { address: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" } }), // bukan SOL
       pool("F", { fee_active_tvl_ratio: 50, token_x: { address: POOL } }), // mint lain
     ],
@@ -58,10 +67,24 @@ test("pickBestPool: fee/active TVL tertinggi di antara pool yang lolos filter", 
   assert.equal(r.pool, "D");
 });
 
-test("pickBestPool: tidak ada yang lolos → null + alasan", () => {
-  const r = pickBestPool([pool("A", { fee_pct: 0.5 }), pool("B", { fee_active_tvl_ratio: 0.2 })], CA);
+test("pickBestPool: `address` lama masih diterima sebagai fallback", () => {
+  const { pool_address, ...rest } = pool("X");
+  assert.equal(pickBestPool([{ ...rest, address: "OLD" }], CA).pool, "OLD");
+});
+
+test("pickBestPool: tidak ada pool X/SOL → null + alasan", () => {
+  const r = pickBestPool([pool("E", { token_y: { address: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" } })], CA);
   assert.equal(r.pool, null);
-  assert.match(r.reason, /lolos filter/);
+  assert.match(r.reason, /tidak ada pool DLMM X\/SOL/);
+});
+
+test("shouldLogCaSkip: maksimal 1x per CA per 10 menit", () => {
+  _clearCaCache();
+  assert.equal(shouldLogCaSkip(CA, 0), true);
+  assert.equal(shouldLogCaSkip(CA, 15_000), false);
+  assert.equal(shouldLogCaSkip(STONKS, 15_000), true);
+  assert.equal(shouldLogCaSkip(CA, 599_999), false);
+  assert.equal(shouldLogCaSkip(CA, 600_000), true);
 });
 
 test("resolveCaPool: cache 60s membatasi request", async () => {

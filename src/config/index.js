@@ -99,11 +99,6 @@ export function buildConfig(e = {}) {
     poolListFile: e.POOL_LIST_FILE || "pool.txt",
     // Baris CA (`<mint>,size,max,spot,ca`): pool dipilih saat entry = fee/active TVL 30m
     // tertinggi di antara pool DLMM token itu yang lolos filter di bawah.
-    caMinVolume30m: num(e.CA_POOL_MIN_VOLUME_30M, 2000),
-    caMinBaseFeePct: num(e.CA_POOL_MIN_BASE_FEE_PCT, 1),
-    caMinFeeActiveTvlPct: num(e.CA_POOL_MIN_FEE_ACTIVE_TVL_PCT, 1),
-    caMinBinStep: num(e.CA_POOL_MIN_BIN_STEP, 100),
-    caMaxBinStep: num(e.CA_POOL_MAX_BIN_STEP, 200),
     caCacheSec: Math.max(0, num(e.CA_POOL_CACHE_SEC, 60)),
     // Default untuk baris pool.txt yang hanya berisi alamat (tanpa ,size,max).
     defaultSizeSol: num(e.ENTRY_DEFAULT_SIZE_SOL, 0.1),
