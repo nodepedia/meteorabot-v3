@@ -147,14 +147,14 @@ export function evaluateSpotTokenBidaskTrigger({
   pos,
   tracked,
   cfg = config.spotTokenBidask,
-  spotMinBins = config.spotMinBins,
+  spotMinBins = config.spotMinBins, // eslint-disable-line no-unused-vars -- tidak lagi jadi gerbang (lihat di bawah)
   now = Date.now(),
 }) {
   if (!cfg?.enabled) {
     return { action: "none", reason: "disabled" };
   }
   if (!pos || pos.mode !== "spot") {
-    return { action: "none", reason: "not_spot" };
+    return { action: "none", reason: "not_spot", structural: true };
   }
 
   const lowerBin = Number.isFinite(Number(pos.lowerBin)) ? Number(pos.lowerBin) : Number(tracked?.lowerBin);
@@ -164,9 +164,11 @@ export function evaluateSpotTokenBidaskTrigger({
       ? upperBin - lowerBin
       : Number(pos.binSpan ?? tracked?.binSpan);
 
-  const minBins = Math.max(1, Number(spotMinBins) || 200);
-  if (!Number.isFinite(binSpan) || binSpan < minBins) {
-    return { action: "none", reason: "span_below_min", binSpan };
+  // Mode spot sudah ditetapkan saat entry (tracked.mode) — SPOT_MIN_BINS hanya untuk
+  // klasifikasi posisi on-chain yang belum dikenal, bukan gerbang rebalance.
+  // (Pool bin step besar: range -95%..+15% bisa < 200 bin, mis. 158 bin di bin step 200.)
+  if (!Number.isFinite(binSpan) || binSpan <= 0) {
+    return { action: "none", reason: "invalid_span", structural: true, binSpan };
   }
 
   const step = Math.max(1, Number(cfg.stepPct) || (config.spotTokenBidask?.stepPct ?? 10));
@@ -624,6 +626,15 @@ async function depositContinuousBidAsk({
 // Eksekusi rebalance posisi spot:
 // - Saat harga turun tiap step % bin (`action === "rebalance"`): tarik semua token di atas activeBin -> deposit ulang BidAsk mulus.
 // - Saat harga naik kembali +step% bin sejak rebalance (`action === "rebalance_sol_spot"`): tarik semua SOL di posisi -> catat jumlahnya -> deposit ulang Spot merata.
+// Rate-limit log skip struktural: 1x per posisi per intervalMs (default 10 menit).
+const structuralSkipLogAt = new Map();
+export function shouldLogStructuralSkip(position, now = Date.now(), intervalMs = 10 * 60 * 1000) {
+  const last = structuralSkipLogAt.get(position);
+  if (last !== undefined && now - last < intervalMs) return false;
+  structuralSkipLogAt.set(position, now);
+  return true;
+}
+
 export async function handleSpotTokenBidask(pos, deps = {}) {
   const cfg = deps.cfg || config.spotTokenBidask;
   const now = deps.now ? deps.now() : Date.now();
@@ -640,6 +651,9 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
   const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
 
   if (decision.action !== "rebalance" && decision.action !== "rebalance_sol_spot") {
+    if (decision.structural && pos?.mode === "spot" && pos?.position && shouldLogStructuralSkip(pos.position, now)) {
+      log.info(`Spot Rebalance ${pair}: dilewati (${decision.reason}, span ${decision.binSpan ?? "?"}) — log berikutnya ≥10 menit lagi`);
+    }
     return { triggered: false, reason: decision.reason, decision };
   }
 

@@ -24,6 +24,7 @@ const {
   extractSolSideLiquidity,
   computeSpotComposition,
   handleSpotTokenBidask,
+  shouldLogStructuralSkip,
 } = await import("../src/exit/spot-token-bidask.js");
 
 const POOL = Keypair.generate().publicKey.toBase58();
@@ -543,4 +544,42 @@ test("handleSpotTokenBidask: sisi Token rebalance ke BidAsk mulus (>70 bin pakai
   assert.equal(notifications[0].rebalanceType, "sol_spot");
   assert.equal(notifications[0].success, true);
   assert.equal(notifications[0].amountSol, 0.6);
+});
+
+// --- Span < SPOT_MIN_BINS: posisi spot yang sudah tracked tetap di-rebalance ---
+const CFG = { enabled: true, stepPct: 10, cooldownSec: 60, retry: 3 };
+const evalSpan = (lowerBin, upperBin, activeBin, lastPct = 0) =>
+  evaluateSpotTokenBidaskTrigger({
+    pos: { position: "P", pool: "Q", mode: "spot", lowerBin, upperBin, activeBin },
+    tracked: { lastSpotTokenBidaskPct: lastPct },
+    cfg: CFG,
+    spotMinBins: 200,
+    now: 1_000_000,
+  });
+
+test("Impeach-SOL nyata: 158 bin (bin step 200) di 22.8% bin token → rebalance step 20", () => {
+  const d = evalSpan(-387, -229, -265);
+  assert.equal(d.action, "rebalance");
+  assert.equal(d.stepLevel, 20);
+  assert.ok(Math.abs(d.tokenBinPct - 22.78) < 0.01);
+  // Setelah step 20 tercatat, 22.8% belum cukup untuk step 30.
+  assert.equal(evalSpan(-387, -229, -265, 20).action, "none");
+});
+
+test("bin step besar (span sempit ~80 bin) & kecil (span lebar ~330 bin) sama-sama jalan", () => {
+  const narrow = evalSpan(0, 80, 64); // 16/80 = 20%
+  assert.equal(narrow.action, "rebalance");
+  assert.equal(narrow.stepLevel, 20);
+  const wide = evalSpan(0, 330, 297); // 33/330 = 10%
+  assert.equal(wide.action, "rebalance");
+  assert.equal(wide.stepLevel, 10);
+});
+
+test("span tidak valid → skip struktural; log skip dibatasi 1x/posisi/10 menit", () => {
+  const d = evaluateSpotTokenBidaskTrigger({ pos: { mode: "spot", activeBin: 5 }, tracked: {}, cfg: CFG });
+  assert.equal(d.reason, "invalid_span");
+  assert.equal(d.structural, true);
+  assert.equal(shouldLogStructuralSkip("X", 0), true);
+  assert.equal(shouldLogStructuralSkip("X", 599_999), false);
+  assert.equal(shouldLogStructuralSkip("X", 600_000), true);
 });
