@@ -465,7 +465,7 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
   if (config.dryRun) {
     if (!dryRunNoted.has(pool)) {
       dryRunNoted.add(pool);
-      log.info(`[DRY RUN] Would enter SPOT ${pair} immediately — ${sizeSol} SOL (-95%..+15% SOL 1-sisi)`);
+      log.info(`[DRY RUN] Would enter SPOT ${pair} immediately — ${sizeSol} SOL (-95/-90/-85/-80%..+15% SOL 1-sisi)`);
     }
     return null;
   }
@@ -485,7 +485,7 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
 
       if (result.skipped && result.redflagNonRefundable) {
         log.warn(
-          `Pool ${pool.slice(0, 8)} (${pair}) REDFLAG non-refundable rent pada -95% dan -90% — skip & nonaktifkan pool`
+          `Pool ${pool.slice(0, 8)} (${pair}) REDFLAG non-refundable rent pada tangga -95/-90/-85/-80% — skip & nonaktifkan pool`
         );
         // Alert dulu supaya gagal tulis pool.txt tidak menelan notifikasi.
         const notifyRedflag = deps.notifySpotNonRefundableSkipped || tg.notifySpotNonRefundableSkipped;
@@ -494,11 +494,12 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
           pair: result.pair || pair,
           cost95Sol: result.cost95Sol,
           cost90Sol: result.cost90Sol,
+          costsByPct: result.costsByPct,
           sizeSol,
           reason: result.reason,
           context: "Entry Spot Instan",
         });
-        deactivatePool(pool, "redflag non-refundable rent (-95% & -90%)");
+        deactivatePool(pool, "redflag non-refundable rent (-95/-90/-85/-80%)");
         return result;
       }
 

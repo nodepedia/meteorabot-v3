@@ -328,9 +328,29 @@ export function notifyStatus(positions) {
   if (msg) send(msg);
 }
 
-export async function notifySpotNonRefundableSkipped({ pool, pair, cost95Sol, cost90Sol, sizeSol, reason, context }) {
-  const c95 = Number.isFinite(Number(cost95Sol)) ? `${Number(cost95Sol).toFixed(6)} SOL` : "-";
-  const c90 = Number.isFinite(Number(cost90Sol)) ? `${Number(cost90Sol).toFixed(6)} SOL` : "-";
+export async function notifySpotNonRefundableSkipped({
+  pool,
+  pair,
+  cost95Sol,
+  cost90Sol,
+  costsByPct,
+  sizeSol,
+  reason,
+  context,
+}) {
+  let rentLine;
+  if (costsByPct && typeof costsByPct === "object" && Object.keys(costsByPct).length > 0) {
+    rentLine = Object.entries(costsByPct)
+      .map(([pct, cost]) => {
+        const n = Number(cost);
+        return `${pct}%: ${Number.isFinite(n) ? n.toFixed(6) : "-"} SOL`;
+      })
+      .join(" | ");
+  } else {
+    const c95 = Number.isFinite(Number(cost95Sol)) ? `${Number(cost95Sol).toFixed(6)} SOL` : "-";
+    const c90 = Number.isFinite(Number(cost90Sol)) ? `${Number(cost90Sol).toFixed(6)} SOL` : "-";
+    rentLine = `-95%: ${c95} | -90%: ${c90}`;
+  }
   const size = Number.isFinite(Number(sizeSol)) ? `${Number(sizeSol)} SOL` : null;
   const lines = [
     `🚨 REDFLAG NON-REFUNDABLE RENT — SKIP SPOT`,
@@ -338,7 +358,7 @@ export async function notifySpotNonRefundableSkipped({ pool, pair, cost95Sol, co
     pool ? `Pool: ${pool}` : null,
     context ? `Tahap: ${context}` : null,
     size ? `Modal: ${size}` : null,
-    `Rent -95%: ${c95} | Fallback -90%: ${c90}`,
+    `Rent: ${rentLine}`,
     reason ? `Alasan: ${reason}` : null,
     `Pool di-skip & dinonaktifkan di pool.txt.`,
   ].filter(Boolean);

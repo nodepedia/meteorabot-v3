@@ -154,8 +154,8 @@ export function canSpotReenter(pos, reason) {
  *   (skor efisiensi TVL + 24h fees * 5 + cumFees, kepadatan 31/31 bin SOL >= 1 SOL, LP >= 20, bebas non-refundable rent).
  * - Menggunakan entrySizeSol dari posisi sebelumnya (mis. 1x / 1.25x / 1.5x dari Runner Spot),
  *   atau fallback ke SPOT_REENTRY_SIZE_SOL.
- * - Bila pool.lbPair.binStep tersedia: buka range -95%..+15% (fallback -90%..+15% bila kena
- *   non-refundable rent; bila -90% masih kena non-refundable -> redflag skip + alert).
+ * - Bila pool.lbPair.binStep tersedia: buka range tangga -95/-90/-85/-80%..+15% bila kena
+ *   non-refundable rent; bila seluruh tangga masih kena -> redflag skip + alert).
  *   Deposit SOL satu sisi hanya di [minBinId .. activeBinId], bin di atas activeBin kosong.
  * - Counter `spotReentryCount` dan `entrySizeSol` diteruskan ke posisi baru (maks SPOT_REENTRY_MAX).
  * - Cooldown antar loop per pool dijaga sesuai SPOT_REENTRY_COOLDOWN_SEC (120s normal / 60s saat vol 5m > $100k).
@@ -351,9 +351,6 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
               pool,
               activeBinId: Number(activeBin.binId),
               binStep: Number(pool.lbPair.binStep),
-              lowerPctPrimary: -95,
-              lowerPctFallback: -90,
-              upperPct: 15,
               skipNonRefundable: cfg.skipNonRefundable,
               maxNonRefundableSol: cfg.maxNonRefundableSol,
             });
@@ -367,6 +364,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
           pair,
           cost95Sol: rangeRes.costPrimarySol,
           cost90Sol: rangeRes.costFallbackSol,
+          costsByPct: rangeRes.costsByPct,
           context: `Re-entry OOR Kanan #${nextCount}/${cfg.maxReentries}`,
         });
         return await fail(rangeRes.reason);

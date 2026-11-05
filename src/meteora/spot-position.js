@@ -43,10 +43,15 @@ export function exceedsNonRefundable(cost, maxSol) {
   return cost > cap;
 }
 
+/** Tangga sisi SOL untuk Spot: coba -95% lalu mundur 5pp sampai -80%. Sisi token tetap +15%. */
+export const SPOT_LOWER_PCT_LADDER = Object.freeze([-95, -90, -85, -80]);
+export const SPOT_UPPER_PCT = 15;
+
 /**
- * Tentukan rentang Spot [-95% .. +15%] dengan fallback [-90% .. +15%] bila kena
- * biaya sewa non-refundable (binArrayCost / bitmapExtensionCost).
- * Bila -90% masih kena non-refundable rent, kembalikan { ok: false, redflagNonRefundable: true }.
+ * Tentukan rentang Spot dengan tangga sisi SOL [-95, -90, -85, -80] .. +15%.
+ * Tiap step yang kena non-refundable rent (binArrayCost / bitmapExtensionCost)
+ * diganti step berikutnya yang lebih sempit. Bila seluruh tangga masih kena,
+ * kembalikan { ok: false, redflagNonRefundable: true }.
  * Deposit SOL satu sisi hanya masuk ke [minBinId .. activeBinId], sehingga
  * (activeBinId + 1 .. maxBinId] (+15% ke atas) menjadi bin kosong untuk ruang rebalance.
  */
@@ -54,9 +59,11 @@ export async function resolveSpotRangeWithRentCheck({
   pool,
   activeBinId,
   binStep,
-  lowerPctPrimary = -95,
-  lowerPctFallback = -90,
-  upperPct = 15,
+  lowerPctLadder = SPOT_LOWER_PCT_LADDER,
+  // Kompat: caller lama boleh kirim primary/fallback; diabaikan bila ladder ada.
+  lowerPctPrimary,
+  lowerPctFallback,
+  upperPct = SPOT_UPPER_PCT,
   skipNonRefundable = true,
   maxNonRefundableSol = 0,
 }) {
@@ -64,71 +71,76 @@ export async function resolveSpotRangeWithRentCheck({
   const binsAbove = calcBinsForPricePct(step, upperPct);
   const maxBinId = activeBinId + binsAbove;
 
-  const binsBelowPrimary = calcBinsForPricePct(step, lowerPctPrimary);
-  const minBinId95 = activeBinId - binsBelowPrimary;
-
-  let quote95 = null;
-  if (typeof pool?.quoteCreatePosition === "function") {
-    quote95 = await pool.quoteCreatePosition({
-      strategy: { minBinId: minBinId95, maxBinId },
-    });
+  let ladder;
+  if (Array.isArray(lowerPctLadder) && lowerPctLadder.length > 0) {
+    ladder = lowerPctLadder
+      .map(Number)
+      .filter((p) => Number.isFinite(p) && p > -100 && p < 0);
+  } else if (Number.isFinite(Number(lowerPctPrimary))) {
+    ladder = [Number(lowerPctPrimary)];
+    if (Number.isFinite(Number(lowerPctFallback)) && Number(lowerPctFallback) !== Number(lowerPctPrimary)) {
+      ladder.push(Number(lowerPctFallback));
+    }
+  } else {
+    ladder = [...SPOT_LOWER_PCT_LADDER];
   }
-  const cost95 = nonRefundableCost(quote95);
+  if (ladder.length === 0) ladder = [...SPOT_LOWER_PCT_LADDER];
 
-  if (!skipNonRefundable || !exceedsNonRefundable(cost95, maxNonRefundableSol)) {
-    return {
-      ok: true,
-      minBinId: minBinId95,
-      maxBinId,
-      depositMinBinId: minBinId95,
-      depositMaxBinId: activeBinId,
-      lowerPctUsed: lowerPctPrimary,
-      upperPctUsed: upperPct,
-      usedFallback: false,
-      nonRefundableSol: cost95,
-      quote: quote95,
-    };
+  const costsByPct = {};
+  let firstMinBinId = null;
+
+  for (let i = 0; i < ladder.length; i++) {
+    const lowerPct = ladder[i];
+    const binsBelow = calcBinsForPricePct(step, lowerPct);
+    const minBinId = activeBinId - binsBelow;
+    if (i === 0) firstMinBinId = minBinId;
+
+    let quote = null;
+    if (typeof pool?.quoteCreatePosition === "function") {
+      quote = await pool.quoteCreatePosition({
+        strategy: { minBinId, maxBinId },
+      });
+    }
+    const cost = nonRefundableCost(quote);
+    costsByPct[lowerPct] = cost;
+
+    const acceptWithoutCheck = i === 0 && !skipNonRefundable;
+    if (acceptWithoutCheck || !exceedsNonRefundable(cost, maxNonRefundableSol)) {
+      return {
+        ok: true,
+        minBinId,
+        maxBinId,
+        depositMinBinId: minBinId,
+        depositMaxBinId: activeBinId,
+        lowerPctUsed: lowerPct,
+        upperPctUsed: upperPct,
+        usedFallback: i > 0,
+        nonRefundableSol: cost,
+        costsByPct,
+        costPrimarySol: costsByPct[ladder[0]],
+        costFallbackSol: i > 0 ? cost : undefined,
+        quote,
+      };
+    }
+
+    if (i < ladder.length - 1) {
+      log.warn(
+        `Spot range ${lowerPct}%..${upperPct}% ([${minBinId}..${maxBinId}]) kena non-refundable rent ${cost.toFixed(6)} SOL — coba fallback ${ladder[i + 1]}%..${upperPct}%`
+      );
+    }
   }
 
-  log.warn(
-    `Spot range ${lowerPctPrimary}%..${upperPct}% ([${minBinId95}..${maxBinId}]) kena non-refundable rent ${cost95.toFixed(6)} SOL — coba fallback ${lowerPctFallback}%..${upperPct}%`
-  );
-
-  const binsBelowFallback = calcBinsForPricePct(step, lowerPctFallback);
-  const minBinId90 = activeBinId - binsBelowFallback;
-
-  let quote90 = null;
-  if (typeof pool?.quoteCreatePosition === "function") {
-    quote90 = await pool.quoteCreatePosition({
-      strategy: { minBinId: minBinId90, maxBinId },
-    });
-  }
-  const cost90 = nonRefundableCost(quote90);
-
-  if (!exceedsNonRefundable(cost90, maxNonRefundableSol)) {
-    return {
-      ok: true,
-      minBinId: minBinId90,
-      maxBinId,
-      depositMinBinId: minBinId90,
-      depositMaxBinId: activeBinId,
-      lowerPctUsed: lowerPctFallback,
-      upperPctUsed: upperPct,
-      usedFallback: true,
-      nonRefundableSol: cost90,
-      costPrimarySol: cost95,
-      quote: quote90,
-    };
-  }
-
-  const reason = `non-refundable rent masih muncul pada ${lowerPctPrimary}% (${cost95.toFixed(6)} SOL) dan fallback ${lowerPctFallback}% (${cost90.toFixed(6)} SOL) > batas ${maxNonRefundableSol} SOL`;
+  const costParts = ladder
+    .map((p) => `${p}% (${Number(costsByPct[p] || 0).toFixed(6)} SOL)`)
+    .join(", ");
+  const reason = `non-refundable rent masih muncul pada ${costParts} > batas ${maxNonRefundableSol} SOL`;
   return {
     ok: false,
     redflagNonRefundable: true,
-    costPrimarySol: cost95,
-    costFallbackSol: cost90,
-    minBinId95,
-    minBinId90,
+    costsByPct,
+    costPrimarySol: costsByPct[ladder[0]],
+    costFallbackSol: costsByPct[ladder[ladder.length - 1]],
+    minBinId95: firstMinBinId,
     maxBinId,
     reason,
   };
@@ -136,7 +148,7 @@ export async function resolveSpotRangeWithRentCheck({
 
 /**
  * Buka posisi Spot SOL satu sisi:
- *  - Rentang posisi on-chain penuh: [minBinId .. maxBinId] (-95% atau -90% s/d +15%)
+ *  - Rentang posisi on-chain penuh: [minBinId .. maxBinId] (tangga -95/-90/-85/-80% s/d +15%)
  *  - Deposit SOL satu sisi hanya di [depositMinBinId .. depositMaxBinId] ([minBinId .. activeBinId])
  *  - Bin (activeBinId + 1 .. maxBinId] dibiarkan kosong.
  * Bila pool mendukung createExtendedEmptyPosition dan rentang > 70 bin (atau ada bin kosong di atas),
@@ -373,9 +385,6 @@ export async function auditSpotPoolCandidate({
         pool,
         activeBinId,
         binStep,
-        lowerPctPrimary: -95,
-        lowerPctFallback: -90,
-        upperPct: 15,
         skipNonRefundable,
         maxNonRefundableSol,
       });

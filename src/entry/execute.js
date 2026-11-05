@@ -255,7 +255,7 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
   };
 }
 
-// Entry instan posisi Spot satu sisi SOL (-95%..+15%, fallback -90%..+15% bila kena non-refundable rent).
+// Entry instan posisi Spot satu sisi SOL (tangga -95/-90/-85/-80%..+15% bila kena non-refundable rent).
 // Deposit SOL hanya masuk ke [minBinId .. activeBinId], bin (activeBinId+1 .. maxBinId] dibiarkan kosong.
 export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
   const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;
@@ -305,9 +305,6 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
       pool,
       activeBinId,
       binStep,
-      lowerPctPrimary: -95,
-      lowerPctFallback: -90,
-      upperPct: 15,
       skipNonRefundable,
       maxNonRefundableSol,
     });
@@ -321,6 +318,7 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
         redflagNonRefundable: Boolean(rangeRes.redflagNonRefundable),
         cost95Sol: rangeRes.costPrimarySol,
         cost90Sol: rangeRes.costFallbackSol,
+        costsByPct: rangeRes.costsByPct,
         reason: rangeRes.reason,
         baseMint,
         pair,
@@ -338,7 +336,7 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
     } = rangeRes;
 
     log.info(
-      `Executing SPOT entry on pool ${poolAddress.slice(0, 8)}... | size=${sizeSol} SOL | range=${lowerPctUsed}%..+${upperPctUsed}% ([${minBinId}..${maxBinId}], deposit SOL [${depositMinBinId}..${depositMaxBinId}])${usedFallback ? " [fallback -90%]" : ""}`
+      `Executing SPOT entry on pool ${poolAddress.slice(0, 8)}... | size=${sizeSol} SOL | range=${lowerPctUsed}%..+${upperPctUsed}% ([${minBinId}..${maxBinId}], deposit SOL [${depositMinBinId}..${depositMaxBinId}])${usedFallback ? ` [fallback ${lowerPctUsed}%]` : ""}`
     );
 
     if (dryRun) {

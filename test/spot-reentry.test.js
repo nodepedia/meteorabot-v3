@@ -114,9 +114,11 @@ test("canSpotReenter membaca binSpan + counter dari state", () => {
   assert.equal(canSpotReenter(pos, "oor_kanan"), false);
 });
 
-test("calcBinsForPricePct: hitung bin untuk -95%, -90%, dan +15% (binStep=100)", () => {
+test("calcBinsForPricePct: hitung bin untuk -95%, -90%, -85%, -80%, dan +15% (binStep=100)", () => {
   assert.equal(calcBinsForPricePct(100, -95), 301);
   assert.equal(calcBinsForPricePct(100, -90), 231);
+  assert.equal(calcBinsForPricePct(100, -85), 191);
+  assert.equal(calcBinsForPricePct(100, -80), 162);
   assert.equal(calcBinsForPricePct(100, 15), 14);
 });
 
@@ -135,9 +137,6 @@ test("resolveSpotRangeWithRentCheck: -95% aman -> pakai -95%..+15%, deposit SOL 
     pool,
     activeBinId: 1000,
     binStep: 100,
-    lowerPctPrimary: -95,
-    lowerPctFallback: -90,
-    upperPct: 15,
     skipNonRefundable: true,
     maxNonRefundableSol: 0,
   });
@@ -180,9 +179,65 @@ test("resolveSpotRangeWithRentCheck: -95% kena non-refundable -> fallback ke -90
   assert.equal(res.depositMaxBinId, 1000);
 });
 
-test("resolveSpotRangeWithRentCheck: -95% dan -90% sama-sama kena non-refundable -> redflag skip", async () => {
+test("resolveSpotRangeWithRentCheck: -95% & -90% kena -> fallback ke -85%..+15%", async () => {
+  const calls = [];
+  // minBin: -95=699, -90=769, -85=809, -80=838
+  const rentMinBins = new Set([699, 769]);
   const pool = {
-    async quoteCreatePosition() {
+    async quoteCreatePosition({ strategy }) {
+      calls.push(strategy.minBinId);
+      if (rentMinBins.has(strategy.minBinId)) {
+        return { binArrayCost: 0.07143744, bitmapExtensionCost: 0 };
+      }
+      return { binArrayCost: 0, bitmapExtensionCost: 0 };
+    },
+  };
+  const res = await resolveSpotRangeWithRentCheck({
+    pool,
+    activeBinId: 1000,
+    binStep: 100,
+  });
+
+  assert.deepEqual(calls, [699, 769, 809]);
+  assert.equal(res.ok, true);
+  assert.equal(res.usedFallback, true);
+  assert.equal(res.lowerPctUsed, -85);
+  assert.equal(res.minBinId, 809); // 1000 - 191
+  assert.equal(res.maxBinId, 1014);
+  assert.equal(res.depositMinBinId, 809);
+  assert.equal(res.depositMaxBinId, 1000);
+});
+
+test("resolveSpotRangeWithRentCheck: -95/-90/-85 kena -> fallback ke -80%..+15%", async () => {
+  const calls = [];
+  const rentMinBins = new Set([699, 769, 809]);
+  const pool = {
+    async quoteCreatePosition({ strategy }) {
+      calls.push(strategy.minBinId);
+      if (rentMinBins.has(strategy.minBinId)) {
+        return { binArrayCost: 0.08, bitmapExtensionCost: 0 };
+      }
+      return { binArrayCost: 0, bitmapExtensionCost: 0 };
+    },
+  };
+  const res = await resolveSpotRangeWithRentCheck({
+    pool,
+    activeBinId: 1000,
+    binStep: 100,
+  });
+
+  assert.deepEqual(calls, [699, 769, 809, 838]);
+  assert.equal(res.ok, true);
+  assert.equal(res.lowerPctUsed, -80);
+  assert.equal(res.minBinId, 838); // 1000 - 162
+  assert.equal(res.maxBinId, 1014);
+});
+
+test("resolveSpotRangeWithRentCheck: seluruh tangga -95/-90/-85/-80 kena non-refundable -> redflag skip", async () => {
+  const calls = [];
+  const pool = {
+    async quoteCreatePosition({ strategy }) {
+      calls.push(strategy.minBinId);
       return { binArrayCost: 0.07143744, bitmapExtensionCost: 0 };
     },
   };
@@ -192,10 +247,18 @@ test("resolveSpotRangeWithRentCheck: -95% dan -90% sama-sama kena non-refundable
     binStep: 100,
   });
 
+  assert.deepEqual(calls, [699, 769, 809, 838]);
   assert.equal(res.ok, false);
   assert.equal(res.redflagNonRefundable, true);
   assert.equal(res.costPrimarySol, 0.07143744);
   assert.equal(res.costFallbackSol, 0.07143744);
+  assert.deepEqual(res.costsByPct, {
+    "-95": 0.07143744,
+    "-90": 0.07143744,
+    "-85": 0.07143744,
+    "-80": 0.07143744,
+  });
+  assert.match(res.reason, /-95%.*-90%.*-85%.*-80%/);
 });
 
 test("openSpotSolPosition: createExtendedEmptyPosition [min..max] lalu deposit SOL hanya di [min..activeBin] per chunk <= 70 bin", async () => {
@@ -254,7 +317,7 @@ test("openSpotSolPosition: createExtendedEmptyPosition [min..max] lalu deposit S
   assert.ok(addedChunks.every((c) => c.x === "0"));
 });
 
-test("executeSpotEntry: buka posisi Spot instan, simpan entrySizeSol & range [-95%..+15%], atau redflag skip bila -90% non-refundable", async () => {
+test("executeSpotEntry: buka posisi Spot instan, simpan entrySizeSol & range [-95%..+15%], atau redflag skip bila seluruh tangga non-refundable", async () => {
   resetState();
   const wallet = Keypair.generate();
   const addedChunks = [];
@@ -309,7 +372,7 @@ test("executeSpotEntry: buka posisi Spot instan, simpan entrySizeSol & range [-9
   assert.equal(getEntrySizeSol(entryRes.position), 0.25);
   assert.equal(getTrackedPosition(entryRes.position).binSpan, 1014 - 769);
 
-  // Test redflag skip ketika -95% dan -90% sama-sama kena non-refundable rent
+  // Test redflag skip ketika seluruh tangga -95/-90/-85/-80 kena non-refundable rent
   resetState();
   const redflagPool = {
     lbPair: { binStep: 100 },
@@ -412,7 +475,7 @@ test("handleSpotOorKananReentry: warisi entrySizeSol, pakai range -95%..+15%, da
   }
 });
 
-test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langsung ditandai # di pool.txt + alert Telegram 1x", async () => {
+test("startSpotEntry: bila redflag non-refundable rent (tangga -95/-90/-85/-80), pool langsung ditandai # di pool.txt + alert Telegram 1x", async () => {
   resetState();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spot-redflag-"));
   const poolFile = path.join(dir, "pool.txt");
@@ -441,8 +504,9 @@ test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langs
         redflagNonRefundable: true,
         cost95Sol: 0.07143744,
         cost90Sol: 0.07143744,
+        costsByPct: { "-95": 0.07143744, "-90": 0.07143744, "-85": 0.07143744, "-80": 0.07143744 },
         pair: "RUN-SOL",
-        reason: "non-refundable rent masih muncul pada -95% dan fallback -90%",
+        reason: "non-refundable rent masih muncul pada -95%, -90%, -85%, -80%",
       }),
       {
         notifySpotNonRefundableSkipped: async (payload) => {
@@ -460,6 +524,12 @@ test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langs
     assert.equal(alerts[0].sizeSol, 0.25);
     assert.equal(alerts[0].cost95Sol, 0.07143744);
     assert.equal(alerts[0].cost90Sol, 0.07143744);
+    assert.deepEqual(alerts[0].costsByPct, {
+      "-95": 0.07143744,
+      "-90": 0.07143744,
+      "-85": 0.07143744,
+      "-80": 0.07143744,
+    });
     assert.equal(alerts[0].context, "Entry Spot Instan");
   } finally {
     config.dryRun = savedDryRun;
