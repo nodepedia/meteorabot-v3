@@ -74,9 +74,10 @@ export function buildConfig(e = {}) {
   // dengan jumlah bin ke bawah sama seperti posisi yang barusan ditutup.
   // Default cooldown otomatis mengikuti spot.oorKananMinutes * 60 (120s) dan
   // spot.oorKananFastMinutes * 60 (60s) agar single source of truth terjaga.
+  // Size re-entry = entrySizeSol posisi lama, atau size entry di pool.txt
+  // (multiplier × ENTRY_DEFAULT_SIZE_SOL). SPOT_REENTRY_SIZE_SOL dihapus.
   const spotReentry = {
     enabled: bool(e.SPOT_REENTRY_ENABLED, true),
-    sizeSol: Math.max(0, num(e.SPOT_REENTRY_SIZE_SOL, 1)),
     maxReentries: Math.max(0, Math.floor(num(e.SPOT_REENTRY_MAX, 50))),
     cooldownSec: Math.max(0, num(e.SPOT_REENTRY_COOLDOWN_SEC, spot.oorKananMinutes * 60)),
     fastCooldownSec: Math.max(0, num(e.SPOT_REENTRY_FAST_COOLDOWN_SEC, spot.oorKananFastMinutes * 60)),

@@ -156,3 +156,37 @@ export function replacePoolInList(oldPoolAddress, newPoolAddress) {
     return false;
   }
 }
+
+// Cari size entry terkonfigurasi untuk pool (atau alias CA-nya) dari pool.txt.
+// Dipakai sebagai fallback re-entry / adopsi posisi on-chain bila entrySizeSol hilang.
+// Mencakup baris aktif dan baris yang sudah diberi '#' (arsip).
+export function lookupConfiguredEntrySizeSol(poolAddress, opts = {}) {
+  if (!poolAddress) return null;
+  const alias = opts.alias !== undefined ? opts.alias : getPoolAlias(poolAddress);
+  const targets = new Set([poolAddress, alias].filter(Boolean));
+  const file = opts.filePath || poolListPath();
+  let raw = opts.raw;
+  if (raw == null) {
+    try {
+      if (!fs.existsSync(file)) return null;
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  const defaultSize = Number(config.entry.defaultSizeSol);
+  for (const line of String(raw || "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const body = trimmed.startsWith("#") ? trimmed.replace(/^#+\s*/, "") : trimmed;
+    if (!body || body.startsWith("#")) continue;
+    const [address, sizeRaw, , modeRaw] = body.split(",").map((s) => s.trim());
+    if (!targets.has(address)) continue;
+    const secondIsSpot = Boolean(sizeRaw && sizeRaw.toLowerCase() === "spot" && !modeRaw);
+    const sizeSol = secondIsSpot ? defaultSize : resolveSizeSol(sizeRaw, defaultSize);
+    if (Number.isFinite(sizeSol) && sizeSol > 0) return Number(sizeSol.toFixed(6));
+  }
+  if (Number.isFinite(defaultSize) && defaultSize > 0) return Number(defaultSize.toFixed(6));
+  return null;
+}
+

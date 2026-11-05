@@ -15,6 +15,8 @@ import {
   registerMissedCycle,
   resetMissedCycle,
   markClosedNotDetected,
+  setEntrySizeSol,
+  getEntrySizeSol,
 } from "../state/positions.js";
 import { recordPnlSnapshot } from "../state/history.js";
 import { armIndicatorTrailing, clearTrailingState } from "../state/trailing.js";
@@ -35,6 +37,7 @@ import {
   recordAction,
   protectMint,
   releaseMint,
+  consumeSpotEntryAttempt,
 } from "../entry/runtime.js";
 import { enqueuePendingSwap, processPendingSwaps } from "./pending-swaps.js";
 import { getWatchSnapshot, deactivatePool } from "../entry/index.js";
@@ -45,6 +48,35 @@ import { handleClose } from "./close.js";
 import { handleSpotOorKiri } from "./spot-fallback.js";
 import { handleSpotOorKananReentry, canSpotReenter } from "./spot-reentry.js";
 import { handleSpotTokenBidask } from "./spot-token-bidask.js";
+import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
+
+
+/**
+ * Pulihkan entrySizeSol untuk posisi spot yang baru diadopsi dari on-chain
+ * (entry error di log tapi tx mendarat). Urutan: attempt terbaru → deposit
+ * on-chain → size terkonfigurasi di pool.txt → ENTRY_DEFAULT_SIZE_SOL.
+ */
+export function reconcileAdoptedSpotEntrySize(pos) {
+  if (!pos?.position) return null;
+  if (getEntrySizeSol(pos.position) > 0) return getEntrySizeSol(pos.position);
+
+  const attempt = consumeSpotEntryAttempt({
+    pool: pos.pool,
+    mint: pos.baseMint,
+    lowerBin: pos.lowerBin,
+    upperBin: pos.upperBin,
+    positionPubkey: pos.position,
+  });
+  if (attempt?.sizeSol > 0) return attempt.sizeSol;
+
+  const onchain = Number(pos.entrySolAmount);
+  if (Number.isFinite(onchain) && onchain > 0) return Number(onchain.toFixed(6));
+
+  const configured = lookupConfiguredEntrySizeSol(pos.pool);
+  if (Number.isFinite(configured) && configured > 0) return configured;
+
+  return null;
+}
 
 let cycleCount = 0;
 let lastStatusSent = 0;
@@ -248,10 +280,28 @@ export async function mainLoop(opts = {}) {
         const mode = classifyMode(pos);
         trackPosition(pos.position, pos.pool, pos.pair, pos.baseMint, pos.collectFeeMode, mode);
         tracked = getTrackedPosition(pos.position);
-        log.info(`📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
-        recordAction(`ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+        // Spot yang mendarat tanpa tracking entry (tx error di log): pulihkan size.
+        if ((tracked?.mode || mode) === "spot") {
+          const recoveredSize = reconcileAdoptedSpotEntrySize(pos);
+          if (recoveredSize > 0) {
+            setEntrySizeSol(pos.position, recoveredSize);
+            tracked = getTrackedPosition(pos.position);
+            log.info(
+              `📌 ENTRY ${pairLabel} — posisi spot aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin), size dipulihkan ${recoveredSize} SOL`
+            );
+            recordAction(
+              `ENTRY ${pairLabel} — posisi spot terdeteksi on-chain, size ${recoveredSize} SOL`
+            );
+          } else {
+            log.info(`📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+            recordAction(`ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+          }
+        } else {
+          log.info(`📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+          recordAction(`ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+        }
         log.debug(
-          `[detail] ${pairLabel}: mode=${tracked?.mode || mode} (entry base=${pos.entryBaseAmount ?? "?"} sol=${pos.entrySolAmount ?? "?"} span=${pos.binSpan})`
+          `[detail] ${pairLabel}: mode=${tracked?.mode || mode} (entry base=${pos.entryBaseAmount ?? "?"} sol=${pos.entrySolAmount ?? "?"} span=${pos.binSpan} size=${tracked?.entrySizeSol ?? "?"})`
         );
       } else {
         updateCollectFeeMode(pos.position, pos.collectFeeMode);

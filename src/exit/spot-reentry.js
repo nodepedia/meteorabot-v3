@@ -21,7 +21,7 @@ import {
   selectMostEfficientSpotPool,
 } from "../meteora/spot-position.js";
 import { getPoolInfo } from "../entry/pool-info.js";
-import { replacePoolInList, commentPoolInList } from "../entry/pool-list.js";
+import { replacePoolInList, commentPoolInList, lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
 import {
   trackPosition,
   getTrackedPosition,
@@ -129,6 +129,20 @@ export function shouldReenter({ mode, reason, span, count, cfg }) {
 }
 
 /**
+ * Size re-entry: warisi entrySizeSol posisi lama; bila hilang, pakai size
+ * terkonfigurasi di pool.txt (multiplier × ENTRY_DEFAULT_SIZE_SOL), lalu
+ * default entry. Bukan SPOT_REENTRY_SIZE_SOL.
+ */
+export function resolveSpotReentrySizeSol(tracked, poolAddress) {
+  const fromTracked = Number(tracked?.entrySizeSol);
+  if (Number.isFinite(fromTracked) && fromTracked > 0) return fromTracked;
+  const fromPool = lookupConfiguredEntrySizeSol(poolAddress || tracked?.pool);
+  if (Number.isFinite(fromPool) && fromPool > 0) return fromPool;
+  const fallback = Number(config.entry?.defaultSizeSol);
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+}
+
+/**
  * Cek cepat sebelum close: apakah posisi ini akan di-re-enter setelah close?
  * Dipakai agar handleClose tidak menandai pool `#` di pool.txt saat kita
  * justru mau langsung membuka posisi baru di pool yang sama.
@@ -137,7 +151,7 @@ export function canSpotReenter(pos, reason) {
   const tracked = getTrackedPosition(pos.position);
   const span = tracked?.binSpan || pos.binSpan || 0;
   const count = getSpotReentryCount(pos.position);
-  const sizeSol = tracked?.entrySizeSol > 0 ? tracked.entrySizeSol : config.spotReentry.sizeSol;
+  const sizeSol = resolveSpotReentrySizeSol(tracked, pos.pool);
   const cfg = { ...config.spotReentry, sizeSol };
   return shouldReenter({
     mode: pos.mode,
@@ -153,7 +167,7 @@ export function canSpotReenter(pos, reason) {
  * - Mengevaluasi ulang seluruh pool DLMM TOKEN/SOL untuk baseMint dan memilih pool paling efisien
  *   (skor efisiensi TVL + 24h fees * 5 + cumFees, kepadatan 31/31 bin SOL >= 1 SOL, LP >= 20, bebas non-refundable rent).
  * - Menggunakan entrySizeSol dari posisi sebelumnya (mis. 1x / 1.25x / 1.5x dari Runner Spot),
- *   atau fallback ke SPOT_REENTRY_SIZE_SOL.
+ *   atau fallback ke size entry di pool.txt (multiplier × ENTRY_DEFAULT_SIZE_SOL).
  * - Bila pool.lbPair.binStep tersedia: buka range tangga -95/-90/-85/-80%..+15% bila kena
  *   non-refundable rent; bila seluruh tangga masih kena -> redflag skip + alert).
  *   Deposit SOL satu sisi hanya di [minBinId .. activeBinId], bin di atas activeBin kosong.
@@ -180,7 +194,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
   const span = tracked?.binSpan || pos.binSpan || 0;
   const prevCount = getSpotReentryCount(pos.position);
   const nextCount = prevCount + 1;
-  const sizeSol = tracked?.entrySizeSol > 0 ? tracked.entrySizeSol : cfg.sizeSol;
+  const sizeSol = resolveSpotReentrySizeSol(tracked, pos.pool);
 
   let targetPoolAddress = pos.pool;
   let switchedPool = false;

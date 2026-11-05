@@ -14,7 +14,7 @@ import { getPoolInfo } from "./pool-info.js";
 import { guardPoolPrice, poolPriceSolPerToken } from "./price-guard.js";
 import { trackPosition, setEntryPoolPrice, recordTrackedRange, setEntrySizeSol, getOpenPositionsForMint } from "../state/positions.js";
 import { resolveSpotRangeWithRentCheck, openSpotSolPosition } from "../meteora/spot-position.js";
-import { incrementEntryUsage, getEntryUsage, recordAction } from "./runtime.js";
+import { incrementEntryUsage, getEntryUsage, recordAction, recordSpotEntryAttempt, consumeSpotEntryAttempt } from "./runtime.js";
 
 const STRATEGY_ENUM = { spot: "Spot", curve: "Curve", bid_ask: "BidAsk" };
 
@@ -378,40 +378,88 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
     const { StrategyType } = await getDlmmSdkFn();
     const strategyType = StrategyType?.Spot ?? 0;
     const solLamports = new BN(Math.floor(sizeSol * LAMPORTS_PER_SOL));
+    const connection = getConnectionFn();
+    const wallet = getWalletFn();
+    const newPosition = Keypair.generate();
 
-    const openRes = await openSpotSolPosition({
-      pool,
-      connection: getConnectionFn(),
-      wallet: getWalletFn(),
-      feePlan,
-      baseIsX,
-      solLamports,
+    // Catat attempt sebelum kirim tx supaya exit worker bisa reconcile size
+    // bila proses crash / error padahal posisi sudah mendarat on-chain.
+    recordSpotEntryAttempt({
+      pool: poolAddress,
+      mint: baseMint,
+      sizeSol,
       minBinId,
       maxBinId,
-      depositMinBinId,
-      depositMaxBinId,
-      strategyType,
-      slippage: config.entry.activeBinSlippagePct,
-      sendAndConfirmFn,
+      positionPubkey: newPosition.publicKey.toString(),
     });
+
+    let openRes;
+    let recovered = false;
+    try {
+      openRes = await openSpotSolPosition({
+        pool,
+        connection,
+        wallet,
+        feePlan,
+        baseIsX,
+        solLamports,
+        minBinId,
+        maxBinId,
+        depositMinBinId,
+        depositMaxBinId,
+        strategyType,
+        slippage: config.entry.activeBinSlippagePct,
+        sendAndConfirmFn,
+        newPositionKeypair: newPosition,
+      });
+    } catch (txErr) {
+      // Konfirmasi gagal / Custom error bukan berarti akun posisi tidak ada
+      // (mis. createExtendedEmptyPosition sukses, chunk deposit gagal; atau
+      // timeout padahal tx sudah land). Baca ulang on-chain sebelum menyerah.
+      let landed = false;
+      try {
+        const info = await connection.getAccountInfo(newPosition.publicKey, "confirmed");
+        landed = Boolean(info);
+      } catch {
+        landed = false;
+      }
+      if (!landed) {
+        consumeSpotEntryAttempt({ positionPubkey: newPosition.publicKey.toString(), pool: poolAddress });
+        throw txErr;
+      }
+      recovered = true;
+      openRes = {
+        positionPubkey: newPosition.publicKey.toString(),
+        txSigs: [],
+        lastSig: txErr.signature || "",
+      };
+      log.warn(
+        `Spot entry ${pair}: konfirmasi/tx gagal (${txErr.message}) tapi posisi ${openRes.positionPubkey.slice(0, 8)} ada on-chain — anggap sukses & simpan size ${sizeSol} SOL`
+      );
+    }
 
     const positionAddress = openRes.positionPubkey;
     const lastSig = openRes.lastSig;
 
     log.info(
-      `SPOT position opened: ${positionAddress} (tx: ${lastSig}) | bins [${minBinId}..${maxBinId}] (${lowerPctUsed}%..+${upperPctUsed}%), SOL [${depositMinBinId}..${depositMaxBinId}]`
+      `SPOT position opened: ${positionAddress} (tx: ${lastSig || "?"})${recovered ? " [recovered]" : ""} | bins [${minBinId}..${maxBinId}] (${lowerPctUsed}%..+${upperPctUsed}%), SOL [${depositMinBinId}..${depositMaxBinId}]`
     );
 
     trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode ?? null, "spot", false);
     recordTrackedRange(positionAddress, minBinId, maxBinId);
     setEntrySizeSol(positionAddress, sizeSol);
+    consumeSpotEntryAttempt({ positionPubkey: positionAddress, pool: poolAddress, lowerBin: minBinId, upperBin: maxBinId });
     const entryPoolPrice = poolPriceSolPerToken(activeBin, baseIsX);
     if (entryPoolPrice != null) setEntryPoolPrice(positionAddress, entryPoolPrice);
     incrementEntryUsage(poolAddress);
 
-    recordAction(
-      `ENTRY ${pair} — spot ${sizeSol} SOL (${lowerPctUsed}%..+${upperPctUsed}%, bin ${minBinId}..${maxBinId})`
-    );
+    if (recovered) {
+      recordAction(`ENTRY ${pair} — spot ${sizeSol} SOL (dipulihkan dari tx gagal, bin ${minBinId}..${maxBinId})`);
+    } else {
+      recordAction(
+        `ENTRY ${pair} — spot ${sizeSol} SOL (${lowerPctUsed}%..+${upperPctUsed}%, bin ${minBinId}..${maxBinId})`
+      );
+    }
 
     await tg.notifyEntry({
       pool: poolAddress,
@@ -430,6 +478,7 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
       mode: "spot",
       position: positionAddress,
       txSig: lastSig,
+      recovered,
       minBinId,
       maxBinId,
       depositMinBinId,

@@ -36,6 +36,7 @@ function emptyState() {
     entryUsage: {},
     poolAliases: {},
     recentActions: [],
+    spotEntryAttempts: [],
     watchSnapshot: [],
     walletStatus: null,
   };
@@ -124,6 +125,8 @@ function normalizeParsed(parsed, now) {
     ? parsed.recentActions.filter((a) => a && typeof a.text === "string" && Number.isFinite(Number(a.at))).slice(-200)
     : [];
 
+  const spotEntryAttempts = normalizeSpotEntryAttempts(parsed.spotEntryAttempts, now);
+
   const watchSnapshot = Array.isArray(parsed.watchSnapshot) ? parsed.watchSnapshot : [];
   const walletStatus = parsed.walletStatus && typeof parsed.walletStatus === "object" ? parsed.walletStatus : null;
 
@@ -138,6 +141,7 @@ function normalizeParsed(parsed, now) {
     entryUsage: usage,
     poolAliases: aliases,
     recentActions: actions,
+    spotEntryAttempts,
     watchSnapshot,
     walletStatus,
   };
@@ -541,6 +545,140 @@ export function isPoolSwapPending(pool) {
 
 export function isMintSwapPending(mint) {
   return Boolean(mint) && Object.prototype.hasOwnProperty.call(getPendingSwaps(), mint);
+}
+
+
+// --- Percobaan entry spot terbaru (shared entry↔exit) ---
+// Dipakai untuk memulihkan entrySizeSol bila tx entry error di log tapi posisi
+// sudah mendarat on-chain dan diadopsi exit worker.
+export const SPOT_ENTRY_ATTEMPT_TTL_MS = 30 * 60 * 1000;
+const SPOT_ENTRY_ATTEMPT_MAX = 50;
+
+function normalizeSpotEntryAttempts(raw, now = Date.now()) {
+  if (!Array.isArray(raw)) return [];
+  const ttl = SPOT_ENTRY_ATTEMPT_TTL_MS;
+  const out = [];
+  for (const a of raw) {
+    if (!a || typeof a !== "object") continue;
+    const at = Number(a.at);
+    const sizeSol = Number(a.sizeSol);
+    if (!Number.isFinite(at) || now - at > ttl) continue;
+    if (!Number.isFinite(sizeSol) || sizeSol <= 0) continue;
+    if (!a.pool) continue;
+    out.push({
+      pool: String(a.pool),
+      mint: a.mint ? String(a.mint) : null,
+      sizeSol,
+      minBinId: Number.isFinite(Number(a.minBinId)) ? Number(a.minBinId) : null,
+      maxBinId: Number.isFinite(Number(a.maxBinId)) ? Number(a.maxBinId) : null,
+      positionPubkey: a.positionPubkey ? String(a.positionPubkey) : null,
+      at,
+    });
+  }
+  return out.slice(-SPOT_ENTRY_ATTEMPT_MAX);
+}
+
+function pruneSpotEntryAttempts(list, now = Date.now()) {
+  return normalizeSpotEntryAttempts(list, now);
+}
+
+export function recordSpotEntryAttempt({ pool, mint, sizeSol, minBinId, maxBinId, positionPubkey } = {}) {
+  const size = Number(sizeSol);
+  if (!pool || !Number.isFinite(size) || size <= 0) return;
+  mutateRuntimeState((state, now) => {
+    const attempts = pruneSpotEntryAttempts(state.spotEntryAttempts, now);
+    attempts.push({
+      pool: String(pool),
+      mint: mint ? String(mint) : null,
+      sizeSol: size,
+      minBinId: Number.isFinite(Number(minBinId)) ? Number(minBinId) : null,
+      maxBinId: Number.isFinite(Number(maxBinId)) ? Number(maxBinId) : null,
+      positionPubkey: positionPubkey ? String(positionPubkey) : null,
+      at: now,
+    });
+    state.spotEntryAttempts = attempts.slice(-SPOT_ENTRY_ATTEMPT_MAX);
+  });
+}
+
+function attemptMatches(a, { pool, mint, lowerBin, upperBin, positionPubkey } = {}) {
+  if (!a) return false;
+  if (positionPubkey && a.positionPubkey && a.positionPubkey === positionPubkey) return true;
+  if (pool && a.pool !== pool) return false;
+  if (mint && a.mint && a.mint !== mint) return false;
+  const lower = Number(lowerBin);
+  const upper = Number(upperBin);
+  if (Number.isFinite(lower) && Number.isFinite(upper) && a.minBinId != null && a.maxBinId != null) {
+    return a.minBinId === lower && a.maxBinId === upper;
+  }
+  // Tanpa span: cocokkan pool (+ mint bila ada).
+  return Boolean(pool) && a.pool === pool;
+}
+
+export function findSpotEntryAttempt(query = {}, maxAgeMs = SPOT_ENTRY_ATTEMPT_TTL_MS) {
+  const now = Date.now();
+  const state = syncRuntimeFromDisk(now);
+  const attempts = pruneSpotEntryAttempts(state.spotEntryAttempts, now);
+  const age = Math.max(0, Number(maxAgeMs) || SPOT_ENTRY_ATTEMPT_TTL_MS);
+  // Prioritas: positionPubkey → pool+span → pool(+mint). Ambil yang terbaru.
+  let best = null;
+  for (let i = attempts.length - 1; i >= 0; i--) {
+    const a = attempts[i];
+    if (now - a.at > age) continue;
+    if (!attemptMatches(a, query)) continue;
+    // exact pubkey match wins immediately
+    if (query.positionPubkey && a.positionPubkey === query.positionPubkey) return a;
+    if (!best) best = a;
+    // prefer span match over pool-only
+    if (
+      Number.isFinite(Number(query.lowerBin)) &&
+      Number.isFinite(Number(query.upperBin)) &&
+      a.minBinId === Number(query.lowerBin) &&
+      a.maxBinId === Number(query.upperBin)
+    ) {
+      return a;
+    }
+  }
+  return best;
+}
+
+export function consumeSpotEntryAttempt(query = {}, maxAgeMs = SPOT_ENTRY_ATTEMPT_TTL_MS) {
+  let found = null;
+  mutateRuntimeState((state, now) => {
+    const attempts = pruneSpotEntryAttempts(state.spotEntryAttempts, now);
+    const age = Math.max(0, Number(maxAgeMs) || SPOT_ENTRY_ATTEMPT_TTL_MS);
+    let idx = -1;
+    for (let i = attempts.length - 1; i >= 0; i--) {
+      const a = attempts[i];
+      if (now - a.at > age) continue;
+      if (!attemptMatches(a, query)) continue;
+      if (query.positionPubkey && a.positionPubkey === query.positionPubkey) {
+        idx = i;
+        break;
+      }
+      if (
+        Number.isFinite(Number(query.lowerBin)) &&
+        Number.isFinite(Number(query.upperBin)) &&
+        a.minBinId === Number(query.lowerBin) &&
+        a.maxBinId === Number(query.upperBin)
+      ) {
+        idx = i;
+        break;
+      }
+      if (idx < 0) idx = i;
+    }
+    if (idx >= 0) {
+      found = attempts[idx];
+      attempts.splice(idx, 1);
+    }
+    state.spotEntryAttempts = attempts;
+  });
+  return found;
+}
+
+export function clearSpotEntryAttempts() {
+  mutateRuntimeState((state) => {
+    state.spotEntryAttempts = [];
+  });
 }
 
 export function resetRuntimeState() {
