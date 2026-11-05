@@ -8,7 +8,7 @@ import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
 import { executeEntry, executeSpotEntry } from "./execute.js";
 import { selectWatchCandidates } from "./candidates.js";
-import { resolveCaPool, shouldLogCaSkip } from "./ca-resolve.js";
+import { resolveCaPool, shouldLogCaSkip, markCaPoolInvalid } from "./ca-resolve.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -191,6 +191,8 @@ export async function refreshCandidates() {
         info = await getPoolInfo(poolAddress);
       } catch (err) {
         log.warn(`Pool ${poolAddress.slice(0, 8)} lookup failed: ${err.message}`);
+        // CA: pool non-DLMM / akun rusak — jangan dipilih lagi di siklus berikutnya.
+        if (ca) markCaPoolInvalid(poolAddress, err.message);
         continue;
       }
       if (info.unsupported) {
@@ -442,7 +444,7 @@ function startEntry(trigger, candidate) {
 
 // Entry instan untuk pool mode="spot" (Runner Spot): langsung eksekusi saat refreshCandidates
 // tanpa menunggu sinyal Supertrend 15m.
-export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry) {
+export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry, deps = {}) {
   const { pool, mint, sizeSol, pairName } = candidate;
   if (
     inFlightPools.has(pool) ||
@@ -485,14 +487,18 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry)
         log.warn(
           `Pool ${pool.slice(0, 8)} (${pair}) REDFLAG non-refundable rent pada -95% dan -90% — skip & nonaktifkan pool`
         );
-        deactivatePool(pool, "redflag non-refundable rent (-95% & -90%)");
-        tg.notifySpotNonRefundableSkipped({
+        // Alert dulu supaya gagal tulis pool.txt tidak menelan notifikasi.
+        const notifyRedflag = deps.notifySpotNonRefundableSkipped || tg.notifySpotNonRefundableSkipped;
+        notifyRedflag({
           pool,
           pair: result.pair || pair,
           cost95Sol: result.cost95Sol,
           cost90Sol: result.cost90Sol,
+          sizeSol,
+          reason: result.reason,
           context: "Entry Spot Instan",
         });
+        deactivatePool(pool, "redflag non-refundable rent (-95% & -90%)");
         return result;
       }
 

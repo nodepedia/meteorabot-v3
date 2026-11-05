@@ -412,7 +412,7 @@ test("handleSpotOorKananReentry: warisi entrySizeSol, pakai range -95%..+15%, da
   }
 });
 
-test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langsung ditandai # di pool.txt", async () => {
+test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langsung ditandai # di pool.txt + alert Telegram 1x", async () => {
   resetState();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spot-redflag-"));
   const poolFile = path.join(dir, "pool.txt");
@@ -423,6 +423,8 @@ test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langs
   const savedPoolListFile = config.entry.poolListFile;
   config.dryRun = false;
   config.entry.poolListFile = poolFile;
+
+  const alerts = [];
 
   try {
     const res = await startSpotEntry(
@@ -440,12 +442,25 @@ test("startSpotEntry: bila redflag non-refundable rent (-95% & -90%), pool langs
         cost95Sol: 0.07143744,
         cost90Sol: 0.07143744,
         pair: "RUN-SOL",
-      })
+        reason: "non-refundable rent masih muncul pada -95% dan fallback -90%",
+      }),
+      {
+        notifySpotNonRefundableSkipped: async (payload) => {
+          alerts.push(payload);
+        },
+      }
     );
 
     assert.equal(res.skipped, true);
     assert.equal(res.redflagNonRefundable, true);
     assert.equal(fs.readFileSync(poolFile, "utf8"), `#${poolAddr},1.25x,1,spot\n`);
+    assert.equal(alerts.length, 1, "alert Telegram harus 1x per keputusan skip");
+    assert.equal(alerts[0].pair, "RUN-SOL");
+    assert.equal(alerts[0].pool, poolAddr);
+    assert.equal(alerts[0].sizeSol, 0.25);
+    assert.equal(alerts[0].cost95Sol, 0.07143744);
+    assert.equal(alerts[0].cost90Sol, 0.07143744);
+    assert.equal(alerts[0].context, "Entry Spot Instan");
   } finally {
     config.dryRun = savedDryRun;
     config.entry.poolListFile = savedPoolListFile;

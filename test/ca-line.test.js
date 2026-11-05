@@ -10,7 +10,7 @@ process.env.STATE_FILE = path.join(dir, "state.json");
 
 const { default: config } = await import("../src/config/index.js");
 const { parsePoolList, commentPoolInList } = await import("../src/entry/pool-list.js");
-const { pickBestPool, resolveCaPool, shouldLogCaSkip, _clearCaCache } = await import("../src/entry/ca-resolve.js");
+const { pickBestPool, resolveCaPool, shouldLogCaSkip, _clearCaCache, isDlmmPool, markCaPoolInvalid, isCaPoolInvalid } = await import("../src/entry/ca-resolve.js");
 const rt = await import("../src/entry/runtime.js");
 
 const CA = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
@@ -46,11 +46,51 @@ test("parse baris CA (kolom ke-5 ca)", () => {
   }
 });
 
-test("pickBestPool: fixture asli query=<mint> → pool fee/active TVL tertinggi tanpa filter", () => {
+test("pickBestPool: fixture asli query=<mint> → pool DLMM fee/active TVL tertinggi (skip damm_v2)", () => {
   const r = pickBestPool(FIXTURE.data, STONKS);
-  // FuEy: fee/TVL ~0.23%, bin step 80 — dulu ditolak filter, sekarang dipilih.
+  // FuEy: DLMM fee/TVL ~0.23% — damm_v2 di fixture (meski query pool_type=dlmm) diabaikan.
   assert.equal(r.pool, "FuEywnbx7JQSzxMxrMrQoxWkJETJAx5bp446qx3SoXM");
-  assert.equal(r.candidates, 5);
+  assert.equal(r.candidates, 2);
+  assert.equal(FIXTURE.data.filter((p) => p.pool_type === "damm_v2").length, 3);
+});
+
+test("isDlmmPool: tolak damm_v2 / tipe non-dlmm, terima dlmm & helper tanpa pool_type", () => {
+  assert.equal(isDlmmPool({ pool_type: "dlmm", dlmm_params: { bin_step: 80 } }), true);
+  assert.equal(isDlmmPool({ pool_type: "damm_v2", dlmm_params: null, damm_v2_params: {} }), false);
+  assert.equal(isDlmmPool({ pool_type: "cpamm" }), false);
+  assert.equal(isDlmmPool({ dlmm_params: { bin_step: 100 } }), true); // helper test tanpa pool_type
+  assert.equal(isDlmmPool({ dlmm_params: null, damm_v2_params: { foo: 1 } }), false);
+});
+
+test("pickBestPool: kandidat fee/TVL tertinggi non-DLMM di-skip, pilih DLMM berikutnya", () => {
+  const r = pickBestPool(
+    [
+      pool("DAMM", {
+        fee_active_tvl_ratio: 99,
+        pool_type: "damm_v2",
+        dlmm_params: null,
+        damm_v2_params: { fee: 1 },
+      }),
+      pool("DLMM_LOW", { fee_active_tvl_ratio: 1, pool_type: "dlmm", dlmm_params: { bin_step: 100 } }),
+      pool("DLMM_HI", { fee_active_tvl_ratio: 5, pool_type: "dlmm", dlmm_params: { bin_step: 80 } }),
+    ],
+    CA
+  );
+  assert.equal(r.pool, "DLMM_HI");
+  assert.equal(r.candidates, 2);
+});
+
+test("markCaPoolInvalid: pool gagal lookup tidak dipilih lagi", () => {
+  _clearCaCache();
+  const pools = [
+    pool("BAD", { fee_active_tvl_ratio: 50, pool_type: "dlmm", dlmm_params: { bin_step: 100 } }),
+    pool("GOOD", { fee_active_tvl_ratio: 3, pool_type: "dlmm", dlmm_params: { bin_step: 80 } }),
+  ];
+  assert.equal(pickBestPool(pools, CA).pool, "BAD");
+  markCaPoolInvalid("BAD", "Invalid account discriminator");
+  assert.equal(isCaPoolInvalid("BAD"), true);
+  assert.equal(pickBestPool(pools, CA).pool, "GOOD");
+  assert.equal(pickBestPool(pools, CA).candidates, 1);
 });
 
 test("pickBestPool: tanpa filter, hanya X/SOL mint ini, lewati blacklist", () => {
