@@ -384,7 +384,8 @@ test("OOR kanan spot & bin kosong atas: volume 5m > $100k mempercepat reposisi j
 });
 
 function freshFee(feePct24h, ageMs = 0, now = Date.now()) {
-  return { feePct24h, feePct24hAt: now - ageMs };
+  const at = now - ageMs;
+  return { feePct24h, feePct24hAt: at, feePct24hUpdatedAt: at };
 }
 
 test("yield tinggi spot: ambang default 7 poin persen, mode lain mati", () => {

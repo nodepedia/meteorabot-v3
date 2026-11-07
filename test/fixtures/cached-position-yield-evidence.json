@@ -1,0 +1,527 @@
+{
+  "description": "Historical sanitized public response excerpts, not current API validation. Raw numeric strings and nesting preserved. No network calls performed.",
+  "unitsConclusion": {
+    "conclusive": false,
+    "assessment": "Caches contain no explicit unit/schema declaration for feePerTvl24h. Percent interpretation is plausible, but magnitude alone cannot prove percent versus ratio; do not treat these fixtures as authoritative unit validation.",
+    "missingEvidence": "No explicit trailing-24h fee numerator, time-weighted TVL denominator, or documented feePerTvl24h formula/unit in inspected position records. No direct liquidity/TVL field; balances are the available open-value fields."
+  },
+  "fieldRelationships": {
+    "feePerTvl24h": "Top-level scalar JSON string in both position and pool-summary objects, NOT a nested fee object. Pool summary differs from position snapshot.",
+    "allTimeFees": "Nested tokenX/tokenY/total with amount, usd, amountSol (total usd/sol); historical all-time fee bucket, separate from unrealizedPnl unclaimed fees. Exact claimed semantics not explicitly declared by this cache.",
+    "unclaimedFees": "Position: unrealizedPnl.unclaimedFeeTokenX and unclaimedFeeTokenY. Pool summary: unclaimedFees and unclaimedFeesSol.",
+    "balances": "Position: unrealizedPnl.balances and balancesSol plus token balances; pool summary: balances and balancesSol. All-time deposits/withdrawals are cumulative flows, not current TVL.",
+    "openPositionExampleComputedNotRaw": {
+      "unclaimedFeeUsdSum": 0.4011825003513899,
+      "balanceUsd": 6.602165034776712,
+      "unclaimedDividedByBalanceTimes100": 6.076529414793068,
+      "rawFeePerTvl24h": "6.011753571737836",
+      "warning": "These are not equal; unclaimed/current-balance is NOT a verified reconstruction of trailing-24h Fee/TVL."
+    }
+  },
+  "inspectedPositionSampleSummary": {
+    "count": 49,
+    "min": 0.0,
+    "median": 13.597414364526363,
+    "max": 280.56120741949815,
+    "rawValuesGreaterThan7": 28,
+    "note": "Descriptive historical sample only; values >7 are not asserted as >7 percent until units verified. All examples >7 included here are CLOSED, not live trigger evidence."
+  },
+  "records": [
+    {
+      "sourceCacheFilename": "/workspace/nov3-lp-review/cache/ourpnl/4iFBMBo9LxUZXRXQK2kpiQ5EMwyf5omRyz2seXLRFQ52.json",
+      "jsonPointer": "/positions/0",
+      "provenance": {
+        "fileMtimeAsiaJakarta": "2026-11-07T17:32:02.650811+07:00 [Asia/Jakarta]",
+        "fileMtimeMeaning": "Filesystem modification time only; not guaranteed API retrieval time.",
+        "embeddedTimestamps": {
+          "createdAt": {
+            "raw": 1793985302,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:15:02+07:00 [Asia/Jakarta]"
+          },
+          "updatedAt": {
+            "raw": 1794047506,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T17:31:46+07:00 [Asia/Jakarta]"
+          }
+        }
+      },
+      "rawPublicFields": {
+        "positionAddress": "bp68C3NeXhvm523PtFtx2e1a9mwZLiP9kws8uvhzJPK",
+        "minPrice": "0.0000008213705346761287",
+        "maxPrice": "0.000018869998286370257",
+        "lowerBinId": -714,
+        "upperBinId": -399,
+        "poolActiveBinId": -569,
+        "isOutOfRange": false,
+        "poolActivePrice": "0.000003476468652445421",
+        "feePerTvl24h": "6.011753571737836",
+        "isClosed": false,
+        "createdAt": 1793985302,
+        "closedAt": null,
+        "updatedAt": 1794047506,
+        "allTimeDeposits": {
+          "tokenX": {
+            "amount": "20204.027466",
+            "usd": "11.827656673412392",
+            "amountSol": "0.1313302834345422"
+          },
+          "tokenY": {
+            "amount": "0.189735978",
+            "usd": "17.129209544391543",
+            "amountSol": "0.189735978"
+          },
+          "total": {
+            "usd": "28.95686621780394",
+            "sol": "0.32106626143454225"
+          }
+        },
+        "allTimeWithdrawals": {
+          "tokenX": {
+            "amount": "19986.206463",
+            "usd": "11.558801448846285",
+            "amountSol": "0.1283334007071618"
+          },
+          "tokenY": {
+            "amount": "0.09006549000000001",
+            "usd": "8.122554691631718",
+            "amountSol": "0.09006549000000003"
+          },
+          "total": {
+            "usd": "19.681356140478016",
+            "sol": "0.2183988907071619"
+          }
+        },
+        "allTimeFees": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "total": {
+            "usd": "0",
+            "sol": "0"
+          }
+        },
+        "unrealizedPnl": {
+          "balances": 6.602165034776712,
+          "balancesSol": "0.07363096666782323",
+          "balanceTokenX": {
+            "amount": "7775.328239",
+            "usd": "2.4960954661967207",
+            "amountSol": "0.027837826092369303"
+          },
+          "balanceTokenY": {
+            "amount": "0.04579797",
+            "usd": "4.106069568579991",
+            "amountSol": "0.04579797"
+          },
+          "unclaimedFeeTokenX": {
+            "amount": "588.335559",
+            "usd": "0.18887199051690262",
+            "amountSol": "0.002106404060634909"
+          },
+          "unclaimedFeeTokenY": {
+            "amount": "0.002368053",
+            "usd": "0.21231050983448727",
+            "amountSol": "0.002368053"
+          },
+          "unclaimedRewardTokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "unclaimedRewardTokenY": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          }
+        }
+      }
+    },
+    {
+      "sourceCacheFilename": "/workspace/nov3-lp-review/cache/ourpnl/4iFBMBo9LxUZXRXQK2kpiQ5EMwyf5omRyz2seXLRFQ52.json",
+      "jsonPointer": "/positions/1",
+      "provenance": {
+        "fileMtimeAsiaJakarta": "2026-11-07T17:32:02.650811+07:00 [Asia/Jakarta]",
+        "fileMtimeMeaning": "Filesystem modification time only; not guaranteed API retrieval time.",
+        "embeddedTimestamps": {
+          "createdAt": {
+            "raw": 1793985117,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:11:57+07:00 [Asia/Jakarta]"
+          },
+          "closedAt": {
+            "raw": 1793985293,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:14:53+07:00 [Asia/Jakarta]"
+          },
+          "updatedAt": {
+            "raw": 1793985291,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:14:51+07:00 [Asia/Jakarta]"
+          }
+        }
+      },
+      "rawPublicFields": {
+        "positionAddress": "82Yh4WM3qccdxxmuiZRvjNPM7WUGSoYCqaELSUUAKdxi",
+        "minPrice": "0.0000007972141487547122",
+        "maxPrice": "0.000001583980347017293",
+        "lowerBinId": -717,
+        "upperBinId": -648,
+        "poolActiveBinId": -569,
+        "isOutOfRange": true,
+        "poolActivePrice": "0.000003476468652445421",
+        "feePerTvl24h": "0",
+        "isClosed": true,
+        "createdAt": 1793985117,
+        "closedAt": 1793985293,
+        "updatedAt": 1793985291,
+        "allTimeDeposits": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.099999772",
+            "usd": "9.045269483249074",
+            "amountSol": "0.099999772"
+          },
+          "total": {
+            "usd": "9.045269483249074",
+            "sol": "0.099999772"
+          }
+        },
+        "allTimeWithdrawals": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.099999772",
+            "usd": "9.040605221021792",
+            "amountSol": "0.099999772"
+          },
+          "total": {
+            "usd": "9.040605221021794",
+            "sol": "0.09999977200000001"
+          }
+        },
+        "allTimeFees": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "total": {
+            "usd": "0",
+            "sol": "0"
+          }
+        }
+      }
+    },
+    {
+      "sourceCacheFilename": "/workspace/nov3-lp-review/cache/ourpnl/4iFBMBo9LxUZXRXQK2kpiQ5EMwyf5omRyz2seXLRFQ52.json",
+      "jsonPointer": "/positions/2",
+      "provenance": {
+        "fileMtimeAsiaJakarta": "2026-11-07T17:32:02.650811+07:00 [Asia/Jakarta]",
+        "fileMtimeMeaning": "Filesystem modification time only; not guaranteed API retrieval time.",
+        "embeddedTimestamps": {
+          "createdAt": {
+            "raw": 1793984906,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:08:26+07:00 [Asia/Jakarta]"
+          },
+          "closedAt": {
+            "raw": 1793985104,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:11:44+07:00 [Asia/Jakarta]"
+          },
+          "updatedAt": {
+            "raw": 1793985107,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:11:47+07:00 [Asia/Jakarta]"
+          }
+        }
+      },
+      "rawPublicFields": {
+        "positionAddress": "4eZ67fx7KvEUwn51u4UEFZbrWB1WFmd2wdu3zReBbq5s",
+        "minPrice": "0.0000007893209393611012",
+        "maxPrice": "0.0000015682973732844483",
+        "lowerBinId": -718,
+        "upperBinId": -649,
+        "poolActiveBinId": -569,
+        "isOutOfRange": true,
+        "poolActivePrice": "0.000003476468652445421",
+        "feePerTvl24h": "0.21563882729553366",
+        "isClosed": true,
+        "createdAt": 1793984906,
+        "closedAt": 1793985104,
+        "updatedAt": 1793985107,
+        "allTimeDeposits": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.099999772",
+            "usd": "9.041790668231373",
+            "amountSol": "0.09999977200000001"
+          },
+          "total": {
+            "usd": "9.041790668231373",
+            "sol": "0.09999977199999999"
+          }
+        },
+        "allTimeWithdrawals": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.099999294",
+            "usd": "9.044484825694303",
+            "amountSol": "0.099999294"
+          },
+          "total": {
+            "usd": "9.044484825694303",
+            "sol": "0.099999294"
+          }
+        },
+        "allTimeFees": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.000000438",
+            "usd": "0.000039615433239377",
+            "amountSol": "0.00000043799999999999664"
+          },
+          "total": {
+            "usd": "0.000039615433239377",
+            "sol": "0.00000043799999999999664"
+          }
+        }
+      }
+    },
+    {
+      "sourceCacheFilename": "/workspace/nov3-lp-review/cache/ourpnl/4iFBMBo9LxUZXRXQK2kpiQ5EMwyf5omRyz2seXLRFQ52.json",
+      "jsonPointer": "/positions/3",
+      "provenance": {
+        "fileMtimeAsiaJakarta": "2026-11-07T17:32:02.650811+07:00 [Asia/Jakarta]",
+        "fileMtimeMeaning": "Filesystem modification time only; not guaranteed API retrieval time.",
+        "embeddedTimestamps": {
+          "createdAt": {
+            "raw": 1793984442,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:00:42+07:00 [Asia/Jakarta]"
+          },
+          "closedAt": {
+            "raw": 1793984897,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:08:17+07:00 [Asia/Jakarta]"
+          },
+          "updatedAt": {
+            "raw": 1793984900,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:08:20+07:00 [Asia/Jakarta]"
+          }
+        }
+      },
+      "rawPublicFields": {
+        "positionAddress": "DebWoPc4wirmuTPwzgpxDCj8Zae3CKzC7ZZqFiJdQ9UQ",
+        "minPrice": "0.0000007893209393611012",
+        "maxPrice": "0.0000015682973732844483",
+        "lowerBinId": -718,
+        "upperBinId": -649,
+        "poolActiveBinId": -569,
+        "isOutOfRange": true,
+        "poolActivePrice": "0.000003476468652445421",
+        "feePerTvl24h": "22.762083406587404",
+        "isClosed": true,
+        "createdAt": 1793984442,
+        "closedAt": 1793984897,
+        "updatedAt": 1793984900,
+        "allTimeDeposits": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.099999768",
+            "usd": "9.049842980339552",
+            "amountSol": "0.099999768"
+          },
+          "total": {
+            "usd": "9.049842980339552",
+            "sol": "0.099999768"
+          }
+        },
+        "allTimeWithdrawals": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.10000230600000001",
+            "usd": "9.049340482821616",
+            "amountSol": "0.10000230600000001"
+          },
+          "total": {
+            "usd": "9.049340482821616",
+            "sol": "0.10000230600000001"
+          }
+        },
+        "allTimeFees": {
+          "tokenX": {
+            "amount": "3.678182",
+            "usd": "0.00557390860857907",
+            "amountSol": "0.00006159544399615365"
+          },
+          "tokenY": {
+            "amount": "0.000051934",
+            "usd": "0.004699623071083337",
+            "amountSol": "0.000051933999999999994"
+          },
+          "total": {
+            "usd": "0.010273531679662409",
+            "sol": "0.00011352944399615368"
+          }
+        }
+      }
+    },
+    {
+      "sourceCacheFilename": "/workspace/nov3-lp-review/cache/ourpnl/4iFBMBo9LxUZXRXQK2kpiQ5EMwyf5omRyz2seXLRFQ52.json",
+      "jsonPointer": "/positions/4",
+      "provenance": {
+        "fileMtimeAsiaJakarta": "2026-11-07T17:32:02.650811+07:00 [Asia/Jakarta]",
+        "fileMtimeMeaning": "Filesystem modification time only; not guaranteed API retrieval time.",
+        "embeddedTimestamps": {
+          "createdAt": {
+            "raw": 1793982993,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-06T23:36:33+07:00 [Asia/Jakarta]"
+          },
+          "closedAt": {
+            "raw": 1793984425,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:00:25+07:00 [Asia/Jakarta]"
+          },
+          "updatedAt": {
+            "raw": 1793984426,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T00:00:26+07:00 [Asia/Jakarta]"
+          }
+        }
+      },
+      "rawPublicFields": {
+        "positionAddress": "57ZRVE4GGaFR1xZq7MTv5EQTwRPxib5bSBb2nyM4DFW5",
+        "minPrice": "0.0000005973861618187269",
+        "maxPrice": "0.0000011869432339842966",
+        "lowerBinId": -746,
+        "upperBinId": -677,
+        "poolActiveBinId": -569,
+        "isOutOfRange": true,
+        "poolActivePrice": "0.000003476468652445421",
+        "feePerTvl24h": "20.200379603904036",
+        "isClosed": true,
+        "createdAt": 1793982993,
+        "closedAt": 1793984425,
+        "updatedAt": 1793984426,
+        "allTimeDeposits": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.099999753",
+            "usd": "9.041352506783362",
+            "amountSol": "0.099999753"
+          },
+          "total": {
+            "usd": "9.041352506783362",
+            "sol": "0.099999753"
+          }
+        },
+        "allTimeWithdrawals": {
+          "tokenX": {
+            "amount": "0",
+            "usd": "0",
+            "amountSol": "0"
+          },
+          "tokenY": {
+            "amount": "0.099996859",
+            "usd": "9.052471006336932",
+            "amountSol": "0.099996859"
+          },
+          "total": {
+            "usd": "9.05247100633693",
+            "sol": "0.099996859"
+          }
+        },
+        "allTimeFees": {
+          "tokenX": {
+            "amount": "13.707163",
+            "usd": "0.019576027878446152",
+            "amountSol": "0.00021623934136759656"
+          },
+          "tokenY": {
+            "amount": "0.000114492",
+            "usd": "0.010364897384925695",
+            "amountSol": "0.00011449199999999997"
+          },
+          "total": {
+            "usd": "0.02994092526337185",
+            "sol": "0.0003307313413675966"
+          }
+        }
+      }
+    },
+    {
+      "sourceCacheFilename": "/workspace/nov3-lp-review/cache/portfolio-open.json",
+      "jsonPointer": "/pools/0",
+      "provenance": {
+        "fileMtimeAsiaJakarta": "2026-11-07T17:31:39.226305+07:00 [Asia/Jakarta]",
+        "fileMtimeMeaning": "Filesystem modification time only; not guaranteed API retrieval time.",
+        "embeddedTimestamps": {
+          "updatedAt": {
+            "raw": 1794047496,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T17:31:36+07:00 [Asia/Jakarta]"
+          },
+          "poolStateUpdatedAtBlockTime": {
+            "raw": 1794047493,
+            "interpretedUnixSecondsAsiaJakarta": "2026-11-07T17:31:33+07:00 [Asia/Jakarta]"
+          }
+        }
+      },
+      "rawPublicFields": {
+        "poolAddress": "4iFBMBo9LxUZXRXQK2kpiQ5EMwyf5omRyz2seXLRFQ52",
+        "tokenXMint": "5VCEFq1aATjga39QtDunYjJqYBx67w8V8TXwHrqopump",
+        "tokenYMint": "So11111111111111111111111111111111111111112",
+        "tokenX": "Diamond",
+        "tokenY": "SOL",
+        "balances": "6.552242724878889",
+        "balancesSol": "0.07309257680558026",
+        "unclaimedFees": "0.3974182704235577",
+        "unclaimedFeesSol": "0.004433353276827184",
+        "feePerTvl24h": "5.957550610327771",
+        "totalDeposit": "28.95686621780394",
+        "totalDepositSol": "0.32106626143454225",
+        "openPositionCount": 1,
+        "listPositions": [
+          "bp68C3NeXhvm523PtFtx2e1a9mwZLiP9kws8uvhzJPK"
+        ],
+        "updatedAt": 1794047496,
+        "outOfRange": false,
+        "poolPrice": 3.476468652445421e-06,
+        "poolStateUpdatedAtSlot": 466479642,
+        "poolStateUpdatedAtBlockTime": 1794047493
+      }
+    }
+  ]
+}

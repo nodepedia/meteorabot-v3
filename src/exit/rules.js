@@ -22,9 +22,9 @@ export function highYieldMaxAgeMs(pollIntervalHoldMin = config.pollIntervalHold)
   return Math.max(60_000, holdMs * 10);
 }
 
-// Pure: tutup spot bila 24h Fee/TVL posisi (poin persen) > ambang.
-// Bukan >=. Bukan PnL, bukan fee/modal, bukan rasio 0–1.
-// Angka hilang, bukan number, waktu pengamatan hilang/masa depan/basi → null (tidak tutup).
+// Pure: tutup spot bila angka feePerTvl24h yang sudah di-parse > ambang.
+// Bukan >=. String mentah API tidak diterima di sini (parser yang mengubahnya).
+// Butuh waktu fetch dan updatedAt data, keduanya segar. Hilang/basi → null.
 export function evaluateHighYieldClose(position, rules, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const maxAgeMs = Number.isFinite(opts.maxAgeMs) ? opts.maxAgeMs : highYieldMaxAgeMs();
@@ -35,9 +35,13 @@ export function evaluateHighYieldClose(position, rules, opts = {}) {
   const fee = position?.feePct24h;
   if (typeof fee !== "number" || !Number.isFinite(fee) || !(fee > threshold)) return null;
   const at = position?.feePct24hAt;
+  const updated = position?.feePct24hUpdatedAt;
   if (typeof at !== "number" || !Number.isFinite(at)) return null;
+  if (typeof updated !== "number" || !Number.isFinite(updated)) return null;
   const age = now - at;
+  const dataAge = now - updated;
   if (!(age >= 0) || age > maxAgeMs) return null;
+  if (!(dataAge >= 0) || dataAge > maxAgeMs) return null;
   return { action: "close", reason: "high_yield" };
 }
 

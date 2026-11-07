@@ -29,6 +29,7 @@ test("waktu pengamatan ikut tersimpan hanya bila angkanya valid", () => {
   applyPositionFeeTvl(pos, { feePerTvl24h: "8.1" }, 1_700_000_000_000);
   assert.equal(pos.feePct24h, 8.1);
   assert.equal(pos.feePct24hAt, 1_700_000_000_000);
+  assert.equal(pos.feePct24hUpdatedAt, null);
 
   applyPositionFeeTvl(pos, { feePerTvl24h: "nope" }, 1_700_000_000_000);
   assert.equal(pos.feePct24h, null);
