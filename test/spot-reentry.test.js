@@ -75,6 +75,8 @@ test("shouldReenter: butuh enabled, size>0, mode spot, reason oor_kanan, span va
   assert.equal(shouldReenter({ mode: "spot", reason: "oor_kanan", span: 244, count: 9, cfg }), true);
   assert.equal(shouldReenter({ mode: "spot", reason: "oor_kanan", span: 244, count: 10, cfg }), false);
   assert.equal(shouldReenter({ mode: "spot", reason: "oor_kiri", span: 244, count: 0, cfg }), false);
+  assert.equal(shouldReenter({ mode: "spot", reason: "high_yield", span: 244, count: 0, cfg }), false);
+  assert.equal(shouldReenter({ mode: "spot", reason: "low_yield", span: 244, count: 0, cfg }), false);
   assert.equal(shouldReenter({ mode: "spot", reason: "oor_kanan", span: 0, count: 0, cfg }), false);
   assert.equal(shouldReenter({ mode: "bidask:double", reason: "oor_kanan", span: 244, count: 0, cfg }), false);
   assert.equal(

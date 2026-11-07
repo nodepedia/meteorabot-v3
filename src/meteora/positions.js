@@ -252,6 +252,24 @@ export function pnlFromEntry(entry) {
   return Number.isFinite(pnl) ? pnl : null;
 }
 
+// "24h Fee/TVL" satu posisi terbuka. Sumber: field `feePerTvl24h` pada entri
+// PnL posisi (bukan `fee_tvl_ratio` level pool, bukan PnL, bukan fee/modal).
+// Satuan sudah poin persen: "7.25" = 7.25%. Tidak dikali dan tidak dibagi 100.
+export function positionFeePct24h(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const feeTvl = parseFloat(entry.feePerTvl24h);
+  return Number.isFinite(feeTvl) ? feeTvl : null;
+}
+
+// Simpan angka yield + waktu pengamatan terakhir yang sukses.
+// Waktu kosong → aturan tutup yield tinggi menolak (gagal aman).
+export function applyPositionFeeTvl(position, entry, observedAt = null) {
+  const feePct24h = positionFeePct24h(entry);
+  position.feePct24h = feePct24h;
+  position.feePct24hAt = feePct24h == null || !Number.isFinite(observedAt) ? null : observedAt;
+  return position;
+}
+
 // Baca satu entri posisi dari endpoint `status=closed` (paginate sederhana).
 // `wallet` bisa diisi eksplisit untuk pengujian; default ambil dari wallet bot.
 async function fetchClosedEntry(poolAddress, positionAddress, wallet) {
@@ -330,6 +348,13 @@ export async function fetchPoolPnl(poolAddress, { ttlSec = 5, force = false } = 
   }
 }
 
+// Waktu sukses terakhir cache PnL pool. Cache basi (fetch gagal) tidak
+// memperbarui waktu ini, jadi aturan yield tinggi bisa menolaknya.
+export function poolPnlObservedAt(poolAddress) {
+  const cached = poolPnlCache.get(poolAddress);
+  return cached && Number.isFinite(cached.at) ? cached.at : null;
+}
+
 async function enrichPnl(positions) {
   // Cache dianggap segar selama satu interval loop exit; watcher DCA yang
   // me-refresh tiap pollIntervalSec. Saat DCA nonaktif, ttl 0 = selalu fetch
@@ -345,6 +370,7 @@ async function enrichPnl(positions) {
 
   for (const [poolAddress, poolPositions] of Object.entries(byPool)) {
     const pnlMap = await fetchPoolPnl(poolAddress, { ttlSec });
+    const observedAt = poolPnlObservedAt(poolAddress);
     for (const p of poolPositions) {
       const entry = pnlMap.get(p.position);
       if (!entry) continue;
@@ -352,8 +378,8 @@ async function enrichPnl(positions) {
       const pnl = pnlFromEntry(entry);
       p.pnlPct = pnl == null ? 0 : pnl;
       // null = data yield tidak tersedia (dibedakan dari 0%).
-      const feeTvl = parseFloat(entry.feePerTvl24h);
-      p.feePct24h = Number.isFinite(feeTvl) ? feeTvl : null;
+      // feePct24hAt = waktu cache sukses; kosong bila angka yield tidak ada.
+      applyPositionFeeTvl(p, entry, observedAt);
       const feeX = parseFloat(entry.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || "0");
       const feeY = parseFloat(entry.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || "0");
       p.unclaimedFee = Number.isFinite(feeX + feeY) ? feeX + feeY : 0;

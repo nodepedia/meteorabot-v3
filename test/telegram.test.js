@@ -84,6 +84,8 @@ test("exitLabel menerjemahkan alasan exit ke label pendek", () => {
   assert.equal(exitLabel("stop_loss"), "Stop Loss");
   assert.equal(exitLabel("oor_kanan"), "OOR Kanan");
   assert.equal(exitLabel("oor_kiri"), "OOR Kiri");
+  assert.equal(exitLabel("low_yield"), "Yield Rendah");
+  assert.equal(exitLabel("high_yield"), "Yield Tinggi");
   assert.equal(exitLabel("bounce_recovery: peak -8 -> -10"), "Bounce Recovery");
   assert.equal(exitLabel("not_detected"), "Tidak Terdeteksi");
 });

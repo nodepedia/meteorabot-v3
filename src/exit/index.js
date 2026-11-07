@@ -381,6 +381,8 @@ export async function mainLoop(opts = {}) {
         }
         // OOR kanan spot: rencanakan re-entry sebelum close supaya pool tidak
         // ditandai '#' saat kita mau langsung membuka posisi lagi.
+        // Alasan lain (termasuk high_yield) tidak lolos canSpotReenter, jadi
+        // close biasa: klaim + swap, pool ini selesai, entry pool lain tetap jalan.
         const willReenter = !handled && canSpotReenter(pos, exit.reason);
         if (!handled) {
           if (willReenter) {

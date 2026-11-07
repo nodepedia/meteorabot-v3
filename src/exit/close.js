@@ -29,6 +29,13 @@ import { humanReason, fmtPct } from "../core/report.js";
 // (timer konfirmasi trailing + safety-net siklus bisa memicu bersamaan).
 const closingPositions = new Set();
 
+// Mint yang di-swap setelah close: token posisi (non-SOL) + reward.
+// Fee yang sudah di-claim ikut saldo wallet mint itu, jadi tidak dijumlahkan lagi
+// dari unclaimedFee. SOL tidak masuk daftar ini.
+export function swapMintsFromCloseResult(result) {
+  return [result?.baseMint, ...(result?.rewardMints || [])].filter(Boolean);
+}
+
 export async function handleClose(pos, reason, opts = {}) {
   const { skipAutoSwap = false, skipDeactivate = false, deps = {} } = opts;
   const closeFn = deps.closePosition || closePosition;
@@ -102,7 +109,7 @@ export async function handleClose(pos, reason, opts = {}) {
       // dicoba ulang tiap siklus, pool BELUM dinonaktifkan.
       let swapInfo = null;
       let swapPending = false;
-      const swapMints = [result.baseMint, ...(result.rewardMints || [])].filter(Boolean);
+      const swapMints = swapMintsFromCloseResult(result);
       if (!skipAutoSwap && config.swap.autoSwapAfterClose && swapMints.length > 0) {
         for (const m of swapMints) {
           if (!lockedMints.has(m)) {
