@@ -39,7 +39,7 @@ export function humanReason(reason) {
   if (r === "stop_loss") return "batas rugi tersentuh";
   if (r === "oor_kanan") return "harga keluar dari rentang atas";
   if (r === "oor_kiri") return "harga keluar dari rentang bawah";
-  if (r === "low_yield") return "24h Fee/TVL posisi di bawah ambang";
+  if (r === "low_yield") return "24h Fee/TVL di bawah ambang selama 60 detik";
   if (r === "high_yield") return "24h Fee/TVL posisi di atas ambang (aturan lama)";
   if (r.startsWith("bounce_recovery")) return "pemulihan gagal (turun dari pantulan)";
   if (r === "not_detected") return "posisi tidak terdeteksi (kemungkinan ditutup manual)";

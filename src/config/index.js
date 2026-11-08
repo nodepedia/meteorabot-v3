@@ -52,8 +52,10 @@ export function buildConfig(e = {}) {
     oorKananMinutes: 2,
     oorKananHighVol5mUsd: 100000,
     oorKananFastMinutes: 1,
-    // 24h Fee/TVL posisi, angka apa adanya. Tutup bila segar dan < 7 (bukan <=).
+    // 24h Fee/TVL posisi, angka apa adanya. Mulai hitung bila segar dan < 7.
+    // Tutup setelah angka itu bertahan 60 detik.
     yieldCloseBelowPct: 7,
+    yieldCloseBelowSec: 60,
   });
 
   // Exit indikator spot: immediate (default) = langsung close saat sinyal;

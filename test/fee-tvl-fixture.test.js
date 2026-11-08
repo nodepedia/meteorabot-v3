@@ -90,7 +90,10 @@ test("fixture: updatedAt unix detik, segar terhadap mtime file, basi bila diangg
 
   const pos = spotFrom(openRaw, fileMtimeMs);
   assert.equal(pos.feePct24hUpdatedAt, updatedMs);
-  assert.equal(evaluateLowYieldClose(pos, rules, { now: fileMtimeMs }).reason, "low_yield");
+  assert.equal(
+    evaluateLowYieldClose(pos, rules, { now: fileMtimeMs, processStartedAt: fileMtimeMs }).reason,
+    "low_yield_0s"
+  );
 
   const later = fileMtimeMs + 3 * 60 * 60 * 1000;
   assert.equal(evaluateLowYieldClose(pos, rules, { now: later }), null);
@@ -122,7 +125,14 @@ test("fixture: posisi Diamond terbuka ber-span spot; 6.01 segar tutup, snapshot 
 
   trackPosition(openRaw.positionAddress, poolRaw.poolAddress, "Diamond-SOL", poolRaw.tokenXMint, null, "spot");
   const pos = spotFrom(openRaw, fileMtimeMs);
-  assert.equal(evaluateLowYieldClose(pos, rules, { now: fileMtimeMs }).reason, "low_yield");
+  assert.equal(
+    evaluateLowYieldClose(pos, rules, {
+      now: fileMtimeMs,
+      since: fileMtimeMs - 60_000,
+      processStartedAt: fileMtimeMs - 120_000,
+    }).reason,
+    "low_yield"
+  );
   const res = evaluateExit(pos, null);
   assert.notEqual(res.reason, "low_yield");
   assert.equal(res.action, "hold");

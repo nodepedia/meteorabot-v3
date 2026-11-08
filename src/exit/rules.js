@@ -1,7 +1,7 @@
 import config from "../config/index.js";
 import { LEGACY_MODE } from "../config/rules.js";
 import { computeRSI, computeMACD, computeBB } from "../market/indicators.js";
-import { updateOOR, resetOOR, getOORState, clearLowYieldSince } from "../state/positions.js";
+import { updateOOR, resetOOR, getOORState, clearLowYieldSince, getLowYieldSince, writeLowYieldSince } from "../state/positions.js";
 import { isTrailingConfirmed } from "../state/trailing.js";
 import { getBounceRecoveryState } from "../state/bounce.js";
 import { getSpotReentryCooldownRemainingMs } from "./spot-reentry.js";
@@ -15,27 +15,53 @@ export function yieldDataMaxAgeMs(pollIntervalHoldMin = config.pollIntervalHold)
   return Math.max(60_000, holdMs * 10);
 }
 
-// Pure: tutup spot bila angka feePerTvl24h yang sudah di-parse < ambang.
-// Tepat sama atau di atasnya tidak tutup. String mentah tidak diterima di sini.
-// Butuh waktu fetch dan updatedAt, keduanya segar. Hilang/basi → null.
-export function evaluateLowYieldClose(position, rules, opts = {}) {
+// Jam proses ini. Timer yang tersimpan dari proses sebelumnya tidak boleh
+// langsung dianggap sudah 60 detik.
+export const YIELD_PROCESS_STARTED_AT = Date.now();
+
+// Jangkar timer. Nilai kosong, di masa depan, atau dari sebelum proses ini
+// mulai dihitung ulang dari `now` (restart tidak langsung exit).
+export function resolveLowYieldAnchor(since, now, processStartedAt) {
+  const anchor = Number(since);
+  const started = Number(processStartedAt);
+  if (!Number.isFinite(anchor) || anchor > now) return now;
+  if (Number.isFinite(started) && anchor < started) return now;
+  return anchor;
+}
+
+// Sampel segar dan di bawah ambang. Tepat 7 atau di atasnya, basi, atau rusak → false.
+export function isFreshLowYield(position, rules, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const maxAgeMs = Number.isFinite(opts.maxAgeMs) ? opts.maxAgeMs : yieldDataMaxAgeMs();
   const threshold = Number(rules?.yieldCloseBelowPct);
-  if (!(threshold > 0) || !(maxAgeMs > 0)) return null;
+  if (!(threshold > 0) || !(maxAgeMs > 0)) return false;
   const mode = LEGACY_MODE[position?.mode] || position?.mode;
-  if (mode !== "spot") return null;
+  if (mode !== "spot") return false;
   const fee = position?.feePct24h;
-  if (typeof fee !== "number" || !Number.isFinite(fee) || !(fee < threshold)) return null;
+  if (typeof fee !== "number" || !Number.isFinite(fee) || !(fee < threshold)) return false;
   const at = position?.feePct24hAt;
   const updated = position?.feePct24hUpdatedAt;
-  if (typeof at !== "number" || !Number.isFinite(at)) return null;
-  if (typeof updated !== "number" || !Number.isFinite(updated)) return null;
+  if (typeof at !== "number" || !Number.isFinite(at)) return false;
+  if (typeof updated !== "number" || !Number.isFinite(updated)) return false;
   const age = now - at;
   const dataAge = now - updated;
-  if (!(age >= 0) || age > maxAgeMs) return null;
-  if (!(dataAge >= 0) || dataAge > maxAgeMs) return null;
-  return { action: "close", reason: "low_yield" };
+  if (!(age >= 0) || age > maxAgeMs) return false;
+  if (!(dataAge >= 0) || dataAge > maxAgeMs) return false;
+  return true;
+}
+
+// Pure: di bawah ambang harus bertahan `yieldCloseBelowSec` (default 60 detik).
+// Poll pertama yang sudah >= 60 detik baru close. Data tidak segar → null (reset).
+export function evaluateLowYieldClose(position, rules, opts = {}) {
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  if (!isFreshLowYield(position, rules, opts)) return null;
+  const delaySec = Number(rules?.yieldCloseBelowSec);
+  const delayMs = Number.isFinite(delaySec) && delaySec >= 0 ? delaySec * 1000 : 60_000;
+  const processStartedAt = Number.isFinite(opts.processStartedAt) ? opts.processStartedAt : YIELD_PROCESS_STARTED_AT;
+  const since = resolveLowYieldAnchor(opts.since, now, processStartedAt);
+  const elapsed = now - since;
+  if (elapsed >= delayMs) return { action: "close", reason: "low_yield", since };
+  return { action: "hold", reason: `low_yield_${Math.floor(elapsed / 1000)}s`, since };
 }
 
 // Pure: masih dalam masa warmup exit? (trailing & arm indikator ditahan)
@@ -46,7 +72,7 @@ export function isExitWarmup(firstSeenAt, warmupMinutes, now = Date.now()) {
   return now - Number(firstSeenAt) < min * 60000;
 }
 
-export function evaluateExit(position, candles, { warmup = false } = {}) {
+export function evaluateExit(position, candles, { warmup = false, now = Date.now(), processStartedAt = YIELD_PROCESS_STARTED_AT } = {}) {
   const rules = config.rulesFor(position.mode);
   const { activeBin, lowerBin, upperBin, pnlPct } = position;
 
@@ -139,13 +165,24 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
   // In-range: reset tracker
   resetOOR(position.position);
 
-  // 5. Yield rendah (hanya spot): 24h Fee/TVL posisi segar < ambang.
-  // Tepat 7 atau di atasnya tidak lewat sini. Tanpa tunda menit dan tanpa syarat PnL.
-  // Close biasa (klaim + swap). Bukan alasan re-entry OOR.
+  // 5. Yield rendah (hanya spot): 24h Fee/TVL segar < ambang, terus-menerus
+  // selama yieldCloseBelowSec (60 detik). Tepat 7 atau di atasnya mereset.
+  // Data basi/kosong juga mereset, tidak dihitung sebagai kelanjutan.
   // Stop loss / OOR / trailing di atas tetap menang bila mereka sudah memicu.
-  clearLowYieldSince(position.position);
-  const lowYield = evaluateLowYieldClose(position, rules);
-  if (lowYield) return lowYield;
+  const lowYield = evaluateLowYieldClose(position, rules, {
+    now,
+    processStartedAt,
+    since: getLowYieldSince(position.position),
+  });
+  if (!lowYield) {
+    clearLowYieldSince(position.position);
+  } else if (lowYield.action === "close") {
+    clearLowYieldSince(position.position);
+    return { action: "close", reason: "low_yield" };
+  } else {
+    writeLowYieldSince(position.position, lowYield.since);
+    return { action: "hold", reason: lowYield.reason };
+  }
 
   // 6. Bounce recovery trail stop (opsional)
   if (rules.enableBounceRecovery && pnlPct != null) {
