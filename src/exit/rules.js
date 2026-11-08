@@ -1,4 +1,5 @@
 import config from "../config/index.js";
+import { LEGACY_MODE } from "../config/rules.js";
 import { computeRSI, computeMACD, computeBB } from "../market/indicators.js";
 import {
   updateOOR,
@@ -11,6 +12,38 @@ import {
 import { isTrailingConfirmed } from "../state/trailing.js";
 import { getBounceRecoveryState } from "../state/bounce.js";
 import { getSpotReentryCooldownRemainingMs } from "./spot-reentry.js";
+
+// Jendela data 24h Fee/TVL masih boleh dipakai untuk tutup.
+// Mengikuti irama loop exit yang sudah ada (tanpa poll baru): 10× POLL_INTERVAL_HOLD,
+// minimal 60 detik. Cache PnL yang lebih tua dari ini tidak memicu tutup.
+export function highYieldMaxAgeMs(pollIntervalHoldMin = config.pollIntervalHold) {
+  const holdMin = Number(pollIntervalHoldMin);
+  const holdMs = Number.isFinite(holdMin) && holdMin > 0 ? holdMin * 60 * 1000 : 12_000;
+  return Math.max(60_000, holdMs * 10);
+}
+
+// Pure: tutup spot bila angka feePerTvl24h yang sudah di-parse > ambang.
+// Bukan >=. String mentah API tidak diterima di sini (parser yang mengubahnya).
+// Butuh waktu fetch dan updatedAt data, keduanya segar. Hilang/basi → null.
+export function evaluateHighYieldClose(position, rules, opts = {}) {
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const maxAgeMs = Number.isFinite(opts.maxAgeMs) ? opts.maxAgeMs : highYieldMaxAgeMs();
+  const threshold = Number(rules?.highYieldClosePct);
+  if (!(threshold > 0) || !(maxAgeMs > 0)) return null;
+  const mode = LEGACY_MODE[position?.mode] || position?.mode;
+  if (mode !== "spot") return null;
+  const fee = position?.feePct24h;
+  if (typeof fee !== "number" || !Number.isFinite(fee) || !(fee > threshold)) return null;
+  const at = position?.feePct24hAt;
+  const updated = position?.feePct24hUpdatedAt;
+  if (typeof at !== "number" || !Number.isFinite(at)) return null;
+  if (typeof updated !== "number" || !Number.isFinite(updated)) return null;
+  const age = now - at;
+  const dataAge = now - updated;
+  if (!(age >= 0) || age > maxAgeMs) return null;
+  if (!(dataAge >= 0) || dataAge > maxAgeMs) return null;
+  return { action: "close", reason: "high_yield" };
+}
 
 // Pure: masih dalam masa warmup exit? (trailing & arm indikator ditahan)
 export function isExitWarmup(firstSeenAt, warmupMinutes, now = Date.now()) {
@@ -115,7 +148,16 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
   // In-range: reset tracker
   resetOOR(position.position);
 
-  // 5. Yield rendah (mode spot): in-range + sudah pegang token, yield <= ambang,
+  // 5. Yield tinggi (hanya spot): 24h Fee/TVL posisi > ambang, data segar.
+  // Close biasa (klaim + swap) lewat pemanggil. Bukan alasan re-entry OOR.
+  // Data kosong/basi tidak menutup. Stop loss / OOR / trailing di atas tetap lebih dulu.
+  const highYield = evaluateHighYieldClose(position, rules);
+  if (highYield) {
+    clearLowYieldSince(position.position);
+    return highYield;
+  }
+
+  // 6. Yield rendah (mode spot): in-range + sudah pegang token, yield <= ambang,
   // dan PnL >= 0. Setelah `lowYieldDelayMinutes` kondisi bertahan → close + swap.
   if (rules.lowYieldClosePct > 0 && inRange && hasBase === true) {
     const hasYieldData = Number.isFinite(position.feePct24h);
@@ -135,7 +177,7 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
     clearLowYieldSince(position.position);
   }
 
-  // 6. Bounce recovery trail stop (opsional)
+  // 7. Bounce recovery trail stop (opsional)
   if (rules.enableBounceRecovery && pnlPct != null) {
     const brState = getBounceRecoveryState(position.position);
     if (brState?.state === "active" && brState.activePeak != null) {
@@ -149,7 +191,7 @@ export function evaluateExit(position, candles, { warmup = false } = {}) {
     }
   }
 
-  // 7. Indikator — arm trailing saat RSI+MACD atau RSI+BB (exit via trailing drop).
+  // 8. Indikator — arm trailing saat RSI+MACD atau RSI+BB (exit via trailing drop).
   // Selama warmup, sinyal indikator diabaikan agar posisi yang baru dibuka
   // (mis. di puncak) tidak langsung ter-arm.
   if (!rules.enableIndicators || warmup) {

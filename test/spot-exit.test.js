@@ -9,7 +9,9 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "meteorabot-spot-"));
 process.env.STATE_FILE = path.join(TMP, "state.json");
 
 const { trackPosition, getTrackedPosition, recordTrackedRange } = await import("../src/state/positions.js");
-const { evaluateExit, isExitWarmup } = await import("../src/exit/rules.js");
+const { evaluateExit, isExitWarmup, evaluateHighYieldClose, highYieldMaxAgeMs } = await import(
+  "../src/exit/rules.js"
+);
 const { fallbackBinRange } = await import("../src/meteora/open-token-position.js");
 const { setLastSpotReentryAt, clearSpotReentryCooldown, getEffectiveSpotReentryCooldownSec } = await import("../src/exit/spot-reentry.js");
 const config = (await import("../src/config/index.js")).default;
@@ -176,8 +178,10 @@ test("yield rendah spot: yield naik membatalkan timer", () => {
   assert.equal(res.action, "hold");
   assert.notEqual(getTrackedPosition(POS).lowYieldSejak, null);
 
+  // 11% tanpa waktu pengamatan: bukan tutup yield tinggi (data tidak terbukti segar).
   res = evaluateExit(makePosition(LOWER + 10, { feePct24h: pct + 5 }), null);
   assert.notEqual(res.action, "close");
+  assert.notEqual(res.reason, "high_yield");
   assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
 });
 
@@ -377,4 +381,96 @@ test("OOR kanan spot & bin kosong atas: volume 5m > $100k mempercepat reposisi j
   assert.equal(resHighVol.action, "close");
   assert.equal(resHighVol.reason, "oor_kanan");
   clearSpotReentryCooldown();
+});
+
+function freshFee(feePct24h, ageMs = 0, now = Date.now()) {
+  const at = now - ageMs;
+  return { feePct24h, feePct24hAt: at, feePct24hUpdatedAt: at };
+}
+
+test("yield tinggi spot: ambang default 7 poin persen, mode lain mati", () => {
+  assert.equal(config.spot.highYieldClosePct, 7);
+  assert.equal(config.bidaskDouble.highYieldClosePct, 0);
+  assert.equal(config.bidaskToken.highYieldClosePct, 0);
+  assert.equal(config.bidaskSol.highYieldClosePct, 0);
+  const holdMs = config.pollIntervalHold * 60 * 1000;
+  assert.equal(highYieldMaxAgeMs(), Math.max(60_000, holdMs * 10));
+});
+
+test("yield tinggi spot: di atas 7% segar menutup, tepat 7% tidak", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+  const now = Date.now();
+  const threshold = config.spot.highYieldClosePct;
+
+  const below = evaluateExit(makePosition(LOWER + 10, freshFee(threshold - 0.01, 0, now)), null);
+  assert.notEqual(below.reason, "high_yield");
+
+  const equal = evaluateExit(makePosition(LOWER + 10, freshFee(threshold, 0, now)), null);
+  assert.notEqual(equal.action, "close");
+  assert.notEqual(equal.reason, "high_yield");
+
+  const above = evaluateExit(makePosition(LOWER + 10, freshFee(threshold + 0.01, 0, now)), null, {
+    warmup: true,
+  });
+  assert.equal(above.action, "close");
+  assert.equal(above.reason, "high_yield");
+});
+
+test("yield tinggi spot: rasio 0–1, data rusak, atau basi tidak menutup", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+  const now = Date.now();
+  const rules = config.spot;
+  const maxAgeMs = highYieldMaxAgeMs();
+
+  const cases = [
+    freshFee(0.08, 0, now),
+    freshFee(0.071, 0, now),
+    { feePct24h: null, feePct24hAt: now },
+    { feePct24h: Number.NaN, feePct24hAt: now },
+    { feePct24h: Number.POSITIVE_INFINITY, feePct24hAt: now },
+    { feePct24h: "8.5", feePct24hAt: now },
+    { feePct24h: 8.5 },
+    freshFee(8.5, maxAgeMs + 1, now),
+    { feePct24h: 8.5, feePct24hAt: now + 1000 },
+  ];
+  for (const extra of cases) {
+    const viaExit = evaluateExit(makePosition(LOWER + 10, extra), null);
+    assert.notEqual(viaExit.reason, "high_yield", JSON.stringify(extra));
+    assert.equal(evaluateHighYieldClose(makePosition(LOWER + 10, extra), rules, { now, maxAgeMs }), null);
+  }
+
+  const edge = evaluateHighYieldClose(makePosition(LOWER + 10, freshFee(7.01, maxAgeMs, now)), rules, {
+    now,
+    maxAgeMs,
+  });
+  assert.equal(edge.reason, "high_yield");
+});
+
+test("yield tinggi tidak mengubah mode selain spot dan tidak menyalip OOR", () => {
+  resetState();
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "bidask:double");
+  const now = Date.now();
+  const hot = freshFee(40, 0, now);
+
+  const bidask = evaluateExit(makePosition(LOWER + 10, { ...hot, mode: "bidask:double" }), null);
+  assert.notEqual(bidask.reason, "high_yield");
+  assert.equal(
+    evaluateHighYieldClose({ mode: "bidask:sol", ...hot }, { highYieldClosePct: 7 }, { now }),
+    null
+  );
+
+  const oor = evaluateExit(makePosition(UPPER + 1, { ...hot, mode: "spot" }), null);
+  assert.equal(oor.action, "hold");
+  assert.match(oor.reason, /^oor_kanan_/);
+});
+
+test("yield tinggi: ambang 0 atau aturan kosong tidak menutup", () => {
+  const now = Date.now();
+  const pos = makePosition(LOWER + 10, freshFee(50, 0, now));
+  assert.equal(evaluateHighYieldClose(pos, { highYieldClosePct: 0 }, { now }), null);
+  assert.equal(evaluateHighYieldClose(pos, {}, { now }), null);
+  const legacy = evaluateHighYieldClose({ ...pos, mode: "spot:sol" }, { highYieldClosePct: 7 }, { now });
+  assert.equal(legacy.reason, "high_yield");
 });

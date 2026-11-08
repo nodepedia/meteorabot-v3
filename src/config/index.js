@@ -54,6 +54,8 @@ export function buildConfig(e = {}) {
     oorKananFastMinutes: 1,
     lowYieldClosePct: 6,
     lowYieldDelayMinutes: 10,
+    // 24h Fee/TVL posisi, poin persen. Tutup bila angka segar > 7 (bukan >=).
+    highYieldClosePct: 7,
   });
 
   // Exit indikator spot: immediate (default) = langsung close saat sinyal;

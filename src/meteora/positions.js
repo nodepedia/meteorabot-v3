@@ -252,6 +252,57 @@ export function pnlFromEntry(entry) {
   return Number.isFinite(pnl) ? pnl : null;
 }
 
+// "24h Fee/TVL" satu posisi. Field atas `feePerTvl24h`, di fixture historis
+// berupa string angka ("6.011..."). Dipakai apa adanya lewat parseFloat.
+// Tidak dikali dan tidak dibagi 100. Bukan ringkasan pool, bukan PnL,
+// bukan unclaimed/saldo, bukan all-time fee. Fixture tidak memuat rumus satuan.
+export function positionFeePct24h(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const feeTvl = parseFloat(entry.feePerTvl24h);
+  return Number.isFinite(feeTvl) ? feeTvl : null;
+}
+
+// `updatedAt` pada entri PnL historis adalah unix detik (bukan milidetik).
+export function positionPnlUpdatedAtMs(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const raw = entry.updatedAt;
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+// Hanya baris posisi terbuka. Ringkasan pool tidak punya positionAddress.
+// Baris closed (fee bisa > 7) tidak boleh masuk keputusan exit.
+export function isOpenPositionPnlEntry(entry) {
+  return (
+    !!entry &&
+    typeof entry === "object" &&
+    entry.isClosed !== true &&
+    typeof entry.positionAddress === "string" &&
+    entry.positionAddress.length > 0
+  );
+}
+
+export function indexOpenPositionPnl(entries) {
+  const map = new Map();
+  for (const entry of entries || []) {
+    if (!isOpenPositionPnlEntry(entry)) continue;
+    map.set(entry.positionAddress, entry);
+  }
+  return map;
+}
+
+// Simpan angka yield, waktu fetch sukses, dan updatedAt data.
+// Salah satu kosong → aturan tutup yield tinggi menolak.
+export function applyPositionFeeTvl(position, entry, observedAt = null) {
+  const feePct24h = positionFeePct24h(entry);
+  position.feePct24h = feePct24h;
+  const observed = Number.isFinite(observedAt) ? observedAt : null;
+  position.feePct24hAt = feePct24h == null ? null : observed;
+  position.feePct24hUpdatedAt = feePct24h == null ? null : positionPnlUpdatedAtMs(entry);
+  return position;
+}
+
 // Baca satu entri posisi dari endpoint `status=closed` (paginate sederhana).
 // `wallet` bisa diisi eksplisit untuk pengujian; default ambil dari wallet bot.
 async function fetchClosedEntry(poolAddress, positionAddress, wallet) {
@@ -317,17 +368,20 @@ export async function fetchPoolPnl(poolAddress, { ttlSec = 5, force = false } = 
     const res = await fetch(url);
     if (!res.ok) return cached ? cached.map : new Map();
     const data = await res.json();
-    const map = new Map();
-    for (const entry of data.positions || []) {
-      const addr = entry.positionAddress || "";
-      if (addr) map.set(addr, entry);
-    }
+    const map = indexOpenPositionPnl(data.positions || []);
     poolPnlCache.set(poolAddress, { at: now, map });
     return map;
   } catch (err) {
     log.warn(`fetchPoolPnl failed: ${err.message}`);
     return cached ? cached.map : new Map();
   }
+}
+
+// Waktu sukses terakhir cache PnL pool. Cache basi (fetch gagal) tidak
+// memperbarui waktu ini, jadi aturan yield tinggi bisa menolaknya.
+export function poolPnlObservedAt(poolAddress) {
+  const cached = poolPnlCache.get(poolAddress);
+  return cached && Number.isFinite(cached.at) ? cached.at : null;
 }
 
 async function enrichPnl(positions) {
@@ -345,15 +399,16 @@ async function enrichPnl(positions) {
 
   for (const [poolAddress, poolPositions] of Object.entries(byPool)) {
     const pnlMap = await fetchPoolPnl(poolAddress, { ttlSec });
+    const observedAt = poolPnlObservedAt(poolAddress);
     for (const p of poolPositions) {
       const entry = pnlMap.get(p.position);
-      if (!entry) continue;
+      if (!isOpenPositionPnlEntry(entry)) continue;
 
       const pnl = pnlFromEntry(entry);
       p.pnlPct = pnl == null ? 0 : pnl;
       // null = data yield tidak tersedia (dibedakan dari 0%).
-      const feeTvl = parseFloat(entry.feePerTvl24h);
-      p.feePct24h = Number.isFinite(feeTvl) ? feeTvl : null;
+      // feePct24hAt = waktu cache sukses; kosong bila angka yield tidak ada.
+      applyPositionFeeTvl(p, entry, observedAt);
       const feeX = parseFloat(entry.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || "0");
       const feeY = parseFloat(entry.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || "0");
       p.unclaimedFee = Number.isFinite(feeX + feeY) ? feeX + feeY : 0;
