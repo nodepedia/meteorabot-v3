@@ -319,6 +319,8 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
         cost95Sol: rangeRes.costPrimarySol,
         cost90Sol: rangeRes.costFallbackSol,
         costsByPct: rangeRes.costsByPct,
+        upperPct: rangeRes.upperPct,
+        maxNonRefundableSol: rangeRes.maxNonRefundableSol,
         reason: rangeRes.reason,
         baseMint,
         pair,

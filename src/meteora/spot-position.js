@@ -142,6 +142,8 @@ export async function resolveSpotRangeWithRentCheck({
     costFallbackSol: costsByPct[ladder[ladder.length - 1]],
     minBinId95: firstMinBinId,
     maxBinId,
+    upperPct,
+    maxNonRefundableSol,
     reason,
   };
 }
