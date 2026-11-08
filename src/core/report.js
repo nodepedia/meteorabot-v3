@@ -39,8 +39,8 @@ export function humanReason(reason) {
   if (r === "stop_loss") return "batas rugi tersentuh";
   if (r === "oor_kanan") return "harga keluar dari rentang atas";
   if (r === "oor_kiri") return "harga keluar dari rentang bawah";
-  if (r === "low_yield") return "yield rendah, PnL tidak minus";
-  if (r === "high_yield") return "24h Fee/TVL posisi di atas ambang";
+  if (r === "low_yield") return "24h Fee/TVL posisi di bawah ambang";
+  if (r === "high_yield") return "24h Fee/TVL posisi di atas ambang (aturan lama)";
   if (r.startsWith("bounce_recovery")) return "pemulihan gagal (turun dari pantulan)";
   if (r === "not_detected") return "posisi tidak terdeteksi (kemungkinan ditutup manual)";
   if (r === "dca_close_safeguard") return "safeguard: DCA terakhir profit (trailing TP), posisi asli ikut ditutup";

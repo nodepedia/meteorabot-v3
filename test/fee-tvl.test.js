@@ -58,5 +58,5 @@ test("close biasa men-swap saldo token sekali, tanpa menambah unclaimed fee", ()
   });
   assert.deepEqual(swapMints, ["BaseMint111", "TokenMint111"]);
   assert.equal(swapMints.includes(WSOL_MINT), false);
-  assert.equal(humanReason("high_yield"), "24h Fee/TVL posisi di atas ambang");
+  assert.equal(humanReason("low_yield"), "24h Fee/TVL posisi di bawah ambang");
 });
