@@ -30,13 +30,9 @@ export const RULE_DEFAULTS = {
   bounceRecoveryTrigger: -40,
   bounceRecoveryTarget: -10,
   bounceRecoveryTrailingPct: 2,
-  // Yield rendah: 0 = nonaktif. >0 = tutup (setelah delay) bila posisi
-  // in-range, yield <= nilai ini, dan PnL >= 0.
-  lowYieldClosePct: 0,
-  lowYieldDelayMinutes: 10,
-  // Yield tinggi (24h Fee/TVL posisi, poin persen): 0 = nonaktif.
-  // >0 = tutup penuh bila angka segar > nilai ini (bukan >=). Hanya dipakai spot.
-  highYieldClosePct: 0,
+  // 24h Fee/TVL posisi: 0 = nonaktif. >0 = tutup spot bila angka segar < nilai ini.
+  // Tepat sama atau lebih tinggi tidak tutup karena yield. Tanpa delay dan tanpa PnL.
+  yieldCloseBelowPct: 0,
 };
 
 export function modeRules(e, prefix, overrides = {}) {
@@ -66,9 +62,7 @@ export function modeRules(e, prefix, overrides = {}) {
     bounceRecoveryTrigger: num(e[k("BOUNCE_RECOVERY_TRIGGER")], d.bounceRecoveryTrigger),
     bounceRecoveryTarget: num(e[k("BOUNCE_RECOVERY_TARGET")], d.bounceRecoveryTarget),
     bounceRecoveryTrailingPct: num(e[k("BOUNCE_RECOVERY_TRAILING_PCT")], d.bounceRecoveryTrailingPct),
-    lowYieldClosePct: Math.max(0, num(e[k("LOW_YIELD_CLOSE_PCT")], d.lowYieldClosePct)),
-    lowYieldDelayMinutes: Math.max(0, num(e[k("LOW_YIELD_DELAY_MINUTES")], d.lowYieldDelayMinutes)),
-    highYieldClosePct: Math.max(0, num(e[k("HIGH_YIELD_CLOSE_PCT")], d.highYieldClosePct)),
+    yieldCloseBelowPct: Math.max(0, num(e[k("YIELD_CLOSE_BELOW_PCT")], d.yieldCloseBelowPct)),
   };
 }
 

@@ -17,7 +17,7 @@ const {
   positionFeePct24h,
   positionPnlUpdatedAtMs,
 } = await import("../src/meteora/positions.js");
-const { evaluateExit, evaluateHighYieldClose } = await import("../src/exit/rules.js");
+const { evaluateExit, evaluateLowYieldClose } = await import("../src/exit/rules.js");
 const { classifyMode } = await import("../src/exit/classify.js");
 const { trackPosition } = await import("../src/state/positions.js");
 const config = (await import("../src/config/index.js")).default;
@@ -31,7 +31,7 @@ const poolRec = records.find((r) => r.jsonPointer === "/pools/0");
 const closedHigh = records.filter((r) => r.rawPublicFields?.isClosed === true && Number(r.rawPublicFields?.feePerTvl24h) > 7);
 const openRaw = openRec.rawPublicFields;
 const poolRaw = poolRec.rawPublicFields;
-const rules = { highYieldClosePct: 7 };
+const rules = { yieldCloseBelowPct: 7 };
 const fileMtimeMs = Date.parse(openRec.provenance.fileMtimeAsiaJakarta.replace(/ \[.*$/, ""));
 
 function spotFrom(entry, observedAt) {
@@ -90,18 +90,18 @@ test("fixture: updatedAt unix detik, segar terhadap mtime file, basi bila diangg
 
   const pos = spotFrom(openRaw, fileMtimeMs);
   assert.equal(pos.feePct24hUpdatedAt, updatedMs);
-  assert.equal(evaluateHighYieldClose(pos, rules, { now: fileMtimeMs }), null);
+  assert.equal(evaluateLowYieldClose(pos, rules, { now: fileMtimeMs }).reason, "low_yield");
 
   const later = fileMtimeMs + 3 * 60 * 60 * 1000;
-  assert.equal(evaluateHighYieldClose(pos, rules, { now: later }), null);
+  assert.equal(evaluateLowYieldClose(pos, rules, { now: later }), null);
 
   const secondsAsMs = {
     ...pos,
-    feePct24h: 22.762083406587404,
+    feePct24h: 6.011753571737836,
     feePct24hAt: fileMtimeMs,
     feePct24hUpdatedAt: openRaw.updatedAt,
   };
-  assert.equal(evaluateHighYieldClose(secondsAsMs, rules, { now: fileMtimeMs }), null);
+  assert.equal(evaluateLowYieldClose(secondsAsMs, rules, { now: fileMtimeMs }), null);
 
   const rawString = {
     mode: "spot",
@@ -109,10 +109,10 @@ test("fixture: updatedAt unix detik, segar terhadap mtime file, basi bila diangg
     feePct24hAt: fileMtimeMs,
     feePct24hUpdatedAt: updatedMs,
   };
-  assert.equal(evaluateHighYieldClose(rawString, rules, { now: fileMtimeMs }), null);
+  assert.equal(evaluateLowYieldClose(rawString, rules, { now: fileMtimeMs }), null);
 });
 
-test("fixture: posisi Diamond terbuka ber-span spot, in-range, tidak tutup di 6.01", () => {
+test("fixture: posisi Diamond terbuka ber-span spot; 6.01 segar tutup, snapshot basi tidak", () => {
   const span = openRaw.upperBinId - openRaw.lowerBinId;
   assert.equal(span, 315);
   assert.ok(span >= config.spotMinBins);
@@ -122,20 +122,20 @@ test("fixture: posisi Diamond terbuka ber-span spot, in-range, tidak tutup di 6.
 
   trackPosition(openRaw.positionAddress, poolRaw.poolAddress, "Diamond-SOL", poolRaw.tokenXMint, null, "spot");
   const pos = spotFrom(openRaw, fileMtimeMs);
+  assert.equal(evaluateLowYieldClose(pos, rules, { now: fileMtimeMs }).reason, "low_yield");
   const res = evaluateExit(pos, null);
-  assert.notEqual(res.reason, "high_yield");
   assert.notEqual(res.reason, "low_yield");
   assert.equal(res.action, "hold");
 });
 
-test("fixture: string closed >7 hanya lolos ambang bila dipaksa jadi posisi terbuka dan segar", () => {
+test("fixture: string closed di atas 7 tidak ditutup karena yield meski dipaksa terbuka", () => {
   const closed = closedHigh[0].rawPublicFields;
   assert.equal(closed.feePerTvl24h, "22.762083406587404");
   const forced = { ...closed, isClosed: false };
   const now = positionPnlUpdatedAtMs(forced);
   const pos = spotFrom(forced, now);
   assert.equal(typeof pos.feePct24h, "number");
-  assert.ok(pos.feePct24h > 7);
-  assert.equal(evaluateHighYieldClose(pos, rules, { now }).reason, "high_yield");
+  assert.ok(!(pos.feePct24h < 7));
+  assert.equal(evaluateLowYieldClose(pos, rules, { now }), null);
   assert.equal(indexOpenPositionPnl([closed]).size, 0);
 });
