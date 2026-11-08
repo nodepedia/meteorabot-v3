@@ -30,9 +30,10 @@ export const RULE_DEFAULTS = {
   bounceRecoveryTrigger: -40,
   bounceRecoveryTarget: -10,
   bounceRecoveryTrailingPct: 2,
-  // 24h Fee/TVL posisi: 0 = nonaktif. >0 = tutup spot bila angka segar < nilai ini.
-  // Tepat sama atau lebih tinggi tidak tutup karena yield. Tanpa delay dan tanpa PnL.
+  // 24h Fee/TVL posisi: 0 = nonaktif. >0 = mulai hitung bila angka segar < nilai ini.
+  // Harus bertahan yieldCloseBelowSec detik. Tepat sama atau lebih tinggi mereset.
   yieldCloseBelowPct: 0,
+  yieldCloseBelowSec: 60,
 };
 
 export function modeRules(e, prefix, overrides = {}) {
@@ -63,6 +64,7 @@ export function modeRules(e, prefix, overrides = {}) {
     bounceRecoveryTarget: num(e[k("BOUNCE_RECOVERY_TARGET")], d.bounceRecoveryTarget),
     bounceRecoveryTrailingPct: num(e[k("BOUNCE_RECOVERY_TRAILING_PCT")], d.bounceRecoveryTrailingPct),
     yieldCloseBelowPct: Math.max(0, num(e[k("YIELD_CLOSE_BELOW_PCT")], d.yieldCloseBelowPct)),
+    yieldCloseBelowSec: Math.max(0, num(e[k("YIELD_CLOSE_BELOW_SEC")], d.yieldCloseBelowSec)),
   };
 }
 

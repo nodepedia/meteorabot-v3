@@ -148,21 +148,23 @@ test("fallbackBinRange menghitung batas bin satu-sisi", () => {
   assert.deepEqual(fallbackBinRange(1000, 5, 0), { minBinId: 995, maxBinId: 1000 });
 });
 
-test("yield rendah spot: di bawah ambang langsung tutup, tanpa timer", () => {
+test("yield rendah spot: poll pertama hanya mulai timer 60 detik", () => {
   resetState();
   trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
   const pct = config.spot.yieldCloseBelowPct;
   assert.equal(pct, 7);
-  const now = Date.now();
+  assert.equal(config.spot.yieldCloseBelowSec, 60);
+  const started = 1_700_000_000_000;
+  const now = started + 1000;
 
   const res = evaluateExit(
     makePosition(LOWER + 10, { ...freshFee(pct - 1, 0, now), pnlPct: -5 }),
     null,
-    { warmup: true }
+    { warmup: true, now, processStartedAt: started }
   );
-  assert.equal(res.action, "close");
-  assert.equal(res.reason, "low_yield");
-  assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "low_yield_0s");
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, now);
 });
 
 test("yield rendah spot: tepat ambang atau di atasnya tidak tutup", () => {
@@ -171,15 +173,24 @@ test("yield rendah spot: tepat ambang atau di atasnya tidak tutup", () => {
   const pct = config.spot.yieldCloseBelowPct;
   const now = Date.now();
 
-  const equal = evaluateExit(makePosition(LOWER + 10, freshFee(pct, 0, now)), null);
+  evaluateExit(makePosition(LOWER + 10, freshFee(pct - 1, 0, now)), null, { now, processStartedAt: now - 10_000 });
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, now);
+
+  const equal = evaluateExit(makePosition(LOWER + 10, freshFee(pct, 0, now + 1000)), null, {
+    now: now + 1000,
+    processStartedAt: now - 10_000,
+  });
   assert.notEqual(equal.reason, "low_yield");
-  const above = evaluateExit(makePosition(LOWER + 10, freshFee(pct + 5, 0, now)), null);
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
+  const above = evaluateExit(makePosition(LOWER + 10, freshFee(pct + 5, 0, now + 2000)), null, {
+    now: now + 2000,
+    processStartedAt: now - 10_000,
+  });
   assert.notEqual(above.action, "close");
   assert.notEqual(above.reason, "low_yield");
-  assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
 });
 
-test("yield rendah spot: data kosong tidak memicu, PnL minus tetap tutup bila segar", () => {
+test("yield rendah spot: data kosong tidak memicu, PnL minus tetap menghitung timer", () => {
   resetState();
   trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
   const pct = config.spot.yieldCloseBelowPct;
@@ -188,9 +199,14 @@ test("yield rendah spot: data kosong tidak memicu, PnL minus tetap tutup bila se
   const empty = evaluateExit(makePosition(LOWER + 10, { feePct24h: null, pnlPct: 0 }), null);
   assert.notEqual(empty.reason, "low_yield");
 
-  const minus = evaluateExit(makePosition(LOWER + 10, { ...freshFee(pct - 1, 0, now), pnlPct: -1 }), null);
-  assert.equal(minus.action, "close");
-  assert.equal(minus.reason, "low_yield");
+  const started = now - 10_000;
+  const minus = evaluateExit(makePosition(LOWER + 10, { ...freshFee(pct - 1, 0, now), pnlPct: -1 }), null, {
+    now,
+    processStartedAt: started,
+  });
+  assert.equal(minus.action, "hold");
+  assert.match(minus.reason, /^low_yield_/);
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, now);
 });
 
 test("yield rendah spot: OOR kiri tetap menang meski yield di bawah ambang", () => {
@@ -381,6 +397,7 @@ function freshFee(feePct24h, ageMs = 0, now = Date.now()) {
 
 test("yield rendah spot: ambang default di bawah 7, mode lain mati, kunci lama hilang", () => {
   assert.equal(config.spot.yieldCloseBelowPct, 7);
+  assert.equal(config.spot.yieldCloseBelowSec, 60);
   assert.equal(config.bidaskDouble.yieldCloseBelowPct, 0);
   assert.equal(config.bidaskToken.yieldCloseBelowPct, 0);
   assert.equal(config.bidaskSol.yieldCloseBelowPct, 0);
@@ -397,11 +414,14 @@ test("yield rendah spot: di bawah 7 segar menutup, tepat 7 dan di atasnya tidak"
   const now = Date.now();
   const threshold = config.spot.yieldCloseBelowPct;
 
+  const started = now - 120_000;
   const below = evaluateExit(makePosition(LOWER + 10, freshFee(threshold - 0.01, 0, now)), null, {
     warmup: true,
+    now,
+    processStartedAt: started,
   });
-  assert.equal(below.action, "close");
-  assert.equal(below.reason, "low_yield");
+  assert.equal(below.action, "hold");
+  assert.equal(below.reason, "low_yield_0s");
 
   const equal = evaluateExit(makePosition(LOWER + 10, freshFee(threshold, 0, now)), null);
   assert.notEqual(equal.reason, "low_yield");
@@ -417,7 +437,13 @@ test("yield rendah spot: angka kecil apa adanya menutup, data rusak atau basi ti
   const rules = config.spot;
   const maxAgeMs = yieldDataMaxAgeMs();
 
-  const tiny = evaluateLowYieldClose(makePosition(LOWER + 10, freshFee(0.08, 0, now)), rules, { now, maxAgeMs });
+  const started = now - 120_000;
+  const tiny = evaluateLowYieldClose(makePosition(LOWER + 10, freshFee(0.08, 0, now)), rules, {
+    now,
+    maxAgeMs,
+    since: now - 60_000,
+    processStartedAt: started,
+  });
   assert.equal(tiny.reason, "low_yield");
 
   const cases = [
@@ -440,6 +466,8 @@ test("yield rendah spot: angka kecil apa adanya menutup, data rusak atau basi ti
   const edge = evaluateLowYieldClose(makePosition(LOWER + 10, freshFee(6.99, maxAgeMs, now)), rules, {
     now,
     maxAgeMs,
+    since: now - 60_000,
+    processStartedAt: now - 180_000,
   });
   assert.equal(edge.reason, "low_yield");
 });
@@ -469,6 +497,7 @@ test("kunci lama tidak menghidupkan lagi tutup saat yield di atas 7", () => {
   assert.equal(stale.spot.highYieldClosePct, undefined);
   assert.equal(stale.spot.lowYieldClosePct, undefined);
   assert.equal(stale.spot.lowYieldDelayMinutes, undefined);
+  assert.equal(stale.spot.yieldCloseBelowSec, 60);
   assert.equal(exitRules.evaluateHighYieldClose, undefined);
 
   const now = Date.now();
@@ -483,7 +512,14 @@ test("kunci lama tidak menghidupkan lagi tutup saat yield di atas 7", () => {
     stale.spot,
     { now }
   );
-  assert.equal(low.reason, "low_yield");
+  assert.equal(low.action, "hold");
+  assert.equal(low.reason, "low_yield_0s");
+  const matured = evaluateLowYieldClose(
+    makePosition(LOWER + 10, { mode: "spot", ...freshFee(6.01, 0, now) }),
+    stale.spot,
+    { now, since: now - 60_000, processStartedAt: now - 120_000 }
+  );
+  assert.equal(matured.reason, "low_yield");
 });
 
 test("yield rendah: ambang 0 atau aturan kosong tidak menutup", () => {
@@ -491,6 +527,69 @@ test("yield rendah: ambang 0 atau aturan kosong tidak menutup", () => {
   const pos = makePosition(LOWER + 10, freshFee(1, 0, now));
   assert.equal(evaluateLowYieldClose(pos, { yieldCloseBelowPct: 0 }, { now }), null);
   assert.equal(evaluateLowYieldClose(pos, {}, { now }), null);
-  const legacy = evaluateLowYieldClose({ ...pos, mode: "spot:sol" }, { yieldCloseBelowPct: 7 }, { now });
+  const legacy = evaluateLowYieldClose({ ...pos, mode: "spot:sol" }, { yieldCloseBelowPct: 7, yieldCloseBelowSec: 60 }, {
+    now,
+    since: now - 60_000,
+    processStartedAt: now - 120_000,
+  });
   assert.equal(legacy.reason, "low_yield");
+});
+
+test("yield rendah: batas 59/60 detik, reset, posisi terpisah, restart, data basi", () => {
+  resetState();
+  const pos2 = "PosSpot22222222222222222222222222222222222";
+  const pos3 = "PosReentry33333333333333333333333333333333";
+  trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+  trackPosition(pos2, POOL, "Y-SOL", "mint2", null, "spot");
+  trackPosition(pos3, POOL, "Z-SOL", "mint3", null, "spot");
+  const started = 1_700_000_000_000;
+  const t0 = started + 5_000;
+  const opt = (now) => ({ now, processStartedAt: started });
+  const low = (now, position = POS) => makePosition(LOWER + 10, { position, ...freshFee(6.5, 0, now) });
+
+  let res = evaluateExit(low(t0), null, opt(t0));
+  assert.equal(res.reason, "low_yield_0s");
+  res = evaluateExit(low(t0 + 59_000), null, opt(t0 + 59_000));
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "low_yield_59s");
+  res = evaluateExit(low(t0 + 60_000), null, opt(t0 + 60_000));
+  assert.equal(res.action, "close");
+  assert.equal(res.reason, "low_yield");
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
+
+  evaluateExit(low(t0), null, opt(t0));
+  res = evaluateExit(makePosition(LOWER + 10, freshFee(7, 0, t0 + 10_000)), null, opt(t0 + 10_000));
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
+  assert.notEqual(res.reason, "low_yield");
+  res = evaluateExit(low(t0 + 11_000), null, opt(t0 + 11_000));
+  assert.equal(res.reason, "low_yield_0s");
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, t0 + 11_000);
+
+  const maxAge = yieldDataMaxAgeMs();
+  const stuckNow = t0 + maxAge + 1_000;
+  res = evaluateExit(
+    makePosition(LOWER + 10, { feePct24h: 6.5, feePct24hAt: stuckNow, feePct24hUpdatedAt: t0 }),
+    null,
+    opt(stuckNow)
+  );
+  assert.notEqual(res.reason, "low_yield");
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, null);
+
+  const state = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  state.positions[POS].lowYieldSejak = started - 120_000;
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify(state));
+  res = evaluateExit(low(t0), null, opt(t0));
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "low_yield_0s");
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, t0);
+
+  res = evaluateExit(low(t0 + 60_000, pos2), null, opt(t0 + 60_000));
+  assert.equal(res.action, "hold");
+  assert.equal(res.reason, "low_yield_0s");
+  assert.equal(getTrackedPosition(pos2).lowYieldSejak, t0 + 60_000);
+  assert.equal(getTrackedPosition(POS).lowYieldSejak, t0);
+
+  res = evaluateExit(low(t0 + 60_000, pos3), null, opt(t0 + 60_000));
+  assert.equal(res.reason, "low_yield_0s");
+  assert.notEqual(res.action, "close");
 });

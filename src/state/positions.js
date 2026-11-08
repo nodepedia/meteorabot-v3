@@ -283,6 +283,19 @@ export function clearLowYieldSince(positionAddress) {
   }
 }
 
+// Tulis waktu mulai kondisi yield rendah. `null` menghapus.
+export function writeLowYieldSince(positionAddress, ts) {
+  if (!positionAddress) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return null;
+  const next = Number.isFinite(ts) ? ts : null;
+  if (p.lowYieldSejak === next) return next;
+  p.lowYieldSejak = next;
+  writeState(state);
+  return next;
+}
+
 // --- Deteksi posisi hilang (ditutup manual) ---
 
 // Semua posisi yang masih dianggap terbuka oleh bot (belum ditutup bot),
