@@ -77,11 +77,11 @@ let _watchBusy = false;
 // in-process seketika (poll harga cepat tidak mengecek `skipped`). Hapus `#`
 // secara manual untuk mengaktifkan kembali.
 export function deactivatePool(pool, reason) {
-  if (!pool) return;
+  if (!pool) return false;
   // Dry run tidak boleh mengubah pool.txt; cukup skip runtime.
   if (config.dryRun) {
     skipped.add(pool);
-    return;
+    return false;
   }
   candidateCache = candidateCache.filter((c) => c.pool !== pool);
   failureCounts.delete(pool);
@@ -100,10 +100,11 @@ export function deactivatePool(pool, reason) {
     log.info(
       `Pool ${pool.slice(0, 8)} ditandai '#' di ${config.entry.poolListFile}${reason ? ` (${reason})` : ""} — hapus '#' untuk memantau lagi`
     );
-  } else {
-    skipped.add(pool);
-    log.warn(`Pool ${pool.slice(0, 8)} gagal ditandai di ${config.entry.poolListFile} — skip sampai restart`);
+    return true;
   }
+  skipped.add(pool);
+  log.warn(`Pool ${pool.slice(0, 8)} gagal ditandai di ${config.entry.poolListFile} — skip sampai restart`);
+  return false;
 }
 
 // Refresh lambat: pool list, expiry, kuota serentak (dari state), dan pool info.
@@ -442,6 +443,27 @@ function startEntry(trigger, candidate) {
 }
 
 
+// Satu alert sewa per pool per proses, supaya gagal tulis daftar tidak memicu spam.
+const rentRedflagAlerted = new Set();
+
+export function resetSpotRentRedflagAlerts() {
+  rentRedflagAlerted.clear();
+}
+
+function alertSpotRentRedflag(payload, notifyFn) {
+  const pool = payload?.pool;
+  if (pool && rentRedflagAlerted.has(pool)) return;
+  if (pool) rentRedflagAlerted.add(pool);
+  try {
+    const pending = notifyFn(payload);
+    Promise.resolve(pending).catch((err) => {
+      log.warn(`Alert sewa non-refundable gagal dikirim: ${err.message}`);
+    });
+  } catch (err) {
+    log.warn(`Alert sewa non-refundable gagal dikirim: ${err.message}`);
+  }
+}
+
 // Entry instan untuk pool mode="spot" (Runner Spot): langsung eksekusi saat refreshCandidates
 // tanpa menunggu sinyal Supertrend 15m.
 export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry, deps = {}) {
@@ -487,19 +509,29 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
         log.warn(
           `Pool ${pool.slice(0, 8)} (${pair}) REDFLAG non-refundable rent pada tangga -95/-90/-85/-80% — skip & nonaktifkan pool`
         );
-        // Alert dulu supaya gagal tulis pool.txt tidak menelan notifikasi.
-        const notifyRedflag = deps.notifySpotNonRefundableSkipped || tg.notifySpotNonRefundableSkipped;
-        notifyRedflag({
-          pool,
-          pair: result.pair || pair,
-          cost95Sol: result.cost95Sol,
-          cost90Sol: result.cost90Sol,
-          costsByPct: result.costsByPct,
-          sizeSol,
-          reason: result.reason,
-          context: "Entry Spot Instan",
-        });
-        deactivatePool(pool, "redflag non-refundable rent (-95/-90/-85/-80%)");
+        let watchDisabled = false;
+        try {
+          watchDisabled =
+            deactivatePool(pool, "redflag non-refundable rent (-95/-90/-85/-80%)") === true;
+        } catch (err) {
+          log.warn(`Pool ${pool.slice(0, 8)} gagal dinonaktifkan: ${err.message}`);
+        }
+        alertSpotRentRedflag(
+          {
+            pool,
+            pair: result.pair || pair,
+            costsByPct: result.costsByPct,
+            cost95Sol: result.cost95Sol,
+            cost90Sol: result.cost90Sol,
+            upperPct: result.upperPct,
+            maxNonRefundableSol: result.maxNonRefundableSol,
+            sizeSol,
+            reason: result.reason,
+            context: "Entry Spot Instan",
+            watchDisabled,
+          },
+          deps.notifySpotNonRefundableSkipped || tg.notifySpotNonRefundableSkipped
+        );
         return result;
       }
 
