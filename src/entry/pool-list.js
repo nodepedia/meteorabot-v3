@@ -42,18 +42,22 @@ function resolveEntryMode(modeRaw) {
   return null;
 }
 
-// Baris `alamat` saja memakai default dari .env (ENTRY_DEFAULT_SIZE_SOL /
-// ENTRY_DEFAULT_MAX_POSITION); `alamat,size,max` atau `alamat,size,max,spot` meng-override.
+// Baris `alamat` saja memakai ENTRY_DEFAULT_SIZE_SOL.
+// Format lama `alamat,size,max[,mode[,ca]]` tetap terbaca: kolom ke-3 (max
+// entry seumur hidup) diabaikan. Mode tetap kolom ke-4.
 export function parsePoolList(raw) {
   const defaultSize = Number(config.entry.defaultSizeSol);
-  const defaultMax = Number(config.entry.defaultMaxPositions);
   const entries = [];
 
   for (const line of String(raw || "").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
 
-    const [address, sizeRaw, maxRaw, modeRaw, kindRaw] = trimmed.split(",").map((s) => s.trim());
+    const parts = trimmed.split(",").map((s) => s.trim());
+    const address = parts[0];
+    const sizeRaw = parts[1];
+    const modeRaw = parts[3];
+    const kindRaw = parts[4];
     if (!address) continue;
     // Kolom ke-5 `ca`: kolom pertama adalah CA token (mint), pool dipilih saat entry.
     const isCa = Boolean(kindRaw && kindRaw.split(/[\s#]/)[0].toLowerCase() === "ca");
@@ -72,14 +76,12 @@ export function parsePoolList(raw) {
     const sizeSol = secondIsSpot ? defaultSize : resolveSizeSol(sizeRaw, defaultSize);
     if (!Number.isFinite(sizeSol) || sizeSol <= 0) {
       log.warn(
-        `Pool ${address.slice(0, 8)} skipped: entry_size invalid "${sizeRaw ?? ""}" (set ENTRY_DEFAULT_SIZE_SOL atau tulis alamat,size,max)`
+        `Pool ${address.slice(0, 8)} skipped: entry_size invalid "${sizeRaw ?? ""}" (set ENTRY_DEFAULT_SIZE_SOL atau tulis alamat,size)`
       );
       continue;
     }
 
-    const maxNum = maxRaw ? Number(maxRaw) : defaultMax;
-    const maxPositions = Number.isFinite(maxNum) && maxNum > 0 ? Math.floor(maxNum) : defaultMax;
-    entries.push(isCa ? { pool: address, sizeSol, maxPositions, mode, ca: true } : { pool: address, sizeSol, maxPositions, mode });
+    entries.push(isCa ? { pool: address, sizeSol, mode, ca: true } : { pool: address, sizeSol, mode });
   }
   return entries;
 }
@@ -189,4 +191,3 @@ export function lookupConfiguredEntrySizeSol(poolAddress, opts = {}) {
   if (Number.isFinite(defaultSize) && defaultSize > 0) return Number(defaultSize.toFixed(6));
   return null;
 }
-

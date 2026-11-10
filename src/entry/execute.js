@@ -12,14 +12,21 @@ import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { getPoolInfo } from "./pool-info.js";
 import { guardPoolPrice, poolPriceSolPerToken } from "./price-guard.js";
-import { trackPosition, setEntryPoolPrice, recordTrackedRange, setEntrySizeSol, getOpenPositionsForMint } from "../state/positions.js";
+import {
+  trackPosition,
+  setEntryPoolPrice,
+  recordTrackedRange,
+  setEntrySizeSol,
+  getOpenPositionsForMint,
+} from "../state/positions.js";
 import { resolveSpotRangeWithRentCheck, openSpotSolPosition } from "../meteora/spot-position.js";
-import { incrementEntryUsage, getEntryUsage, recordAction, recordSpotEntryAttempt, consumeSpotEntryAttempt } from "./runtime.js";
+import { recordAction, recordSpotEntryAttempt, consumeSpotEntryAttempt } from "./runtime.js";
+import { mintBlocksEntry } from "./candidates.js";
 
 const STRATEGY_ENUM = { spot: "Spot", curve: "Curve", bid_ask: "BidAsk" };
 
 export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
-  const { countUsage = true, isDca = false } = opts;
+  const { isDca = false } = opts;
   const { StrategyType } = await getDlmmSdk();
   const connection = getConnection();
   const wallet = getWallet();
@@ -62,8 +69,7 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
       lineTolerancePct: config.entry.poolLineTolerancePct,
       attempts: config.entry.poolPriceMaxAttempts,
       delayMs,
-      onUnavailable: (guard) =>
-        log.warn(`Entry ${label}: ${guard.reason} — lanjut tanpa cek deviasi harga`),
+      onUnavailable: (guard) => log.warn(`Entry ${label}: ${guard.reason} — lanjut tanpa cek deviasi harga`),
       onRetry: ({ attempt, attempts, deviationPct }) =>
         log.warn(
           `Entry ${label}: harga pool ${deviationPct.toFixed(1)}% dari pasar (batas ${limit}%) — coba lagi ${attempt}/${attempts} dalam ${delayMs / 1000}s`
@@ -224,11 +230,10 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
 
   trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode, "bidask:double", isDca);
   setEntryPoolPrice(positionAddress, poolPriceSolPerToken(activeBin, baseIsX));
-  const uses = countUsage ? incrementEntryUsage(poolAddress) : getEntryUsage(poolAddress);
 
   if (isDca) {
     // Naratif DCA ditangani pemanggil (entry/dca.js) agar tidak dobel.
-    log.debug(`[detail] DCA entry ${pair}: position ${positionAddress} tx ${txHash?.slice(0, 16)} (use ${uses})`);
+    log.debug(`[detail] DCA entry ${pair}: position ${positionAddress} tx ${txHash?.slice(0, 16)}`);
   } else if (recovered) {
     log.info(`📌 ENTRY ${pair} — posisi terbuka (dipulihkan dari tx yang konfirmasinya gagal) — ${sizeSol} SOL`);
     recordAction(`ENTRY ${pair} — ${sizeSol} SOL`);
@@ -236,9 +241,7 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
   } else {
     log.info(`📌 ENTRY ${pair} — harga menyentuh garis tren → beli ${sizeSol} SOL`);
     const feeLabel = feePlan.mode !== "none" ? ` | fee ~${feeCap.totalSol.toFixed(6)} SOL (${feePlan.mode})` : "";
-    log.debug(
-      `[detail] pool ${poolAddress} | position ${positionAddress} | tx ${txHash?.slice(0, 16)} | use ${uses}${feeLabel}`
-    );
+    log.debug(`[detail] pool ${poolAddress} | position ${positionAddress} | tx ${txHash?.slice(0, 16)}${feeLabel}`);
     recordAction(`ENTRY ${pair} — ${sizeSol} SOL`);
     tg.notifyEntry({ pair, pool: poolAddress, feeMode: feePlan.mode, feeSol: feeCap.totalSol });
   }
@@ -285,16 +288,25 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
       };
     }
 
-    if (!opts.allowDuplicateMint && getOpenPositionsForMint(baseMint).length > 0) {
-      const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
-      return {
-        success: false,
-        skipped: true,
-        duplicateMint: true,
-        reason: `token ${pair} (${baseMint.slice(0, 8)}) sudah memiliki posisi aktif`,
-        baseMint,
-        pair,
-      };
+    if (!opts.allowDuplicateMint) {
+      const block = mintBlocksEntry(getOpenPositionsForMint(baseMint), {
+        pool: poolAddress,
+        mint: baseMint,
+        strategy: "spot",
+      });
+      if (block.block) {
+        const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
+        return {
+          success: false,
+          skipped: true,
+          duplicateMint: true,
+          reason: block.otherPool
+            ? `token ${pair} (${baseMint.slice(0, 8)}) sudah memiliki posisi aktif di pool lain`
+            : `token ${pair} (${baseMint.slice(0, 8)}) sudah memiliki posisi spot aktif di pool ini`,
+          baseMint,
+          pair,
+        };
+      }
     }
 
     const activeBin = await pool.getActiveBin();
@@ -327,15 +339,7 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
       };
     }
 
-    const {
-      minBinId,
-      maxBinId,
-      depositMinBinId,
-      depositMaxBinId,
-      lowerPctUsed,
-      upperPctUsed,
-      usedFallback,
-    } = rangeRes;
+    const { minBinId, maxBinId, depositMinBinId, depositMaxBinId, lowerPctUsed, upperPctUsed, usedFallback } = rangeRes;
 
     log.info(
       `Executing SPOT entry on pool ${poolAddress.slice(0, 8)}... | size=${sizeSol} SOL | range=${lowerPctUsed}%..+${upperPctUsed}% ([${minBinId}..${maxBinId}], deposit SOL [${depositMinBinId}..${depositMaxBinId}])${usedFallback ? ` [fallback ${lowerPctUsed}%]` : ""}`
@@ -450,10 +454,14 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
     trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode ?? null, "spot", false);
     recordTrackedRange(positionAddress, minBinId, maxBinId);
     setEntrySizeSol(positionAddress, sizeSol);
-    consumeSpotEntryAttempt({ positionPubkey: positionAddress, pool: poolAddress, lowerBin: minBinId, upperBin: maxBinId });
+    consumeSpotEntryAttempt({
+      positionPubkey: positionAddress,
+      pool: poolAddress,
+      lowerBin: minBinId,
+      upperBin: maxBinId,
+    });
     const entryPoolPrice = poolPriceSolPerToken(activeBin, baseIsX);
     if (entryPoolPrice != null) setEntryPoolPrice(positionAddress, entryPoolPrice);
-    incrementEntryUsage(poolAddress);
 
     if (recovered) {
       recordAction(`ENTRY ${pair} — spot ${sizeSol} SOL (dipulihkan dari tx gagal, bin ${minBinId}..${maxBinId})`);

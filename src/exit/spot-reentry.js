@@ -32,9 +32,9 @@ import {
   getOpenPositionsForMint,
   recordClose,
 } from "../state/positions.js";
+import { shouldCloseBeforeSpotReentry } from "../entry/candidates.js";
 import {
   recordAction,
-  transferPoolEntryUsage,
   transferPoolAlias,
   getPoolAlias,
   addEntryInProgressPool,
@@ -311,8 +311,9 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     lockPool(targetPoolAddress);
     lockMint(finalBaseMint);
 
-    // Pastikan posisi sebelumnya dan/atau posisi duplikat di token yang sama (baseMint)
-    // sudah ditutup terlebih dahulu sebelum membuka posisi baru (agar tidak pernah ada 2 posisi di 1 token).
+    // Tutup posisi spot lain (dan posisi di pool lain) pada mint yang sama sebelum
+    // membuka spot baru. Bidask di pool tujuan — termasuk fallback token dan DCA —
+    // tidak ditutup, karena kuota entry mengizinkan satu spot + satu bidask.
     const closeOldPositionFn =
       opts.closeOldPositionFn ||
       (pos.mustCloseFirst
@@ -330,6 +331,8 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       ((dupPos) => handleClose(dupPos, "reposition_dedup_close", { skipDeactivate: false }));
     const otherOpenPositions = getOpenPositionsForMint(finalBaseMint, pos.position);
     for (const dupPos of otherOpenPositions) {
+      // Bidask (fallback OOR kiri, posisi sinyal, DCA) di pool yang sama tidak ditutup.
+      if (!shouldCloseBeforeSpotReentry(dupPos, targetPoolAddress)) continue;
       log.warn(
         `${pair}: ditemukan posisi aktif lain ${dupPos.position.slice(0, 8)} di pool ${dupPos.pool?.slice(0, 8) || "?"} pada token yang sama (${finalBaseMint.slice(0, 8)}) — tutup dulu sebelum buka posisi reposisi`
       );
@@ -533,7 +536,6 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       transferPoolAlias(pos.pool, targetPoolAddress);
       replacePoolInList(pos.pool, targetPoolAddress);
       commentPoolInList(pos.pool);
-      transferPoolEntryUsage(pos.pool, targetPoolAddress);
     }
 
     const nowTs = Date.now();
