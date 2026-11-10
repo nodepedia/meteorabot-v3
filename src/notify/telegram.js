@@ -70,10 +70,10 @@ export function notifyEntry({ pair, pool, feeMode, feeSol }) {
   send(lines.join("\n"));
 }
 
-export function notifyDca({ pair, pool, pnlPct, sizeSol }) {
+export function notifyDca({ pair, pool, pnlPct, sizeSol, trigger = "PnL" }) {
   const pnlStr = pnlPct != null ? `${pnlPct > 0 ? "+" : ""}${pnlPct.toFixed(2)}%` : "?";
   send(
-    `📉 DCA ${pair || pool?.slice(0, 8) || ""}\nEntry baru: ${sizeSol} SOL\nPool: ${pool || "?"}\nTrigger PnL: ${pnlStr}`
+    `📉 DCA ${pair || pool?.slice(0, 8) || ""}\nEntry baru: ${sizeSol} SOL\nPool: ${pool || "?"}\nTrigger ${trigger}: ${pnlStr}`
   );
 }
 
@@ -85,6 +85,29 @@ export function notifyFallback({ pair, pool, success, amount, error }) {
   } else {
     send(
       `⚠️ FALLBACK ${label} GAGAL\nPosisi token-only tidak jadi dibuka${error ? `: ${error}` : ""}\nToken dibiarkan di wallet.\nPool: ${pool || "?"}`
+    );
+  }
+}
+
+// Rebalance sisi token posisi bidask:double ke BidAsk, tiap kelipatan turun harga.
+export function notifyBidaskDoubleRebalance({
+  pair,
+  pool,
+  stepPct,
+  priceChangePct,
+  fromBinId,
+  toBinId,
+  success,
+  error,
+}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
+  const harga = Number.isFinite(Number(priceChangePct)) ? `${Number(priceChangePct).toFixed(1)}%` : "?";
+  if (success) {
+    send(`🔄 ${label} BidAsk rebalance — step ${stepPct}% (harga ${harga}, bin ${rangeStr})`);
+  } else {
+    send(
+      `⚠️ BIDASK REBALANCE ${label} GAGAL (step ${stepPct}%)\n${error ? `Alasan: ${error}\n` : ""}Range token: ${rangeStr}\nPool: ${pool || "?"}`
     );
   }
 }
@@ -222,6 +245,16 @@ export function notifyPoolExpired({ pool, pair, expiryHours }) {
   const label = pair || pool;
   send(
     `⏰ Pool EXPIRED: ${label}\nPool: ${pool}\nTidak ada entry dalam ${expiryHours} jam — pool di-skip dari scan sampai bot restart.`
+  );
+}
+
+// Entry bidask:double dilewati karena tidak ada pool X/SOL dengan bin step cukup.
+// Baris pool.txt sengaja tidak dimatikan: pool baru bisa muncul nanti.
+export function notifyBinStepSkip({ pair, pool, mint, minBinStep, binStep, reason }) {
+  const label = pair || mint?.slice(0, 8) || pool?.slice(0, 8) || "";
+  const have = Number.isFinite(Number(binStep)) ? String(binStep) : "tidak diketahui";
+  send(
+    `⏭ ${label} tidak di-entry (bidask:double)\nButuh bin step ≥ ${minBinStep}. Pool tercatat: ${have}.\n${reason ? `${reason}\n` : ""}Baris pool.txt tidak dimatikan.`
   );
 }
 

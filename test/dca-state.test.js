@@ -23,6 +23,7 @@ const {
   incrementPoolDca,
   decrementPoolDca,
   resetStaleDcaPools,
+  clearDcaArmIfMetricMismatch,
 } = await import("../src/state/dca.js");
 
 const POOL = "PoolDca1111111111111111111111111111111111";
@@ -119,6 +120,32 @@ test("counter persisten (dibaca ulang dari file, tahan restart)", () => {
   incrementPoolDca(POOL);
   // getPoolDcaCount membaca file setiap panggilan -> setara baca ulang saat restart.
   assert.equal(getPoolDcaCount(POOL), 1);
+});
+
+test("arm mode harga menimpa trough PnL yang lebih dalam", () => {
+  resetState();
+  const p = newPos();
+  setDcaArmedAndTrough(p, -80, "pnl");
+  setDcaArmedAndTrough(p, -31, "price");
+  const t = getTrackedPosition(p);
+  assert.equal(t.dcaMetric, "price");
+  assert.equal(t.dcaTrough, -31);
+});
+
+test("ganti mode harga membuang trough PnL lama tapi tidak membuka dcaTriggered", () => {
+  resetState();
+  const p = newPos();
+  setDcaArmedAndTrough(p, -80, "pnl");
+  queueDcaRebound(p, -80, -70);
+  markDcaTriggered(p);
+
+  assert.equal(clearDcaArmIfMetricMismatch(p, "price"), true);
+  const t = getTrackedPosition(p);
+  assert.equal(t.dcaArmed, false);
+  assert.equal(t.dcaTrough, null);
+  assert.equal(t.pendingDcaTrough, null);
+  assert.equal(t.dcaTriggered, true, "posisi yang sudah DCA tidak boleh menembak lagi");
+  assert.equal(clearDcaArmIfMetricMismatch(p, "price"), false, "sudah bersih, tidak menulis ulang");
 });
 
 test("clearDcaState mereset seluruh field DCA posisi", () => {

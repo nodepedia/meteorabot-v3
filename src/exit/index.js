@@ -25,7 +25,14 @@ import { classifyMode, isCompositeMode } from "./classify.js";
 import { processTrailing, clearTrailingTimer } from "./trailing.js";
 import { processBounceRecovery } from "./bounce.js";
 import { clearBounceRecovery } from "../state/bounce.js";
-import { clearDcaState, resetStaleDcaPools, getPoolDcaCount, effectiveDcaArmPct } from "../state/dca.js";
+import {
+  clearDcaState,
+  resetStaleDcaPools,
+  getPoolDcaCount,
+  effectiveDcaArmPct,
+  effectiveDcaPriceArmPct,
+  mainPositionEntryPoolPrice,
+} from "../state/dca.js";
 import {
   getEntryInProgressPools,
   getClosingPools,
@@ -48,8 +55,8 @@ import { handleClose } from "./close.js";
 import { handleSpotOorKiri } from "./spot-fallback.js";
 import { handleSpotOorKananReentry, canSpotReenter } from "./spot-reentry.js";
 import { handleSpotTokenBidask } from "./spot-token-bidask.js";
+import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
-
 
 /**
  * Pulihkan entrySizeSol untuk posisi spot yang baru diadopsi dari on-chain
@@ -86,7 +93,14 @@ let lastSummaryAt = 0;
 // mint; pool sudah dinonaktifkan oleh pemanggil).
 function sweepClosedPosition(baseMint, label, pool) {
   if (!baseMint) return;
-  enqueuePendingSwap({ mint: baseMint, pool, pair: label, reason: "not_detected", deactivate: false, now: Date.now() - 3_600_000 });
+  enqueuePendingSwap({
+    mint: baseMint,
+    pool,
+    pair: label,
+    reason: "not_detected",
+    deactivate: false,
+    now: Date.now() - 3_600_000,
+  });
 }
 
 // Posisi yang tidak lagi terbaca on-chain selama `missingCycleThreshold`
@@ -171,18 +185,22 @@ export function buildDcaLines(positions, getTracked = getTrackedPosition) {
     const armed = list.find((t) => t.dcaArmed && !t.dcaTriggered);
     const count = getPoolDcaCount(pool);
     const dcaOpen = list.some((t) => t.isDca === true);
-    const armPct = effectiveDcaArmPct(count, dcaOpen, config.dca);
+    const priceMode = config.dca.triggerMode === "price" && mainPositionEntryPoolPrice(list);
+    const armPct = priceMode
+      ? effectiveDcaPriceArmPct(count, config.dca)
+      : effectiveDcaArmPct(count, dcaOpen, config.dca);
 
     if (triggered) {
       lines.push(`${name} : sudah DCA (${count}/${config.dca.maxAdds} sesi ini)`);
     } else if (pending) {
       lines.push(`${name} : menunggu konfirmasi pantulan dari titik terendah ${fmtPct(pending.pendingDcaTrough)}`);
     } else if (armed) {
+      const unit = priceMode && armed.dcaMetric === "price" ? "harga " : "";
       lines.push(
-        `${name} : sudah di-arm, titik terendah ${fmtPct(armed.dcaTrough)}, menunggu pantulan +${config.dca.reboundPct}pt`
+        `${name} : sudah di-arm, titik terendah ${unit}${fmtPct(armed.dcaTrough)}, menunggu pantulan +${config.dca.reboundPct}pt`
       );
     } else {
-      lines.push(`${name} : belum menyentuh ${armPct}%`);
+      lines.push(`${name} : belum menyentuh ${armPct}%${priceMode ? " harga" : ""}`);
     }
   }
   return lines;
@@ -289,16 +307,22 @@ export async function mainLoop(opts = {}) {
             log.info(
               `📌 ENTRY ${pairLabel} — posisi spot aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin), size dipulihkan ${recoveredSize} SOL`
             );
-            recordAction(
-              `ENTRY ${pairLabel} — posisi spot terdeteksi on-chain, size ${recoveredSize} SOL`
-            );
+            recordAction(`ENTRY ${pairLabel} — posisi spot terdeteksi on-chain, size ${recoveredSize} SOL`);
           } else {
-            log.info(`📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
-            recordAction(`ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+            log.info(
+              `📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`
+            );
+            recordAction(
+              `ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`
+            );
           }
         } else {
-          log.info(`📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
-          recordAction(`ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`);
+          log.info(
+            `📌 ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} aktif terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`
+          );
+          recordAction(
+            `ENTRY ${pairLabel} — posisi ${tracked?.mode || mode} terdeteksi di on-chain (${pos.binSpan ?? "?"} bin)`
+          );
         }
         log.debug(
           `[detail] ${pairLabel}: mode=${tracked?.mode || mode} (entry base=${pos.entryBaseAmount ?? "?"} sol=${pos.entrySolAmount ?? "?"} span=${pos.binSpan} size=${tracked?.entrySizeSol ?? "?"})`
@@ -409,9 +433,11 @@ export async function mainLoop(opts = {}) {
           armIndicatorTrailing(pos.position, exit.reason, pos.pnlPct);
           log.info(`${pairLabel}: ${humanReason(exit.reason)} → trailing profit disiapkan`);
         }
-        // Rebalance sisi token posisi spot ke distribusi BidAsk tiap kenaikan stepPct% bin di atas activeBin.
+        // Rebalance sisi token: spot (persen bin) dan bidask:double (persen harga entry).
         if (pos.mode === "spot") {
           await handleSpotTokenBidask(pos);
+        } else if (pos.mode === "bidask:double") {
+          await handleBidaskDoubleRebalance(pos);
         }
       }
     }

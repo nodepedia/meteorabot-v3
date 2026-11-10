@@ -10,8 +10,16 @@ process.env.STATE_FILE = path.join(dir, "state.json");
 
 const { default: config } = await import("../src/config/index.js");
 const { parsePoolList, commentPoolInList } = await import("../src/entry/pool-list.js");
-const { pickBestPool, resolveCaPool, shouldLogCaSkip, _clearCaCache, isDlmmPool, markCaPoolInvalid, isCaPoolInvalid } =
-  await import("../src/entry/ca-resolve.js");
+const {
+  pickBestPool,
+  chooseBidaskDoublePool,
+  resolveCaPool,
+  shouldLogCaSkip,
+  _clearCaCache,
+  isDlmmPool,
+  markCaPoolInvalid,
+  isCaPoolInvalid,
+} = await import("../src/entry/ca-resolve.js");
 const rt = await import("../src/entry/runtime.js");
 
 const CA = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
@@ -113,6 +121,118 @@ test("pickBestPool: tanpa filter, hanya X/SOL mint ini, lewati blacklist", () =>
 test("pickBestPool: `address` lama masih diterima sebagai fallback", () => {
   const { pool_address, ...rest } = pool("X");
   assert.equal(pickBestPool([{ ...rest, address: "OLD" }], CA).pool, "OLD");
+});
+
+test("pickBestPool: bin step >= 100, yang dipakai fee/active TVL tertinggi di antara yang lolos", () => {
+  const r = pickBestPool(
+    [
+      pool("FINE", { fee_active_tvl_ratio: 9, dlmm_params: { bin_step: 25 } }),
+      pool("WIDE_LOW", { fee_active_tvl_ratio: 1, dlmm_params: { bin_step: 100 } }),
+      pool("WIDE_HI", { fee_active_tvl_ratio: 4, dlmm_params: { bin_step: 200 } }),
+      pool("NO_STEP", { fee_active_tvl_ratio: 20, dlmm_params: {} }),
+    ],
+    CA,
+    { minBinStep: 100 }
+  );
+  assert.equal(r.pool, "WIDE_HI");
+  assert.equal(r.binStep, 200);
+  assert.equal(r.candidates, 2);
+});
+
+test("pickBestPool: tidak ada bin step yang lolos → skip, bukan pool halus", () => {
+  const r = pickBestPool([pool("FINE", { fee_active_tvl_ratio: 9, dlmm_params: { bin_step: 80 } })], CA, {
+    minBinStep: 100,
+  });
+  assert.equal(r.pool, null);
+  assert.equal(r.binStepMiss, true);
+  assert.match(r.reason, /bin step >= 100/);
+});
+
+test("chooseBidaskDoublePool: pool tercatat yang sudah lolos tidak diganti", () => {
+  const pools = [
+    pool("LISTED", { fee_active_tvl_ratio: 1, dlmm_params: { bin_step: 100 } }),
+    pool("BETTER", { fee_active_tvl_ratio: 9, dlmm_params: { bin_step: 125 } }),
+  ];
+  const keep = chooseBidaskDoublePool({
+    listedPool: "LISTED",
+    listedBinStep: 100,
+    minBinStep: 100,
+    pools,
+    mint: CA,
+  });
+  assert.equal(keep.pool, "LISTED");
+  assert.equal(keep.redirected, false);
+
+  const off = chooseBidaskDoublePool({
+    listedPool: "LISTED",
+    listedBinStep: 20,
+    minBinStep: 0,
+    pools,
+    mint: CA,
+  });
+  assert.equal(off.pool, "LISTED");
+  assert.equal(off.redirected, false);
+});
+
+test("chooseBidaskDoublePool: pool tercatat terlalu halus → pool X/SOL paling efisien yang lolos, atau skip", () => {
+  const pools = [
+    pool("LISTED", { fee_active_tvl_ratio: 9, dlmm_params: { bin_step: 25 } }),
+    pool("OK_LOW", { fee_active_tvl_ratio: 1, dlmm_params: { bin_step: 100 } }),
+    pool("OK_HI", { fee_active_tvl_ratio: 3, dlmm_params: { bin_step: 150 } }),
+  ];
+  const moved = chooseBidaskDoublePool({
+    listedPool: "LISTED",
+    listedBinStep: 25,
+    minBinStep: 100,
+    pools,
+    mint: CA,
+  });
+  assert.equal(moved.pool, "OK_HI");
+  assert.equal(moved.redirected, true);
+  assert.equal(moved.binStep, 150);
+
+  const none = chooseBidaskDoublePool({
+    listedPool: "LISTED",
+    listedBinStep: 25,
+    minBinStep: 100,
+    pools: [pools[0]],
+    mint: CA,
+  });
+  assert.equal(none.pool, null);
+  assert.equal(none.binStepMiss, true);
+
+  // API mengaku bin step 100, on-chain 25: jangan masuk ke pool yang sama.
+  const lied = chooseBidaskDoublePool({
+    listedPool: "LISTED",
+    listedBinStep: 25,
+    minBinStep: 100,
+    pools: [pool("LISTED", { fee_active_tvl_ratio: 9, dlmm_params: { bin_step: 100 } })],
+    mint: CA,
+  });
+  assert.equal(lied.pool, null);
+});
+
+test("resolveCaPool: minBinStep disaring dari data yang sama, tanpa request kedua", async () => {
+  _clearCaCache();
+  let calls = 0;
+  const fetchFn = async () => {
+    calls++;
+    return {
+      ok: true,
+      json: async () => ({
+        data: [
+          pool("FINE", { fee_active_tvl_ratio: 8, dlmm_params: { bin_step: 20 } }),
+          pool("WIDE", { fee_active_tvl_ratio: 2, dlmm_params: { bin_step: 100 } }),
+        ],
+      }),
+    };
+  };
+  const spot = await resolveCaPool(CA, { fetchFn, now: 0, minBinStep: 0 });
+  const bidask = await resolveCaPool(CA, { fetchFn, now: 1_000, minBinStep: 100 });
+  assert.equal(calls, 1);
+  assert.equal(spot.pool, "FINE");
+  assert.equal(bidask.pool, "WIDE");
+  assert.equal(bidask.binStep, 100);
 });
 
 test("pickBestPool: tidak ada pool X/SOL → null + alasan", () => {

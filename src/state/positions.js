@@ -51,6 +51,8 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       dcaArmedAt: null,
       dcaTriggered: false,
       dcaTriggeredAt: null,
+      // "price" | "pnl" | null. null pada posisi lama = trough PnL.
+      dcaMetric: null,
       pendingDcaTrough: null,
       pendingDcaCurrent: null,
       pendingDcaStartedAt: null,
@@ -65,6 +67,9 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       lastSpotTokenBidaskPct: 0,
       lastSpotTokenBidaskAt: null,
       lastSpotTokenBidaskBin: null,
+      // Step rebalance token bidask:double yang sudah dikerjakan (10, 20, 30, ...).
+      lastBidaskDoubleRebalancePct: 0,
+      lastBidaskDoubleRebalanceAt: null,
     };
     writeState(state);
   }
@@ -173,6 +178,22 @@ export function updateSpotTokenBidaskState(positionAddress, pct, at = Date.now()
     p.lastSpotTokenBidaskBin = null;
   }
   writeState(state);
+}
+
+export function updateBidaskDoubleRebalanceState(positionAddress, pct, at = Date.now()) {
+  if (!positionAddress) return;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return;
+  p.lastBidaskDoubleRebalancePct = Math.max(0, Number(pct) || 0);
+  p.lastBidaskDoubleRebalanceAt = at;
+  writeState(state);
+}
+
+export function getPoolTrackedPositions(pool) {
+  if (!pool) return [];
+  const state = readState();
+  return Object.values(state.positions).filter((p) => p && p.pool === pool);
 }
 
 export function updatePnlPeaks(positionAddress, pnlPct) {
@@ -326,7 +347,8 @@ export function countOpenBotPositionsByPool(mode) {
 export function getOpenPositionsForMint(baseMint, excludePositionAddress = null) {
   if (!baseMint) return [];
   return getOpenTrackedPositions().filter(
-    (p) => p && !p.closed && p.baseMint === baseMint && (!excludePositionAddress || p.position !== excludePositionAddress)
+    (p) =>
+      p && !p.closed && p.baseMint === baseMint && (!excludePositionAddress || p.position !== excludePositionAddress)
   );
 }
 

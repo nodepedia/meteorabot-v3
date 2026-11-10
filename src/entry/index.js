@@ -15,7 +15,7 @@ import {
   mintBlocksEntry,
   poolKeysToReset,
 } from "./candidates.js";
-import { resolveCaPool, shouldLogCaSkip, markCaPoolInvalid } from "./ca-resolve.js";
+import { resolveCaPool, chooseBidaskDoublePool, shouldLogCaSkip, markCaPoolInvalid } from "./ca-resolve.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -206,6 +206,8 @@ export async function refreshCandidates() {
         continue;
       }
 
+      const minBinStep = mode === "bidask:double" ? Math.max(0, Number(config.entry.bidaskDoubleMinBinStep) || 0) : 0;
+
       if (ca) {
         if (isEntryInProgressMint(lineKey) || isMintClosing(lineKey)) continue;
         // Strategi yang sama sudah terbuka di mint ini: tunggu, jangan '#' baris CA.
@@ -214,10 +216,19 @@ export async function refreshCandidates() {
             p && p.closed !== true && p.baseMint === lineKey && p.isDca !== true && strategyOfMode(p.mode) === strategy
         );
         if (sameStrategyOpen) continue;
-        const r = await resolveCaPool(lineKey);
+        const r = await resolveCaPool(lineKey, { minBinStep });
         if (!r.pool) {
-          if (shouldLogCaSkip(lineKey, now))
+          if (shouldLogCaSkip(lineKey, now)) {
             log.info(`CA ${lineKey.slice(0, 8)} skip: ${r.reason} (log berikutnya ≥10 menit lagi)`);
+            if (r.binStepMiss) {
+              tg.notifyBinStepSkip({
+                mint: lineKey,
+                pool: lineKey,
+                minBinStep,
+                reason: r.reason,
+              });
+            }
+          }
           continue;
         }
         poolAddress = r.pool;
@@ -230,7 +241,10 @@ export async function refreshCandidates() {
         }
         // Simpan pool hasil resolve → CA, supaya '#'/exit/re-entry ikut baris CA.
         if (getPoolAlias(poolAddress) !== lineKey) setPoolAlias(poolAddress, lineKey);
-        log.info(`CA ${lineKey.slice(0, 8)} → pool ${poolAddress.slice(0, 8)} (fee/active TVL 30m ${r.ratio}%)`);
+        const stepNote = Number.isFinite(Number(r.binStep)) ? `, bin step ${r.binStep}` : "";
+        log.info(
+          `CA ${lineKey.slice(0, 8)} → pool ${poolAddress.slice(0, 8)} (fee/active TVL 30m ${r.ratio}%${stepNote})`
+        );
       }
 
       const slotKey = quotaKey(poolAddress, strategy);
@@ -265,6 +279,92 @@ export async function refreshCandidates() {
       if (!info.baseMint) {
         log.warn(`Pool ${poolAddress.slice(0, 8)} has no base mint — skip`);
         continue;
+      }
+
+      // bidask:double: pool di bawah ambang bin step diganti pool X/SOL paling
+      // efisien yang lolos. Tidak ada pengganti → skip siklus ini, baris tidak di-'#'.
+      // DCA tidak lewat sini; posisi yang sudah terbuka tetap di poolnya.
+      if (!ca && mode === "bidask:double" && minBinStep > 0) {
+        const listedStep = Number(info.pool?.lbPair?.binStep);
+        if (!(Number.isFinite(listedStep) && listedStep >= minBinStep)) {
+          let alt = { pools: [] };
+          try {
+            alt = await resolveCaPool(info.baseMint, { minBinStep });
+          } catch (err) {
+            alt = { pools: [], reason: err.message };
+          }
+          const decision = chooseBidaskDoublePool({
+            listedPool: poolAddress,
+            listedBinStep: listedStep,
+            minBinStep,
+            pools: alt.pools,
+            mint: info.baseMint,
+          });
+          if (!decision.pool) {
+            if (shouldLogCaSkip(`binstep:${lineKey}`, now)) {
+              const why = decision.reason || alt.reason || `bin step < ${minBinStep}`;
+              log.info(
+                `Pool ${lineKey.slice(0, 8)} (${info.pairName || info.baseMint.slice(0, 8)}) skip bidask:double: ${why} — baris tidak dimatikan`
+              );
+              tg.notifyBinStepSkip({
+                pair: info.pairName,
+                pool: lineKey,
+                mint: info.baseMint,
+                minBinStep,
+                binStep: listedStep,
+                reason: why,
+              });
+            }
+            continue;
+          }
+          if (decision.redirected && decision.pool !== poolAddress) {
+            const fromPool = poolAddress;
+            poolAddress = decision.pool;
+            if (
+              skipped.has(poolAddress) ||
+              heldThisRefresh.has(poolAddress) ||
+              now < (failureCooldownUntil.get(poolAddress) || 0)
+            ) {
+              continue;
+            }
+            const altSlot = quotaKey(poolAddress, strategy);
+            if (isQuotaFull(openPositions, poolAddress, strategy)) {
+              stillOpen.add(altSlot);
+              continue;
+            }
+            if (inFlightPools.has(altSlot) || inFlightPools.has(poolAddress)) {
+              if (inFlightPools.has(altSlot)) stillOpen.add(altSlot);
+              continue;
+            }
+            if (getPoolAlias(poolAddress) !== lineKey) setPoolAlias(poolAddress, lineKey);
+            try {
+              info = await getPoolInfo(poolAddress);
+            } catch (err) {
+              log.warn(`Pool ${poolAddress.slice(0, 8)} lookup failed: ${err.message}`);
+              continue;
+            }
+            const altStep = Number(info.pool?.lbPair?.binStep);
+            if (info.unsupported || !info.baseMint || !Number.isFinite(altStep) || altStep < minBinStep) {
+              if (shouldLogCaSkip(`binstep:${lineKey}`, now)) {
+                log.info(
+                  `Pool ${lineKey.slice(0, 8)} skip bidask:double: pengganti ${poolAddress.slice(0, 8)} bin step ${Number.isFinite(altStep) ? altStep : "?"} < ${minBinStep} — baris tidak dimatikan`
+                );
+                tg.notifyBinStepSkip({
+                  pair: info.pairName,
+                  pool: lineKey,
+                  mint: info.baseMint,
+                  minBinStep,
+                  binStep: altStep,
+                  reason: `pengganti bin step < ${minBinStep}`,
+                });
+              }
+              continue;
+            }
+            log.info(
+              `Pool ${fromPool.slice(0, 8)} bin step ${listedStep} < ${minBinStep} → ${poolAddress.slice(0, 8)} (bin step ${altStep}, fee/active TVL 30m ${decision.ratio}%)`
+            );
+          }
+        }
       }
 
       // Pool lain pada mint yang sama tetap dilarang. Strategi lain di pool ini
