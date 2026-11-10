@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { RUNTIME_STATE_FILE } from "../core/paths.js";
 import { recordImportantFromAction } from "../core/important-log.js";
+import { quotaKey } from "./candidates.js";
 
 // Runtime state shared across the 3 independent workers (entry, exit, wallet)
 // via an atomic JSON file on disk, while keeping in-memory Set/Map semantics
@@ -241,6 +242,7 @@ class RuntimeLockSet extends Set {
 // Used by the safety sweep so it never sells tokens mid-entry.
 const entryInProgressMints = new RuntimeLockSet("entryInProgressMints");
 // Pool yang sedang diproses entry/DCA (cegah entry & DCA bentrok di pool sama).
+// Entry sinyal memakai kunci kuota `pool|strategi`; DCA/exit/reentry memakai alamat pool.
 const entryInProgressPools = new RuntimeLockSet("entryInProgressPools");
 // Pool yang sedang ditutup (cegah DCA bertabrakan dengan close/swap).
 const closingPools = new RuntimeLockSet("closingPools");
@@ -302,7 +304,12 @@ export function getEntryInProgressPools() {
 }
 
 export function isEntryInProgressPool(pool) {
-  return entryInProgressPools.has(pool);
+  if (!pool) return false;
+  // Kunci pool (DCA, exit, reentry) atau kunci kuota entry `pool|spot` / `pool|bidask`.
+  if (entryInProgressPools.has(pool)) return true;
+  if (entryInProgressPools.has(quotaKey(pool, "spot"))) return true;
+  if (entryInProgressPools.has(quotaKey(pool, "bidask"))) return true;
+  return false;
 }
 
 export function addEntryInProgressPool(pool) {
@@ -361,11 +368,16 @@ export function setDcaCooldown(pool, ms) {
   }
 }
 
-// Baris CA di pool.txt: posisi dibuka di pool hasil resolve, tapi kuota/usage & '#'
-// mengikuti baris CA. poolAliases[pool] = CA.
+// Baris CA di pool.txt: posisi dibuka di pool hasil resolve, tapi '#' mengikuti
+// baris CA. poolAliases[pool] = CA.
 export function getPoolAlias(pool) {
   if (!pool) return null;
   return syncRuntimeFromDisk().poolAliases?.[pool] || null;
+}
+
+export function getPoolAliases() {
+  const aliases = syncRuntimeFromDisk().poolAliases;
+  return aliases && typeof aliases === "object" ? { ...aliases } : {};
 }
 
 export function setPoolAlias(pool, ca) {
@@ -396,46 +408,9 @@ export function transferPoolAlias(oldPool, newPool) {
   });
 }
 
-const usageKey = (state, pool) => state.poolAliases?.[pool] || pool;
-
-export function getEntryUsage(pool) {
-  if (!pool) return 0;
-  const state = syncRuntimeFromDisk();
-  return state.entryUsage[usageKey(state, pool)] || 0;
-}
-
-export function incrementEntryUsage(pool) {
-  if (!pool) return 0;
-  let uses = 0;
-  mutateRuntimeState((state) => {
-    const k = usageKey(state, pool);
-    uses = (state.entryUsage[k] || 0) + 1;
-    state.entryUsage[k] = uses;
-  });
-  return uses;
-}
-
-export function resetEntryUsage(pool) {
-  if (!pool) return;
-  mutateRuntimeState((state) => {
-    delete state.entryUsage[usageKey(state, pool)];
-    delete state.entryUsage[pool];
-  });
-}
-
-export function transferPoolEntryUsage(oldPool, newPool) {
-  if (!oldPool || !newPool || oldPool === newPool) return 0;
-  let uses = 0;
-  mutateRuntimeState((state) => {
-    const ko = usageKey(state, oldPool);
-    const kn = usageKey(state, newPool);
-    if (ko === kn) { uses = state.entryUsage[ko] || 0; return; }
-    const prev = state.entryUsage[ko] || 0;
-    uses = Math.max(state.entryUsage[kn] || 0, prev, 1);
-    state.entryUsage[kn] = uses;
-  });
-  return uses;
-}
+// `entryUsage` di runtime-state.json lama tetap dibaca (lihat normalizeParsed)
+// supaya file yang sudah ada tidak gagal dimuat. Angkanya tidak lagi dipakai
+// untuk menolak entry.
 
 // Buffer aksi terakhir (entry/DCA/close/sweep) untuk baris "AKSI" di ringkasan log
 // sekaligus mencatat otomatis ke logs/important.log & logs/important-events.jsonl.

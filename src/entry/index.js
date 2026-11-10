@@ -1,13 +1,20 @@
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
-import { countOpenBotPositionsByPool, countOpenBotPositionsByMint } from "../state/positions.js";
+import { getOpenTrackedPositions } from "../state/positions.js";
 import { loadPoolList, commentPoolInList } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
 import { executeEntry, executeSpotEntry } from "./execute.js";
-import { selectWatchCandidates } from "./candidates.js";
+import {
+  selectWatchCandidates,
+  strategyOfMode,
+  quotaKey,
+  isQuotaFull,
+  mintBlocksEntry,
+  poolKeysToReset,
+} from "./candidates.js";
 import { resolveCaPool, shouldLogCaSkip, markCaPoolInvalid } from "./ca-resolve.js";
 import {
   addEntryInProgressMint,
@@ -19,11 +26,10 @@ import {
   isPoolSwapPending,
   isMintSwapPending,
   isMintClosing,
-  getEntryUsage,
-  resetEntryUsage,
   getEntryInProgressPools,
   setPoolAlias,
   getPoolAlias,
+  getPoolAliases,
   clearPoolAliasesFor,
   setWatchSnapshot,
   getSharedWatchSnapshot,
@@ -61,26 +67,66 @@ const skipped = new Set();
 const dryRunNoted = new Set();
 const failureCooldownUntil = new Map();
 const failureCounts = new Map();
-// Mode entry yang selalu dibuka bot (lihat execute.js) — dipakai untuk kuota
-// posisi serentak per mode.
+// Mode default bila baris pool.txt tidak menulis mode.
 const ENTRY_MODE = "bidask:double";
-// Dibagi dengan DCA agar entry sinyal & DCA tidak bentrok di pool yang sama.
+// Lock tx bersama DCA/exit (kunci = alamat pool) plus lock kuota entry
+// (kunci = pool|strategi). Lihat isEntryInProgressPool.
 const inFlightPools = getEntryInProgressPools();
-const enteredPools = new Map(); // pool -> enteredAt (posisi baru dibuka / masih terbuka)
+// Kunci = pool|strategi → waktu entry strategi itu selesai / posisi masih terbuka.
+const enteredPools = new Map();
+// Id baris pool.txt yang aktif pada refresh sebelumnya. Dipakai agar `#` yang
+// dihapus saat proses jalan membersihkan gate memori (cooldown, expiry, skipped).
+let activeLineIds = new Set();
+// Pool yang baru dinonaktifkan di siklus refresh ini, supaya baris strategi lain
+// di pool yang sama tidak ikut masuk di sisa siklus.
+const heldThisRefresh = new Set();
 
 // Kandidat dari refresh lambat; dibaca oleh poll harga cepat.
 let candidateCache = [];
 let _refreshBusy = false;
 let _watchBusy = false;
 
+function clearInMemoryGate(pool) {
+  if (!pool) return;
+  const keys = new Set([pool]);
+  for (const [resolved, ca] of Object.entries(getPoolAliases())) {
+    if (resolved === pool || ca === pool) {
+      keys.add(resolved);
+      keys.add(ca);
+    }
+  }
+  for (const key of keys) {
+    skipped.delete(key);
+    failureCounts.delete(key);
+    failureCooldownUntil.delete(key);
+    dryRunNoted.delete(key);
+    firstSeenAt.delete(key);
+    enteredPools.delete(key);
+    enteredPools.delete(quotaKey(key, "spot"));
+    enteredPools.delete(quotaKey(key, "bidask"));
+  }
+}
+
+function isStrategySlotBusy(pool, mint, strategy) {
+  const key = quotaKey(pool, strategy);
+  if (inFlightPools.has(pool) || inFlightPools.has(key)) return true;
+  if (isPoolClosing(pool) || isPoolSwapPending(pool) || isMintSwapPending(mint)) return true;
+  if (enteredPools.has(key)) return true;
+  if (isEntryInProgressMint(mint) || isMintClosing(mint)) return true;
+  if (mintBlocksEntry(getOpenTrackedPositions(), { pool, mint, strategy }).block) return true;
+  return false;
+}
+
 // Matikan pool secara persisten: beri `#` di pool.txt + hentikan pemantauan
 // in-process seketika (poll harga cepat tidak mengecek `skipped`). Hapus `#`
-// secara manual untuk mengaktifkan kembali.
+// secara manual untuk mengaktifkan kembali — refresh berikutnya mengangkat
+// gate memori (cooldown, timer expiry, skipped) tanpa restart.
 export function deactivatePool(pool, reason) {
   if (!pool) return false;
   // Dry run tidak boleh mengubah pool.txt; cukup skip runtime.
   if (config.dryRun) {
     skipped.add(pool);
+    heldThisRefresh.add(pool);
     return false;
   }
   candidateCache = candidateCache.filter((c) => c.pool !== pool);
@@ -88,15 +134,11 @@ export function deactivatePool(pool, reason) {
   failureCooldownUntil.delete(pool);
   dryRunNoted.delete(pool);
   const alias = getPoolAlias(pool);
+  heldThisRefresh.add(pool);
+  if (alias) heldThisRefresh.add(alias);
   if (commentPoolInList(pool, alias)) {
-    skipped.delete(pool);
-    // Hitungan entry mulai dari nol saat '#' dihapus lagi.
-    resetEntryUsage(pool);
-    if (alias) {
-      skipped.delete(alias);
-      firstSeenAt.delete(alias);
-      clearPoolAliasesFor(alias);
-    }
+    clearInMemoryGate(pool);
+    if (alias) clearPoolAliasesFor(alias);
     log.info(
       `Pool ${pool.slice(0, 8)} ditandai '#' di ${config.entry.poolListFile}${reason ? ` (${reason})` : ""} — hapus '#' untuk memantau lagi`
     );
@@ -116,28 +158,35 @@ export async function refreshCandidates() {
   const refreshStartedAt = Date.now();
 
   try {
+    heldThisRefresh.clear();
     const pools = loadPoolList();
+    const reactivated = poolKeysToReset(activeLineIds, pools);
+    activeLineIds = reactivated.ids;
+    // Baris yang baru aktif lagi (pengguna menghapus `#`) tidak boleh tertahan
+    // gate memori dari siklus sebelumnya.
+    for (const key of reactivated.resetKeys) clearInMemoryGate(key);
+
     if (pools.length === 0) {
       candidateCache = [];
       setWatchSnapshot([]);
       return null;
     }
 
-    // Kuota serentak dihitung dari posisi bidask:double MILIK BOT (state),
-    // bukan hitungan on-chain, agar posisi mode lain (mis. spot manual) tidak
-    // memblokir entry.
-    const openBotByPool = countOpenBotPositionsByPool(ENTRY_MODE);
-    const openSpotByPool = countOpenBotPositionsByPool("spot");
-    const openByMint = countOpenBotPositionsByMint();
-    const seenMintsInBatch = new Set();
+    // Kuota = 1 posisi non-DCA per (pool, strategi). DCA tidak dihitung.
+    // bidask:double / token / sol berbagi slot bidask. Spot punya slot sendiri,
+    // jadi satu spot + satu bidask boleh terbuka di pool yang sama.
+    const openPositions = getOpenTrackedPositions();
+    const seenMintPool = new Map();
     const now = Date.now();
     const candidates = [];
     const stillOpen = new Set();
 
-    for (const { pool: lineKey, sizeSol, maxPositions, mode = ENTRY_MODE, ca = false } of pools) {
+    for (const { pool: lineKey, sizeSol, mode = ENTRY_MODE, ca = false } of pools) {
       // lineKey = kolom pertama baris pool.txt (alamat pool, atau CA untuk baris `,ca`).
       let poolAddress = lineKey;
-      if (skipped.has(poolAddress)) continue;
+      const strategy = strategyOfMode(mode);
+      if (!strategy) continue;
+      if (skipped.has(poolAddress) || heldThisRefresh.has(poolAddress)) continue;
 
       const cooldownUntil = failureCooldownUntil.get(poolAddress) || 0;
       if (now < cooldownUntil) continue;
@@ -157,33 +206,41 @@ export async function refreshCandidates() {
         continue;
       }
 
-      if (getEntryUsage(poolAddress) >= maxPositions) {
-        log.info(`Pool ${poolAddress.slice(0, 8)} reached max position (${maxPositions}) — skip`);
-        skipped.add(poolAddress);
-        continue;
-      }
-
       if (ca) {
-        // Token sudah punya posisi / sedang entry / close: tunggu, jangan '#' baris CA.
-        if ((openByMint.get(lineKey) || 0) >= 1 || isEntryInProgressMint(lineKey) || isMintClosing(lineKey)) continue;
+        if (isEntryInProgressMint(lineKey) || isMintClosing(lineKey)) continue;
+        // Strategi yang sama sudah terbuka di mint ini: tunggu, jangan '#' baris CA.
+        const sameStrategyOpen = openPositions.some(
+          (p) =>
+            p && p.closed !== true && p.baseMint === lineKey && p.isDca !== true && strategyOfMode(p.mode) === strategy
+        );
+        if (sameStrategyOpen) continue;
         const r = await resolveCaPool(lineKey);
         if (!r.pool) {
-          if (shouldLogCaSkip(lineKey, now)) log.info(`CA ${lineKey.slice(0, 8)} skip: ${r.reason} (log berikutnya ≥10 menit lagi)`);
+          if (shouldLogCaSkip(lineKey, now))
+            log.info(`CA ${lineKey.slice(0, 8)} skip: ${r.reason} (log berikutnya ≥10 menit lagi)`);
           continue;
         }
         poolAddress = r.pool;
-        if (skipped.has(poolAddress) || now < (failureCooldownUntil.get(poolAddress) || 0)) continue;
-        // Simpan pool hasil resolve → CA, supaya usage/'#'/exit/re-entry ikut baris CA.
+        if (
+          skipped.has(poolAddress) ||
+          heldThisRefresh.has(poolAddress) ||
+          now < (failureCooldownUntil.get(poolAddress) || 0)
+        ) {
+          continue;
+        }
+        // Simpan pool hasil resolve → CA, supaya '#'/exit/re-entry ikut baris CA.
         if (getPoolAlias(poolAddress) !== lineKey) setPoolAlias(poolAddress, lineKey);
         log.info(`CA ${lineKey.slice(0, 8)} → pool ${poolAddress.slice(0, 8)} (fee/active TVL 30m ${r.ratio}%)`);
       }
 
-      const openCount =
-        mode === "spot"
-          ? (openSpotByPool.get(poolAddress) || 0) + (openBotByPool.get(poolAddress) || 0)
-          : openBotByPool.get(poolAddress) || 0;
-      if (openCount >= config.entry.maxConcurrentBidaskDouble) {
-        stillOpen.add(poolAddress);
+      const slotKey = quotaKey(poolAddress, strategy);
+      if (isQuotaFull(openPositions, poolAddress, strategy)) {
+        stillOpen.add(slotKey);
+        continue;
+      }
+      // Tx strategi ini sedang berjalan, atau pool dikunci DCA/exit/reentry.
+      if (inFlightPools.has(slotKey) || inFlightPools.has(poolAddress)) {
+        if (inFlightPools.has(slotKey)) stillOpen.add(slotKey);
         continue;
       }
 
@@ -210,28 +267,29 @@ export async function refreshCandidates() {
         continue;
       }
 
-      // Guard 1-token-1-posisi: cegah 2 posisi terbuka di token (baseMint) yang sama
-      // walaupun di alamat pool DLMM yang berbeda.
-      const existingOpenForMint = openByMint.get(info.baseMint) || 0;
-      if (existingOpenForMint >= 1) {
-        if (openCount === 0) {
-          log.info(
-            `Pool ${poolAddress.slice(0, 8)} (${info.pairName || info.baseMint.slice(0, 8)}) dilewati — token sudah punya posisi aktif di pool lain`
-          );
-          deactivatePool(poolAddress, "token sudah punya posisi aktif di pool lain");
-        }
-        stillOpen.add(poolAddress);
+      // Pool lain pada mint yang sama tetap dilarang. Strategi lain di pool ini
+      // (spot vs bidask) tidak dilarang — itu kuota terpisah.
+      const mintBlock = mintBlocksEntry(openPositions, {
+        pool: poolAddress,
+        mint: info.baseMint,
+        strategy,
+      });
+      if (mintBlock.otherPool) {
+        if (ca) continue;
+        log.info(
+          `Pool ${poolAddress.slice(0, 8)} (${info.pairName || info.baseMint.slice(0, 8)}) dilewati — token sudah punya posisi aktif di pool lain`
+        );
+        deactivatePool(poolAddress, "token sudah punya posisi aktif di pool lain");
         continue;
       }
-      if (
-        isEntryInProgressMint(info.baseMint) ||
-        isMintClosing(info.baseMint) ||
-        seenMintsInBatch.has(info.baseMint)
-      ) {
-        stillOpen.add(poolAddress);
+      if (mintBlock.sameStrategy) {
+        stillOpen.add(slotKey);
         continue;
       }
-      seenMintsInBatch.add(info.baseMint);
+      if (isEntryInProgressMint(info.baseMint) || isMintClosing(info.baseMint)) continue;
+      const claimedPool = seenMintPool.get(info.baseMint);
+      if (claimedPool && claimedPool !== poolAddress) continue;
+      seenMintPool.set(info.baseMint, poolAddress);
 
       if (mode === "spot") {
         startSpotEntry({
@@ -240,6 +298,7 @@ export async function refreshCandidates() {
           sizeSol,
           pairName: info.pairName,
           mode: "spot",
+          strategy: "spot",
         });
         continue;
       }
@@ -250,18 +309,19 @@ export async function refreshCandidates() {
         sizeSol,
         pairName: info.pairName,
         mode,
+        strategy,
       });
     }
 
-    // Sinkronkan enteredPools dengan posisi terbuka. Pertahankan entry yang
-    // selesai setelah refresh ini mulai (belum sempat terlihat di openByPool).
-    for (const pool of stillOpen) {
-      if (!enteredPools.has(pool)) enteredPools.set(pool, 0);
+    // Sinkronkan enteredPools per (pool, strategi). Pertahankan entry yang
+    // selesai setelah refresh ini mulai (belum sempat terlihat di state).
+    for (const key of stillOpen) {
+      if (!enteredPools.has(key)) enteredPools.set(key, 0);
     }
-    for (const [pool, at] of enteredPools) {
-      if (stillOpen.has(pool)) continue;
+    for (const [key, at] of enteredPools) {
+      if (stillOpen.has(key)) continue;
       if (at >= refreshStartedAt) continue;
-      enteredPools.delete(pool);
+      enteredPools.delete(key);
     }
 
     candidateCache = candidates;
@@ -314,18 +374,8 @@ export async function watchAndEnter() {
 // mencegah retrigger selama swap/tx (10-30s) saat harga masih <= garis.
 function startEntry(trigger, candidate) {
   const { pool, mint, sizeSol, pairName } = candidate;
-  if (
-    inFlightPools.has(pool) ||
-    isPoolClosing(pool) ||
-    isPoolSwapPending(pool) ||
-    isMintSwapPending(mint) ||
-    enteredPools.has(pool) ||
-    isEntryInProgressMint(mint) ||
-    isMintClosing(mint) ||
-    (countOpenBotPositionsByMint().get(mint) || 0) >= 1
-  ) {
-    return;
-  }
+  const strategy = candidate.strategy || strategyOfMode(candidate.mode) || "bidask";
+  if (isStrategySlotBusy(pool, mint, strategy)) return;
 
   const pair = pairName || `${mint.slice(0, 4)}-SOL`;
   log.info(
@@ -340,7 +390,8 @@ function startEntry(trigger, candidate) {
     return;
   }
 
-  addEntryInProgressPool(pool);
+  const slotKey = quotaKey(pool, strategy);
+  addEntryInProgressPool(slotKey);
   addEntryInProgressMint(mint);
 
   executeEntry(
@@ -356,8 +407,10 @@ function startEntry(trigger, candidate) {
   )
     .then((result) => {
       if (result.success) {
-        enteredPools.set(pool, Date.now());
+        enteredPools.set(slotKey, Date.now());
         firstSeenAt.delete(pool);
+        const alias = getPoolAlias(pool);
+        if (alias) firstSeenAt.delete(alias);
         failureCooldownUntil.delete(pool);
         failureCounts.delete(pool);
         return;
@@ -437,11 +490,10 @@ function startEntry(trigger, candidate) {
     })
     .catch((err) => log.error(`Entry error for ${pool.slice(0, 8)}: ${err.message}`))
     .finally(() => {
-      removeEntryInProgressPool(pool);
+      removeEntryInProgressPool(slotKey);
       removeEntryInProgressMint(mint);
     });
 }
-
 
 // Satu alert sewa per pool per proses, supaya gagal tulis daftar tidak memicu spam.
 const rentRedflagAlerted = new Set();
@@ -468,18 +520,8 @@ function alertSpotRentRedflag(payload, notifyFn) {
 // tanpa menunggu sinyal Supertrend 15m.
 export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry, deps = {}) {
   const { pool, mint, sizeSol, pairName } = candidate;
-  if (
-    inFlightPools.has(pool) ||
-    isPoolClosing(pool) ||
-    isPoolSwapPending(pool) ||
-    isMintSwapPending(mint) ||
-    enteredPools.has(pool) ||
-    isEntryInProgressMint(mint) ||
-    isMintClosing(mint) ||
-    (countOpenBotPositionsByMint().get(mint) || 0) >= 1
-  ) {
-    return null;
-  }
+  const strategy = "spot";
+  if (isStrategySlotBusy(pool, mint, strategy)) return null;
 
   const pair = pairName || `${mint.slice(0, 4)}-SOL`;
   log.info(`Pool ${pool.slice(0, 8)} (${pair}) mode=spot — entry instan tanpa tunggu Supertrend (${sizeSol} SOL)`);
@@ -492,14 +534,17 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
     return null;
   }
 
-  addEntryInProgressPool(pool);
+  const slotKey = quotaKey(pool, strategy);
+  addEntryInProgressPool(slotKey);
   addEntryInProgressMint(mint);
 
   return executeSpotEntryFn(pool, sizeSol)
     .then((result) => {
       if (result.success) {
-        enteredPools.set(pool, Date.now());
+        enteredPools.set(slotKey, Date.now());
         firstSeenAt.delete(pool);
+        const alias = getPoolAlias(pool);
+        if (alias) firstSeenAt.delete(alias);
         failureCooldownUntil.delete(pool);
         failureCounts.delete(pool);
         return result;
@@ -511,8 +556,7 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
         );
         let watchDisabled = false;
         try {
-          watchDisabled =
-            deactivatePool(pool, "redflag non-refundable rent (-95/-90/-85/-80%)") === true;
+          watchDisabled = deactivatePool(pool, "redflag non-refundable rent (-95/-90/-85/-80%)") === true;
         } catch (err) {
           log.warn(`Pool ${pool.slice(0, 8)} gagal dinonaktifkan: ${err.message}`);
         }
@@ -574,7 +618,7 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
     })
     .catch((err) => log.error(`Spot entry error for ${pool.slice(0, 8)}: ${err.message}`))
     .finally(() => {
-      removeEntryInProgressPool(pool);
+      removeEntryInProgressPool(slotKey);
       removeEntryInProgressMint(mint);
     });
 }

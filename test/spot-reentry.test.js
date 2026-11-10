@@ -33,16 +33,11 @@ const {
   setLastSpotReentryAt,
   clearSpotReentryCooldown,
 } = await import("../src/exit/spot-reentry.js");
-const {
-  calcBinsForPricePct,
-  resolveSpotRangeWithRentCheck,
-  openSpotSolPosition,
-} = await import("../src/meteora/spot-position.js");
+const { calcBinsForPricePct, resolveSpotRangeWithRentCheck, openSpotSolPosition } =
+  await import("../src/meteora/spot-position.js");
 const { executeSpotEntry } = await import("../src/entry/execute.js");
 const { startSpotEntry } = await import("../src/entry/index.js");
 const {
-  incrementEntryUsage,
-  getEntryUsage,
   takeRecentActions,
   recordSpotEntryAttempt,
   consumeSpotEntryAttempt,
@@ -566,7 +561,6 @@ test("handleSpotOorKananReentry: evaluasi ulang semua pool DLMM TOKEN/SOL dan pi
 
   const savedPoolListFile = config.entry.poolListFile;
   config.entry.poolListFile = poolFile;
-  incrementEntryUsage(OLD_POOL);
 
   try {
     trackPosition(POS, OLD_POOL, "LAUNCH-SOL", MINT, 1, "spot");
@@ -650,8 +644,6 @@ test("handleSpotOorKananReentry: evaluasi ulang semua pool DLMM TOKEN/SOL dan pi
     assert.equal(getTrackedPosition(res.position).pool, BEST_POOL);
     // pool.txt otomatis di-update dari OLD_POOL ke BEST_POOL dengan mempertahankan multiplier & mode
     assert.equal(fs.readFileSync(poolFile, "utf8"), `${BEST_POOL},1.25x,1,spot\n`);
-    // entryUsage juga ikut ditransfer ke BEST_POOL agar worker entry tidak buka posisi ganda
-    assert.ok(getEntryUsage(BEST_POOL) >= 1);
     // Cooldown aktif di kedua pool
     assert.ok(getSpotReentryCooldownRemainingMs(OLD_POOL) > 0);
     assert.ok(getSpotReentryCooldownRemainingMs(BEST_POOL) > 0);
@@ -823,6 +815,40 @@ test("executeSpotEntry: tolak buka posisi ke-2 bila token (baseMint) sudah punya
   assert.equal(getOpenPositionsForMint(MINT).length, 1);
 });
 
+test("executeSpotEntry: bidask di pool yang sama tidak menolak spot; spot kedua di pool yang sama ditolak", async () => {
+  resetState();
+  const POOL = "PoolSame11111111111111111111111111111111111";
+  const MINT = "MintSame1111111111111111111111111111111111";
+  trackPosition("BidaskOpen", POOL, "TEST-SOL", MINT, 1, "bidask:token", false);
+  trackPosition("DcaOpen", POOL, "TEST-SOL", MINT, 1, "bidask:double", true);
+
+  const mockPool = {
+    lbPair: { binStep: 100 },
+    async getActiveBin() {
+      return { binId: 1000, pricePerToken: "0.001" };
+    },
+    async quoteCreatePosition() {
+      return { binArrayCost: 0, bitmapExtensionCost: 0, positionCost: 0 };
+    },
+  };
+  const info = async () => ({
+    pool: mockPool,
+    baseMint: MINT,
+    baseIsX: true,
+    unsupported: false,
+    pairName: "TEST-SOL",
+  });
+
+  const ok = await executeSpotEntry(POOL, 0.1, { dryRun: true, getPoolInfo: info });
+  assert.equal(ok.success, true);
+  assert.equal(ok.dryRun, true);
+
+  trackPosition("SpotOpen", POOL, "TEST-SOL", MINT, 1, "spot", false);
+  const blocked = await executeSpotEntry(POOL, 0.1, { dryRun: true, getPoolInfo: info });
+  assert.equal(blocked.success, false);
+  assert.equal(blocked.duplicateMint, true);
+});
+
 test("executeSpotEntry: tx error tapi posisi on-chain → recovered + entrySizeSol tersimpan", async () => {
   resetState();
   const wallet = Keypair.generate();
@@ -870,7 +896,7 @@ test("executeSpotEntry: tx error tapi posisi on-chain → recovered + entrySizeS
     checkFeeCap: () => ({ ok: true, estimatedSol: 0, maxSol: 0.002 }),
     sendAndConfirmRobust: async () => {
       confirmCalls++;
-      const err = new Error("Tx gagal on-chain: {\"Custom\":6004}");
+      const err = new Error('Tx gagal on-chain: {"Custom":6004}');
       err.signature = "sig_landed_but_err";
       throw err;
     },
@@ -1035,8 +1061,5 @@ test("handleSpotOorKananReentry: tanpa entrySizeSol → fallback size entry pool
 test("lookupConfiguredEntrySizeSol: baca multiplier dari baris aktif maupun #", () => {
   const raw = `#${POOL},1.25x,1,spot\nOtherPool111111111111111111111111111111111,2x,1,spot\n`;
   assert.equal(lookupConfiguredEntrySizeSol(POOL, { raw, alias: null }), 0.125);
-  assert.equal(
-    lookupConfiguredEntrySizeSol("OtherPool111111111111111111111111111111111", { raw, alias: null }),
-    0.2
-  );
+  assert.equal(lookupConfiguredEntrySizeSol("OtherPool111111111111111111111111111111111", { raw, alias: null }), 0.2);
 });

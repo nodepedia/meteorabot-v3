@@ -23,16 +23,16 @@ test("alamat saja memakai default dari config", () => {
   withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
     const out = parsePoolList(`${ADDR_A}\n${ADDR_B}\n`);
     assert.deepEqual(out, [
-      { pool: ADDR_A, sizeSol: 0.2, maxPositions: 1, mode: "bidask:double" },
-      { pool: ADDR_B, sizeSol: 0.2, maxPositions: 1, mode: "bidask:double" },
+      { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:double" },
+      { pool: ADDR_B, sizeSol: 0.2, mode: "bidask:double" },
     ]);
   });
 });
 
-test("alamat,size,max meng-override default", () => {
+test("alamat,size,max: size dipakai, kolom max lama diabaikan", () => {
   withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
     const out = parsePoolList(`${ADDR_A},0.5,3\n`);
-    assert.deepEqual(out, [{ pool: ADDR_A, sizeSol: 0.5, maxPositions: 3, mode: "bidask:double" }]);
+    assert.deepEqual(out, [{ pool: ADDR_A, sizeSol: 0.5, mode: "bidask:double" }]);
   });
 });
 
@@ -40,18 +40,18 @@ test("multiplier 1x / 1.25x / 1.5x dan tier1/tier2/tier3 dihitung dari defaultSi
   withEntry({ defaultSizeSol: 0.1, defaultMaxPositions: 1 }, () => {
     const out = parsePoolList(`${ADDR_A},1x,1\n${ADDR_B},1.25x,1\n${ADDR_A},1.5x,2\n`);
     assert.deepEqual(out, [
-      { pool: ADDR_A, sizeSol: 0.1, maxPositions: 1, mode: "bidask:double" },
-      { pool: ADDR_B, sizeSol: 0.125, maxPositions: 1, mode: "bidask:double" },
-      { pool: ADDR_A, sizeSol: 0.15, maxPositions: 2, mode: "bidask:double" },
+      { pool: ADDR_A, sizeSol: 0.1, mode: "bidask:double" },
+      { pool: ADDR_B, sizeSol: 0.125, mode: "bidask:double" },
+      { pool: ADDR_A, sizeSol: 0.15, mode: "bidask:double" },
     ]);
   });
 
   withEntry({ defaultSizeSol: 1, defaultMaxPositions: 1 }, () => {
     const out = parsePoolList(`${ADDR_A},tier1,1\n${ADDR_B},tier2,1\n${ADDR_A},tier3,1\n`);
     assert.deepEqual(out, [
-      { pool: ADDR_A, sizeSol: 1, maxPositions: 1, mode: "bidask:double" },
-      { pool: ADDR_B, sizeSol: 1.25, maxPositions: 1, mode: "bidask:double" },
-      { pool: ADDR_A, sizeSol: 1.5, maxPositions: 1, mode: "bidask:double" },
+      { pool: ADDR_A, sizeSol: 1, mode: "bidask:double" },
+      { pool: ADDR_B, sizeSol: 1.25, mode: "bidask:double" },
+      { pool: ADDR_A, sizeSol: 1.5, mode: "bidask:double" },
     ]);
   });
 });
@@ -62,23 +62,21 @@ test("kolom ke-4 spot (Runner Spot) dan kolom ke-2 spot mengatur mode: spot", ()
       `${ADDR_A},1x,1,spot\n${ADDR_B},1.25x,1,SPOT\n${ADDR_A},1.5x,1,spot\n${ADDR_B},0.15,1,spot\n${ADDR_A},spot\n`
     );
     assert.deepEqual(out, [
-      { pool: ADDR_A, sizeSol: 0.2, maxPositions: 1, mode: "spot" },
-      { pool: ADDR_B, sizeSol: 0.25, maxPositions: 1, mode: "spot" },
-      { pool: ADDR_A, sizeSol: 0.3, maxPositions: 1, mode: "spot" },
-      { pool: ADDR_B, sizeSol: 0.15, maxPositions: 1, mode: "spot" },
-      { pool: ADDR_A, sizeSol: 0.2, maxPositions: 1, mode: "spot" },
+      { pool: ADDR_A, sizeSol: 0.2, mode: "spot" },
+      { pool: ADDR_B, sizeSol: 0.25, mode: "spot" },
+      { pool: ADDR_A, sizeSol: 0.3, mode: "spot" },
+      { pool: ADDR_B, sizeSol: 0.15, mode: "spot" },
+      { pool: ADDR_A, sizeSol: 0.2, mode: "spot" },
     ]);
   });
 });
 
 test("kolom ke-4 bidask / bidask:double valid, nilai lain di-skip", () => {
   withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
-    const out = parsePoolList(
-      `${ADDR_A},1x,1,bidask\n${ADDR_B},1x,1,bidask:double\n${ADDR_A},1x,1,invalid_mode\n`
-    );
+    const out = parsePoolList(`${ADDR_A},1x,1,bidask\n${ADDR_B},1x,1,bidask:double\n${ADDR_A},1x,1,invalid_mode\n`);
     assert.deepEqual(out, [
-      { pool: ADDR_A, sizeSol: 0.2, maxPositions: 1, mode: "bidask:double" },
-      { pool: ADDR_B, sizeSol: 0.2, maxPositions: 1, mode: "bidask:double" },
+      { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:double" },
+      { pool: ADDR_B, sizeSol: 0.2, mode: "bidask:double" },
     ]);
   });
 });
@@ -86,7 +84,7 @@ test("kolom ke-4 bidask / bidask:double valid, nilai lain di-skip", () => {
 test("baris # dan kosong diabaikan", () => {
   withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
     const out = parsePoolList(`# ${ADDR_A}\n\n   #${ADDR_B}\n${ADDR_A}\n`);
-    assert.deepEqual(out, [{ pool: ADDR_A, sizeSol: 0.2, maxPositions: 1, mode: "bidask:double" }]);
+    assert.deepEqual(out, [{ pool: ADDR_A, sizeSol: 0.2, mode: "bidask:double" }]);
   });
 });
 
@@ -128,7 +126,7 @@ test("loadPoolList membaca dari file", () => {
   config.entry.poolListFile = file;
   config.entry.defaultSizeSol = 0.2;
   try {
-    assert.deepEqual(loadPoolList(), [{ pool: ADDR_A, sizeSol: 0.2, maxPositions: 1, mode: "bidask:double" }]);
+    assert.deepEqual(loadPoolList(), [{ pool: ADDR_A, sizeSol: 0.2, mode: "bidask:double" }]);
   } finally {
     config.entry.poolListFile = saved;
     config.entry.defaultSizeSol = savedSize;

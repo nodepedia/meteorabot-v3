@@ -24,7 +24,6 @@ test("runtime locks & state sinkron lintas proses (worker-entry <-> worker-exit 
       addEntryInProgressPool,
       addClosingPool,
       addClosingMint,
-      incrementEntryUsage,
       setDcaCooldown,
       recordAction,
       setWatchSnapshot,
@@ -34,8 +33,6 @@ test("runtime locks & state sinkron lintas proses (worker-entry <-> worker-exit 
     addEntryInProgressPool("PoolEntryInFlight222");
     addClosingPool("PoolClosing333");
     addClosingMint("MintClosing444");
-    incrementEntryUsage("PoolEntryInFlight222");
-    incrementEntryUsage("PoolEntryInFlight222");
     setDcaCooldown("PoolEntryInFlight222", 60000);
     recordAction("ENTRY BONK-SOL — 1 SOL");
     setWatchSnapshot([{ pool: "PoolEntryInFlight222", pairName: "BONK-SOL", mint: "MintEntryInFlight111" }]);
@@ -55,7 +52,6 @@ test("runtime locks & state sinkron lintas proses (worker-entry <-> worker-exit 
   assert.equal(runtime.isEntryInProgressPool("PoolEntryInFlight222"), true);
   assert.equal(runtime.isPoolClosing("PoolClosing333"), true);
   assert.equal(runtime.isMintClosing("MintClosing444"), true);
-  assert.equal(runtime.getEntryUsage("PoolEntryInFlight222"), 2);
   assert.ok(runtime.getDcaCooldownUntil("PoolEntryInFlight222") > Date.now());
   assert.deepEqual(runtime.takeRecentActions(60_000), ["ENTRY BONK-SOL — 1 SOL"]);
   assert.equal(runtime.getSharedWatchSnapshot().length, 1);
@@ -130,4 +126,21 @@ test("worker-wallet runWalletCycle mencatat status wallet & ringkasan PnL ke run
   assert.equal(pnlSummary.wins, 1);
   assert.equal(pnlSummary.losses, 1);
   assert.equal(pnlSummary.avgRealizedPct, 5);
+});
+
+test("runtime-state.json lama dengan entryUsage tetap terbaca", () => {
+  runtime.resetRuntimeState();
+  fs.writeFileSync(
+    process.env.RUNTIME_STATE_FILE,
+    JSON.stringify({
+      entryUsage: { PoolLama: 4, bad: "nope", zero: 0 },
+      entryInProgressPools: { "PoolZ|bidask": Date.now() + 60_000 },
+    })
+  );
+  const state = runtime.readRuntimeStateStrict();
+  assert.equal(state.entryUsage.PoolLama, 4);
+  assert.equal(state.entryUsage.bad, undefined);
+  assert.equal(state.entryUsage.zero, undefined);
+  assert.equal(runtime.isEntryInProgressPool("PoolZ"), true);
+  assert.equal(runtime.isEntryInProgressPool("PoolLain"), false);
 });

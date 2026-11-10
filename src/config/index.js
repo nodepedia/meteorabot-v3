@@ -100,16 +100,14 @@ export function buildConfig(e = {}) {
   const entry = {
     enabled: bool(e.ENTRY_ENABLED, true),
     poolListFile: e.POOL_LIST_FILE || "pool.txt",
-    // Baris CA (`<mint>,size,max,spot,ca`): pool dipilih saat entry = fee/active TVL 30m
+    // Baris CA (`<mint>,size,,spot,ca`, atau format lama `<mint>,size,max,spot,ca`):
+    // pool dipilih saat entry = fee/active TVL 30m
     // tertinggi di antara pool DLMM token itu yang lolos filter di bawah.
+    // Kolom max lama diabaikan.
     caCacheSec: Math.max(0, num(e.CA_POOL_CACHE_SEC, 60)),
-    // Default untuk baris pool.txt yang hanya berisi alamat (tanpa ,size,max).
+    // Default untuk baris pool.txt yang hanya berisi alamat.
+    // Kuota serentak bukan setting: 1 posisi non-DCA per strategi (spot / bidask) per pool.
     defaultSizeSol: num(e.ENTRY_DEFAULT_SIZE_SOL, 0.1),
-    defaultMaxPositions: Math.max(1, Math.floor(num(e.ENTRY_DEFAULT_MAX_POSITION, 1))),
-    // Kuota posisi `bidask:double` milik bot yang boleh terbuka serentak di satu
-    // pool. Posisi mode lain (mis. spot manual) tidak dihitung, jadi tidak
-    // memblokir entry.
-    maxConcurrentBidaskDouble: Math.max(1, Math.floor(num(e.ENTRY_MAX_CONCURRENT_BIDASK_DOUBLE, 1))),
     // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
     scanIntervalSec: num(e.ENTRY_SCAN_INTERVAL_SEC, 15),
     timeframe: e.ENTRY_TIMEFRAME || "15m",

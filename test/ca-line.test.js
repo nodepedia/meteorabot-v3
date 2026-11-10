@@ -10,14 +10,17 @@ process.env.STATE_FILE = path.join(dir, "state.json");
 
 const { default: config } = await import("../src/config/index.js");
 const { parsePoolList, commentPoolInList } = await import("../src/entry/pool-list.js");
-const { pickBestPool, resolveCaPool, shouldLogCaSkip, _clearCaCache, isDlmmPool, markCaPoolInvalid, isCaPoolInvalid } = await import("../src/entry/ca-resolve.js");
+const { pickBestPool, resolveCaPool, shouldLogCaSkip, _clearCaCache, isDlmmPool, markCaPoolInvalid, isCaPoolInvalid } =
+  await import("../src/entry/ca-resolve.js");
 const rt = await import("../src/entry/runtime.js");
 
 const CA = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
 const POOL = "3C6qVymTAwWNKCSspmd1qbUH9avaqhsjgW2yntvEYBXt";
 const SOL = "So11111111111111111111111111111111111111112";
 // Bentuk asli API pool-discovery: field `pool_address` (bukan `address`).
-const FIXTURE = JSON.parse(fs.readFileSync(new URL("./fixtures/meteora-pools-query-stonks.json", import.meta.url), "utf8"));
+const FIXTURE = JSON.parse(
+  fs.readFileSync(new URL("./fixtures/meteora-pools-query-stonks.json", import.meta.url), "utf8")
+);
 const STONKS = "22r9JGoWRBYc4Z1pkSFw8p2tdjefS2ZZshw1vr8bBC2K";
 const pool = (pool_address, o = {}) => ({
   pool_address,
@@ -34,11 +37,11 @@ test("parse baris CA (kolom ke-5 ca)", () => {
   const saved = { ...config.entry };
   Object.assign(config.entry, { defaultSizeSol: 0.2, defaultMaxPositions: 1 });
   try {
-    assert.deepEqual(parsePoolList(`${CA},1.5x,1,spot,ca\n`), [{ pool: CA, sizeSol: 0.3, maxPositions: 1, mode: "spot", ca: true }]);
+    assert.deepEqual(parsePoolList(`${CA},1.5x,1,spot,ca\n`), [{ pool: CA, sizeSol: 0.3, mode: "spot", ca: true }]);
     // baris manual tidak berubah (tanpa properti ca)
     assert.deepEqual(parsePoolList(`${POOL},1x,1,spot\n${POOL}\n`), [
-      { pool: POOL, sizeSol: 0.2, maxPositions: 1, mode: "spot" },
-      { pool: POOL, sizeSol: 0.2, maxPositions: 1, mode: "bidask:double" },
+      { pool: POOL, sizeSol: 0.2, mode: "spot" },
+      { pool: POOL, sizeSol: 0.2, mode: "bidask:double" },
     ]);
     assert.deepEqual(parsePoolList(`${CA},1x,1,spot,xyz\n#${CA},1x,1,spot,ca\n`), []);
   } finally {
@@ -148,11 +151,9 @@ test("resolveCaPool: fetch gagal → skip (pool null)", async () => {
   assert.equal(r.pool, null);
 });
 
-test("alias pool→CA: usage dihitung per baris CA dan '#' kena baris CA", () => {
+test("alias pool→CA: '#' kena baris CA", () => {
   rt.setPoolAlias(POOL, CA);
   assert.equal(rt.getPoolAlias(POOL), CA);
-  rt.incrementEntryUsage(POOL);
-  assert.equal(rt.getEntryUsage(CA), 1);
   const f = path.join(dir, "pool.txt");
   fs.writeFileSync(f, `${CA},1x,1,spot,ca\nOTHER,1x,1,spot\n`);
   const saved = config.entry.poolListFile;
@@ -163,8 +164,6 @@ test("alias pool→CA: usage dihitung per baris CA dan '#' kena baris CA", () =>
   } finally {
     config.entry.poolListFile = saved;
   }
-  rt.resetEntryUsage(POOL);
-  assert.equal(rt.getEntryUsage(CA), 0);
   rt.transferPoolAlias(POOL, "NEWPOOL");
   assert.equal(rt.getPoolAlias(POOL), null);
   assert.equal(rt.getPoolAlias("NEWPOOL"), CA);
