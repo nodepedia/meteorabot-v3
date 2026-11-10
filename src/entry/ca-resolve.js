@@ -31,7 +31,9 @@ const isMintSolPool = (p, mint) => {
 // gagal terus di DLMM.create ("Invalid account discriminator").
 export function isDlmmPool(p) {
   if (!p || typeof p !== "object") return false;
-  const t = String(p.pool_type || "").trim().toLowerCase();
+  const t = String(p.pool_type || "")
+    .trim()
+    .toLowerCase();
   if (t && t !== "dlmm") return false;
   // pool_type kosong/dlmm: damm_v2_params tanpa dlmm_params = bukan DLMM.
   if (p.dlmm_params == null && p.damm_v2_params) return false;
@@ -47,9 +49,11 @@ export function isCaPoolInvalid(poolAddress) {
   return Boolean(poolAddress) && invalidPools.has(poolAddress);
 }
 
-// Murni: baris CA tidak memakai filter efisiensi — pilih pool DLMM X/SOL dengan
-// fee/active TVL 30m tertinggi (pool blacklist Meteora & non-DLMM dilewati).
-export function pickBestPool(pools, mint, { exclude = [] } = {}) {
+// Murni: pilih pool DLMM X/SOL dengan fee/active TVL 30m tertinggi
+// (pool blacklist Meteora & non-DLMM dilewati).
+// minBinStep > 0: hanya pool dengan bin step >= ambang. Tidak ada yang lolos
+// → binStepMiss, supaya pemanggil bisa skip tanpa menandai baris '#'.
+export function pickBestPool(pools, mint, { exclude = [], minBinStep = 0 } = {}) {
   const excluded = new Set([...(exclude || []), ...invalidPools.keys()].filter(Boolean));
   const own = (pools || []).filter((p) => {
     const addr = addrOf(p);
@@ -60,8 +64,58 @@ export function pickBestPool(pools, mint, { exclude = [] } = {}) {
     return true;
   });
   if (own.length === 0) return { pool: null, reason: "tidak ada pool DLMM X/SOL untuk CA ini" };
-  const best = [...own].sort((a, b) => (n(b.fee_active_tvl_ratio) || 0) - (n(a.fee_active_tvl_ratio) || 0))[0];
-  return { pool: addrOf(best), ratio: n(best.fee_active_tvl_ratio), candidates: own.length };
+
+  const min = Math.max(0, Number(minBinStep) || 0);
+  const eligible =
+    min > 0
+      ? own.filter((p) => {
+          const step = binStepOf(p);
+          return Number.isFinite(step) && step >= min;
+        })
+      : own;
+  if (eligible.length === 0) {
+    return {
+      pool: null,
+      reason: `tidak ada pool DLMM X/SOL dengan bin step >= ${min}`,
+      binStepMiss: true,
+      candidates: 0,
+    };
+  }
+  const best = [...eligible].sort((a, b) => (n(b.fee_active_tvl_ratio) || 0) - (n(a.fee_active_tvl_ratio) || 0))[0];
+  return {
+    pool: addrOf(best),
+    ratio: n(best.fee_active_tvl_ratio),
+    candidates: eligible.length,
+    binStep: binStepOf(best),
+  };
+}
+
+// Baris alamat pool untuk bidask:double.
+// Pool yang sudah >= ambang tetap dipakai (tidak diganti yang "lebih efisien").
+// Di bawah ambang: pilih pool X/SOL lain dengan fee/active TVL 30m tertinggi
+// yang bin step-nya lolos. Tidak ada → jangan entry.
+export function chooseBidaskDoublePool({ listedPool, listedBinStep, minBinStep = 0, pools, mint } = {}) {
+  const min = Math.max(0, Number(minBinStep) || 0);
+  const step = Number(listedBinStep);
+  if (!(min > 0) || (Number.isFinite(step) && step >= min)) {
+    return { pool: listedPool || null, redirected: false, binStep: Number.isFinite(step) ? step : null };
+  }
+  const picked = pickBestPool(pools, mint, { minBinStep: min });
+  if (!picked.pool || picked.pool === listedPool) {
+    return {
+      pool: null,
+      redirected: false,
+      binStepMiss: true,
+      reason: picked.reason || `bin step ${Number.isFinite(step) ? step : "?"} < ${min}`,
+    };
+  }
+  return {
+    pool: picked.pool,
+    redirected: true,
+    ratio: picked.ratio,
+    binStep: picked.binStep,
+    candidates: picked.candidates,
+  };
 }
 
 export async function fetchMintPools(mint, fetchFn = fetch) {
@@ -72,7 +126,10 @@ export async function fetchMintPools(mint, fetchFn = fetch) {
   return Array.isArray(j) ? j : j?.data || j?.pools || [];
 }
 
-export async function resolveCaPool(mint, { fetchFn = fetch, now = Date.now(), cfg = config.entry } = {}) {
+export async function resolveCaPool(
+  mint,
+  { fetchFn = fetch, now = Date.now(), cfg = config.entry, minBinStep = 0 } = {}
+) {
   let hit = cache.get(mint);
   if (!hit || now - hit.at > cfg.caCacheSec * 1000) {
     try {
@@ -83,7 +140,7 @@ export async function resolveCaPool(mint, { fetchFn = fetch, now = Date.now(), c
       return { pool: null, reason: err.message };
     }
   }
-  return pickBestPool(hit.pools, mint);
+  return { ...pickBestPool(hit.pools, mint, { minBinStep }), pools: hit.pools };
 }
 
 // Rate-limit log skip: maksimal 1x per CA per intervalMs (default 10 menit).

@@ -122,6 +122,9 @@ export function buildConfig(e = {}) {
     // Default untuk baris pool.txt yang hanya berisi alamat.
     // Kuota serentak bukan setting: 1 posisi non-DCA per strategi (spot / bidask) per pool.
     defaultSizeSol: num(e.ENTRY_DEFAULT_SIZE_SOL, 0.1),
+    // Entry bidask:double hanya ke pool bin step >= nilai ini. 0 = mati.
+    // Spot dan mode lain tidak memakai angka ini. DCA tidak pindah pool.
+    bidaskDoubleMinBinStep: Math.max(0, Math.floor(num(e.BIDASK_DOUBLE_MIN_BIN_STEP, 100))),
     // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
     scanIntervalSec: num(e.ENTRY_SCAN_INTERVAL_SEC, 15),
     timeframe: e.ENTRY_TIMEFRAME || "15m",
@@ -191,8 +194,8 @@ export function buildConfig(e = {}) {
     // Mode price: kedua ambang diukur dari entryPoolPrice posisi utama yang sama.
     // DCA#1 saat harga <= armPricePct, DCA#2 saat <= armPricePct2, baik DCA#1
     // masih terbuka maupun sudah close.
-    armPricePct: num(e.DCA_ARM_PRICE_PCT, -30),
-    armPricePct2: num(e.DCA_ARM_PRICE_PCT_2, -45),
+    armPricePct: num(e.DCA_ARM_PRICE_PCT, -20),
+    armPricePct2: num(e.DCA_ARM_PRICE_PCT_2, -35),
     reboundPct: Math.max(0, num(e.DCA_REBOUND_PCT, 1)),
     maxAdds: Math.max(0, Math.floor(num(e.DCA_MAX_ADDS, 2))),
     // Cross-check harga pool saat arm mode pnl: tahan arm bila PnL <= armPct tapi

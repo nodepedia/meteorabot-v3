@@ -28,7 +28,9 @@ export function poolPriceChangePct(entryPrice, nowPrice) {
   const entry = Number(entryPrice);
   const now = Number(nowPrice);
   if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(now) || now <= 0) return null;
-  return (now / entry - 1) * 100;
+  // 80/100 tidak tepat di floating point (-19.999…), padahal itu turun 20%.
+  // Pembulatan 6 desimal membuat ambang -20 / -35 kena pada harga yang memang segitu.
+  return Math.round((now / entry - 1) * 100 * 1e6) / 1e6;
 }
 
 // Acuan harga mode price: posisi UTAMA (bukan DCA), terbuka lebih dulu.

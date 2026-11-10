@@ -322,6 +322,7 @@ export function maybeStartDca(pos, tracked, pairLabel) {
     return true;
   }
 
+  // Tetap di pool posisi yang sudah terbuka. Kunci bin step hanya untuk entry baru.
   executeEntry(pos.pool, { direction: "bullish", line: null, price: null, touchType: "dca" }, entry.sizeSol, {
     countUsage: false,
     isDca: true,

@@ -43,7 +43,8 @@ Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kal
 - `ENTRY_MAX_FAILURES=3`: pool di-`#` setelah gagal entry sebanyak ini
 - `POOL_LIST_FILE=pool.txt`
 - `SPOT_INDICATOR_EXIT=immediate`: posisi spot langsung close saat sinyal indikator (RSI+MACD / RSI+BB). Isi `trailing` untuk perilaku lama (arm trailing dulu). BidAsk tidak terpengaruh.
-- `DCA_TRIGGER_MODE=price`: DCA `bidask:double` meng-arm dari turunnya harga pool vs harga entry posisi utama (`DCA_ARM_PRICE_PCT=-30`, DCA kedua `DCA_ARM_PRICE_PCT_2=-45`). Isi `pnl` untuk kembali ke pemicu PnL lama. Posisi lama tanpa harga entry ikut mode PnL.
+- `DCA_TRIGGER_MODE=price`: DCA `bidask:double` meng-arm dari turunnya harga pool vs harga entry posisi utama (`DCA_ARM_PRICE_PCT=-20`, DCA kedua `DCA_ARM_PRICE_PCT_2=-35`). Isi `pnl` untuk kembali ke pemicu PnL lama. Posisi lama tanpa harga entry ikut mode PnL.
+- `BIDASK_DOUBLE_MIN_BIN_STEP=100`: entry `bidask:double` hanya ke pool dengan bin step minimal 100. Yang dipilih di antara yang lolos = fee/active TVL 30m tertinggi. Tidak ada yang lolos = lewati siklus itu, baris tidak diberi `#`. `0` mematikan aturan ini. Spot tidak kena. DCA tetap di pool posisi yang sudah terbuka.
 - `BIDASK_DOUBLE_REBALANCE_ENABLED=true`: saat harga pool turun kelipatan 10% dari harga entry tiap posisi `bidask:double`, token di atas bin aktif dibentuk ulang jadi BidAsk di posisi yang sama. `false` mematikan fitur ini.
 - Swap ke SOL saat close: token base **dan** reward di-swap ke SOL, kecuali mint yang dilindungi (posisi aktif, entry/rebalance/reentry OOR kanan/fallback OOR kiri yang sedang berjalan, USDC). Swap gagal → "swap tertunda", dicoba ulang tiap `SWAP_PENDING_RETRY_SEC` (90s); pool baru ditandai `#` setelah swap tuntas atau dihentikan (alert Telegram). Safety sweep juga memindai token Token-2022.
 

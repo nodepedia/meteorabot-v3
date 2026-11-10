@@ -12,8 +12,8 @@ const cfg = {
   enabled: true,
   armPct: -10,
   armPct2: -30,
-  armPricePct: -30,
-  armPricePct2: -45,
+  armPricePct: -20,
+  armPricePct2: -35,
   reboundPct: 1,
   priceConfirm: true,
 };
@@ -44,38 +44,38 @@ test("acuan harga = posisi utama, bukan posisi DCA", () => {
 });
 
 test("ambang harga: DCA#2 selalu dari acuan yang sama, abaikan DCA#1 masih terbuka", () => {
-  assert.equal(effectiveDcaPriceArmPct(0, cfg), -30);
-  assert.equal(effectiveDcaPriceArmPct(1, cfg), -45);
-  assert.equal(effectiveDcaPriceArmPct(2, cfg), -45);
+  assert.equal(effectiveDcaPriceArmPct(0, cfg), -20);
+  assert.equal(effectiveDcaPriceArmPct(1, cfg), -35);
+  assert.equal(effectiveDcaPriceArmPct(2, cfg), -35);
 });
 
-test("mode price: arm -30, trail, rebound 1 poin harga — PnL tidak ikut", () => {
+test("mode price: arm -20, trail, rebound 1 poin harga — PnL tidak ikut", () => {
   const base = {
     triggerMode: "price",
-    entryPoolPrice: 1,
+    entryPoolPrice: 100,
     count: 0,
     dcaOpen: true,
     cfg,
     tracked: tracked(),
   };
-  const shallow = evaluateDcaForTrigger({ ...base, nowPrice: 0.8, pnlPct: -90 });
+  const shallow = evaluateDcaForTrigger({ ...base, nowPrice: 85, pnlPct: -90 });
   assert.equal(shallow.action, "noop");
   assert.equal(shallow.reason, "not_armed");
   assert.equal(shallow.mode, "price");
   assert.equal(shallow.priceConfirm, false);
 
-  const armed = evaluateDcaForTrigger({ ...base, nowPrice: 0.7, pnlPct: 5 });
+  const armed = evaluateDcaForTrigger({ ...base, nowPrice: 80, pnlPct: 5 });
   assert.equal(armed.action, "arm");
-  assert.ok(Math.abs(armed.trough - -30) < 1e-9);
+  assert.equal(armed.trough, -20);
 
   const deeper = evaluateDcaForTrigger({
     ...base,
-    nowPrice: 0.6,
+    nowPrice: 60,
     pnlPct: -1,
-    tracked: tracked({ dcaArmed: true, dcaTrough: -30, dcaMetric: "price" }),
+    tracked: tracked({ dcaArmed: true, dcaTrough: -20, dcaMetric: "price" }),
   });
   assert.equal(deeper.action, "trail");
-  assert.ok(Math.abs(deeper.trough - -40) < 1e-6);
+  assert.equal(deeper.trough, -40);
 
   // Trough -40 (harga 60). Naik 1 poin harga = perubahan -39 (harga 61) → rebound.
   const rebound = evaluateDcaForTrigger({
@@ -99,11 +99,11 @@ test("mode price: arm -30, trail, rebound 1 poin harga — PnL tidak ikut", () =
   assert.ok(hold.rebound < 1);
 });
 
-test("mode price: DCA#2 butuh -45 dari entry utama walau DCA#1 masih terbuka", () => {
+test("mode price: DCA#2 butuh -35 dari entry utama walau DCA#1 masih terbuka", () => {
   const mid = evaluateDcaForTrigger({
     triggerMode: "price",
-    entryPoolPrice: 1,
-    nowPrice: 0.65,
+    entryPoolPrice: 100,
+    nowPrice: 70,
     pnlPct: -50,
     count: 1,
     dcaOpen: true,
@@ -111,13 +111,13 @@ test("mode price: DCA#2 butuh -45 dari entry utama walau DCA#1 masih terbuka", (
     tracked: tracked({ position: "dca1", isDca: true }),
   });
   assert.equal(mid.action, "noop");
-  assert.equal(mid.armPct, -45);
+  assert.equal(mid.armPct, -35);
   assert.equal(mid.reason, "not_armed");
 
   const deep = evaluateDcaForTrigger({
     triggerMode: "price",
-    entryPoolPrice: 1,
-    nowPrice: 0.5,
+    entryPoolPrice: 100,
+    nowPrice: 65,
     pnlPct: -1,
     count: 1,
     dcaOpen: false,
@@ -125,8 +125,8 @@ test("mode price: DCA#2 butuh -45 dari entry utama walau DCA#1 masih terbuka", (
     tracked: tracked(),
   });
   assert.equal(deep.action, "arm");
-  assert.equal(deep.armPct, -45);
-  assert.ok(deep.metric <= -45);
+  assert.equal(deep.armPct, -35);
+  assert.ok(deep.metric <= -35);
 });
 
 test("mode price: PnL yang berubah tidak menggeser keputusan (rebalance tidak memicu DCA)", () => {

@@ -248,6 +248,16 @@ export function notifyPoolExpired({ pool, pair, expiryHours }) {
   );
 }
 
+// Entry bidask:double dilewati karena tidak ada pool X/SOL dengan bin step cukup.
+// Baris pool.txt sengaja tidak dimatikan: pool baru bisa muncul nanti.
+export function notifyBinStepSkip({ pair, pool, mint, minBinStep, binStep, reason }) {
+  const label = pair || mint?.slice(0, 8) || pool?.slice(0, 8) || "";
+  const have = Number.isFinite(Number(binStep)) ? String(binStep) : "tidak diketahui";
+  send(
+    `⏭ ${label} tidak di-entry (bidask:double)\nButuh bin step ≥ ${minBinStep}. Pool tercatat: ${have}.\n${reason ? `${reason}\n` : ""}Baris pool.txt tidak dimatikan.`
+  );
+}
+
 export function notifyPoolUnsupported({ pool, pair, quoteMint }) {
   const label = pair || pool;
   send(
