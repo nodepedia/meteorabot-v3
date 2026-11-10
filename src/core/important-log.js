@@ -65,7 +65,7 @@ export function inferActionLogMeta(text) {
   const isError = /\b(GAGAL|ERROR|ABORTED|FAILED)\b/i.test(clean) || /batas .* tercapai/i.test(clean);
 
   let category = "SYSTEM";
-  if (/^SPOT\s+SOL\s+REBALANCE\b/i.test(clean)) {
+  if (/^(SPOT|BIDASK)\s+SOL\s+REBALANCE\b/i.test(clean)) {
     category = "REBALANCE_SOL_SPOT";
   } else if (
     /^SPOT\s+(TOKEN\s+)?BIDASK\b/i.test(clean) ||
@@ -100,7 +100,7 @@ export function inferActionLogMeta(text) {
   if (type === "ERROR") {
     switch (category) {
       case "REBALANCE_SOL_SPOT":
-        actionNeeded = "SOL hasil withdraw tetap aman di wallet; cek koneksi RPC atau saldo gas";
+        actionNeeded = "Rebalance SOL belum selesai. Cek RPC dan saldo gas. SOL yang sempat keluar tetap di wallet.";
         break;
       case "REBALANCE_BIDASK":
         actionNeeded = "Token base yang ditarik dilepas dari lock dan akan di-sweep otomatis ke SOL oleh worker-wallet";
@@ -216,7 +216,7 @@ export function inferLoggerMeta(level, rawMsg) {
     };
   }
 
-  if (/Spot SOL Rebalance/i.test(clean)) {
+  if (/Spot SOL Rebalance/i.test(clean) || /BidAsk SOL rebalance/i.test(clean)) {
     return {
       shouldRecord: true,
       type: "ERROR",

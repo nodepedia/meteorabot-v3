@@ -89,6 +89,19 @@ export function notifyFallback({ pair, pool, success, amount, error }) {
   }
 }
 
+// Rebalance sisi SOL posisi bidask:double ke BidAsk, saat harga pulih satu step.
+export function notifyBidaskDoubleSolRebalance({ pair, pool, lastPct, stepPct, fromBinId, toBinId, success, error }) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
+  if (success) {
+    send(`🔄 ${label} rebalance SOL jadi BidAsk — pulih ${lastPct ?? "?"}% → ${stepPct ?? 0}% (bin ${rangeStr})`);
+  } else {
+    send(
+      `⚠️ BIDASK SOL REBALANCE ${label} GAGAL (pulih ${lastPct ?? "?"}% → ${stepPct ?? 0}%)\n${error ? `Alasan: ${error}\n` : ""}Range SOL: ${rangeStr}\nPool: ${pool || "?"}`
+    );
+  }
+}
+
 // Rebalance sisi token posisi bidask:double ke BidAsk, tiap kelipatan turun harga.
 export function notifyBidaskDoubleRebalance({
   pair,

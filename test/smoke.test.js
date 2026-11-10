@@ -55,6 +55,7 @@ const MODULES = [
   "../src/exit/close.js",
   "../src/exit/spot-fallback.js",
   "../src/exit/spot-reentry.js",
+  "../src/exit/rebalance-shape.js",
   "../src/exit/spot-token-bidask.js",
   "../src/exit/bidask-double-rebalance.js",
   "../src/worker-entry.js",

@@ -125,6 +125,119 @@ test("tanpa harga entry, fitur mati, atau bukan bidask:double → tidak rebalanc
   );
 });
 
+test("sisi SOL: harga pulih satu step membentuk ulang BidAsk, cooldown dan kunci DCA tetap berlaku", () => {
+  const armed = tracked({ lastBidaskDoubleRebalancePct: 20, lastBidaskDoubleRebalanceAt: 1_000_000 });
+  const hit = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: armed,
+    cfg,
+    priceChangePct: -8,
+    now: 1_070_000,
+  });
+  assert.equal(hit.action, "rebalance_sol");
+  assert.equal(hit.stepLevel, 0);
+  assert.equal(hit.reason, "recover_20_to_0pct");
+  assert.equal(hit.lastPct, 20);
+
+  const cooled = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: armed,
+    cfg,
+    priceChangePct: -8,
+    now: 1_010_000,
+  });
+  assert.equal(cooled.action, "cooldown");
+
+  const shallow = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: armed,
+    cfg,
+    priceChangePct: -12,
+    now: 1_070_000,
+  });
+  assert.equal(shallow.action, "none");
+  assert.equal(shallow.reason, "below_next_step");
+
+  assert.equal(
+    evaluateBidaskDoubleRebalance({
+      pos,
+      tracked: armed,
+      cfg,
+      priceChangePct: -8,
+      now: 1_070_000,
+      dcaConfirmPending: true,
+    }).reason,
+    "dca_confirm_pending"
+  );
+  assert.equal(
+    evaluateBidaskDoubleRebalance({
+      pos,
+      tracked: armed,
+      cfg,
+      priceChangePct: -8,
+      now: 1_070_000,
+      entryInProgress: true,
+    }).reason,
+    "entry_in_progress"
+  );
+  assert.equal(
+    evaluateBidaskDoubleRebalance({
+      pos,
+      tracked: armed,
+      cfg: { ...cfg, solEnabled: false },
+      priceChangePct: -8,
+      now: 1_070_000,
+    }).reason,
+    "sol_disabled"
+  );
+
+  const stillDown = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: armed,
+    cfg,
+    priceChangePct: -30,
+    now: 1_070_000,
+  });
+  assert.equal(stillDown.action, "rebalance");
+  assert.equal(stillDown.stepLevel, 30);
+
+  const other = evaluateBidaskDoubleRebalance({
+    pos: { ...pos, position: "dca1" },
+    tracked: tracked({ position: "dca1", lastBidaskDoubleRebalancePct: 10, lastBidaskDoubleRebalanceAt: 1_000_000 }),
+    cfg,
+    priceChangePct: 1,
+    now: 1_070_000,
+  });
+  assert.equal(other.action, "rebalance_sol");
+  assert.equal(other.stepLevel, 0);
+});
+
+test("sisi SOL: geser bin satu step ikut memicu, di luar rentang tidak", () => {
+  const hit = evaluateBidaskDoubleRebalance({
+    pos: { ...pos, activeBin: 130, lowerBin: 0, upperBin: 200 },
+    tracked: tracked({
+      lastBidaskDoubleRebalancePct: 20,
+      lastBidaskDoubleRebalanceAt: 1_000_000,
+      lastBidaskDoubleRebalanceBin: 100,
+    }),
+    cfg,
+    priceChangePct: -12,
+    now: 2_000_000,
+  });
+  assert.equal(hit.action, "rebalance_sol");
+  assert.equal(hit.stepLevel, 10);
+
+  const oor = evaluateBidaskDoubleRebalance({
+    pos: { ...pos, activeBin: 250, lowerBin: 0, upperBin: 200 },
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 20, lastBidaskDoubleRebalanceAt: 1_000_000 }),
+    cfg,
+    priceChangePct: 5,
+    now: 2_000_000,
+  });
+  assert.equal(oor.reason, "out_of_range");
+  assert.equal(oor.action, "none");
+});
+
 test("bin token yang dibentuk ulang: di atas active, atau seluruh range bila harga di bawah range", () => {
   assert.deepEqual(tokenSideBinsForBidaskRebalance(100, 80, 140), { fromBinId: 101, toBinId: 140 });
   assert.deepEqual(tokenSideBinsForBidaskRebalance(70, 80, 140), { fromBinId: 80, toBinId: 140 });
