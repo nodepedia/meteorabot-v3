@@ -22,40 +22,20 @@ import {
   recordAction,
 } from "../entry/runtime.js";
 import { getTrackedPosition, updateSpotTokenBidaskState } from "../state/positions.js";
+import {
+  DEFAULT_MAX_BINS_PER_TX,
+  capRedepositRaw,
+  patchRebalanceNoShrink,
+  rebalanceBuildersFromSdk,
+  resolveRebalanceMode,
+  solSpendCapRaw,
+  tryInPlaceRebalance,
+  uiToRaw,
+} from "./rebalance-shape.js";
 
-const DEFAULT_MAX_BINS_PER_TX = 70;
-const REBALANCE_LIQUIDITY_DISCRIMINATOR = Buffer.from([92, 4, 176, 193, 119, 185, 83, 9]);
-// Offset byte `shrink_mode` pada instruksi Anchor `rebalance_liquidity`:
-// 8 (discriminator) + 4 (active_id: i32) + 2 (max_active_bin_slippage: u16)
-// + 1 (should_claim_fee: bool) + 1 (should_claim_reward: bool)
-// + 8 (min_withdraw_x_amount: u64) + 8 (max_deposit_x_amount: u64)
-// + 8 (min_withdraw_y_amount: u64) + 8 (max_deposit_y_amount: u64) = 48.
-const REBALANCE_SHRINK_MODE_OFFSET = 48;
-const SHRINK_MODE_NO_SHRINK_BOTH = 3;
+export { patchRebalanceNoShrink };
 
 const rebalanceInProgress = new Set();
-
-// Pure: pastikan seluruh instruksi `rebalance_liquidity` di dalam tx memakai
-// `shrink_mode = 3` (NoShrinkBoth) agar batas lowerBinId / upperBinId posisi
-// tidak pernah menyusut ketika deposit dilakukan per chunk 70 bin setelah withdraw.
-export function patchRebalanceNoShrink(txs) {
-  const list = Array.isArray(txs) ? txs : txs ? [txs] : [];
-  for (const tx of list) {
-    const ixs = tx?.instructions;
-    if (!Array.isArray(ixs)) continue;
-    for (const ix of ixs) {
-      const data = ix?.data;
-      if (
-        Buffer.isBuffer(data) &&
-        data.length > REBALANCE_SHRINK_MODE_OFFSET &&
-        data.subarray(0, 8).equals(REBALANCE_LIQUIDITY_DISCRIMINATOR)
-      ) {
-        data[REBALANCE_SHRINK_MODE_OFFSET] = SHRINK_MODE_NO_SHRINK_BOTH;
-      }
-    }
-  }
-  return list;
-}
 
 // Pure: hitung metrik bin token (di atas activeBin) & bin SOL (<= activeBin) untuk posisi spot.
 // Ketika harga turun di dalam rentang (lowerBin <= activeBin < upperBin),
@@ -731,7 +711,8 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
       return { triggered: false, success: false, error: "unsupported_pool" };
     }
 
-    const { StrategyType } = await getDlmmSdkFn();
+    const sdkMod = await getDlmmSdkFn();
+    const { StrategyType } = sdkMod;
     const connection = getConnectionFn();
     const wallet = getWalletFn();
     const positionPubKey = new PublicKey(positionAddress);
@@ -810,134 +791,195 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
         return { triggered: false, success: false, error: errMsg, feeCap: true };
       }
 
-      let solBalanceBeforeLamports = null;
-      if (typeof connection?.getBalance === "function") {
-        try {
-          solBalanceBeforeLamports = await connection.getBalance(wallet.publicKey);
-        } catch {}
-      }
-
       const label = pairName || pair;
       const recordedSolUi = Number(solCheck.totalSolLamports.toString()) / 1e9;
-      log.info(
-        `🔄 SPOT SOL REBALANCE ${label} — tarik semua (${recordedSolUi > 0 ? `${recordedSolUi.toFixed(4)} ` : ""}SOL) dari bin ${fromBinId}→${toBinId} lalu add Spot (recover ${decision.lastPct}% → ${decision.stepLevel}%)`
-      );
-
-      // 1. Tarik 100% seluruh likuiditas SOL dari [fromBinId .. toBinId] terlebih dahulu tanpa menutup posisi.
-      const rawRemoveTxs = await pool.removeLiquidity({
-        user: wallet.publicKey,
-        position: positionPubKey,
-        fromBinId,
-        toBinId,
-        bps: new BN(10000),
-        shouldClaimAndClose: false,
-      });
-      const removeTxs = Array.isArray(rawRemoveTxs) ? rawRemoveTxs : [rawRemoveTxs];
-      const removeSignatures = [];
-      for (const tx of removeTxs) {
-        const sent = await sendAndConfirmFn({
-          connection,
-          tx,
-          signers: [wallet],
-          feePlan,
-          wallet,
-        });
-        if (sent?.signature) removeSignatures.push(sent.signature);
-      }
-
-      // 2. Catat jumlah exact SOL yang ditarik dari posisi (dibatasi saldo wallet setelah dikurangi gas reserve).
-      let solBalanceAfterLamports = null;
-      if (typeof connection?.getBalance === "function") {
-        try {
-          solBalanceAfterLamports = await connection.getBalance(wallet.publicKey);
-        } catch {}
-      }
-
-      let targetSolLamports = solCheck.totalSolLamports;
-      if (
-        targetSolLamports.lte(new BN(0)) &&
-        solBalanceBeforeLamports != null &&
-        solBalanceAfterLamports != null &&
-        solBalanceAfterLamports > solBalanceBeforeLamports
-      ) {
-        targetSolLamports = new BN(String(Math.floor(solBalanceAfterLamports - solBalanceBeforeLamports)));
-      }
-
-      if (solBalanceAfterLamports != null && Number.isFinite(Number(solBalanceAfterLamports))) {
-        const gasReserveSol = Number(config.wallet?.minSolReserve ?? config.entry?.gasReserve ?? 0.05) || 0;
-        const gasReserveLamports = new BN(String(Math.floor(gasReserveSol * 1e9)));
-        const afterBn = new BN(String(Math.floor(Number(solBalanceAfterLamports))));
-        const maxAvailableLamports = BN.max(new BN(0), afterBn.sub(gasReserveLamports));
-        targetSolLamports = BN.min(targetSolLamports, maxAvailableLamports);
-      }
-
       const spotStrategyType = StrategyType?.Spot ?? 0;
+      const mode = resolveRebalanceMode(deps.rebalanceMode, config.rebalance?.mode);
+      const removeSignatures = [];
+      const addSignatures = [];
+      let targetSolLamports = solCheck.totalSolLamports;
+      let usedInPlace = false;
+
+      if (mode === "inplace") {
+        const inplace = await tryInPlaceRebalance({
+          pool,
+          positionPubKey,
+          positionData: onChainPos.positionData,
+          wallet,
+          connection,
+          feePlan,
+          sendAndConfirmFn,
+          fromBinId,
+          toBinId,
+          activeBinId,
+          binStep: pool?.lbPair?.binStep,
+          token: baseIsX ? "y" : "x",
+          strategyType: spotStrategyType,
+          builders: rebalanceBuildersFromSdk(sdkMod),
+          slippagePct: config.entry.activeBinSlippagePct,
+        });
+        if (inplace.ok) {
+          usedInPlace = true;
+          addSignatures.push(...inplace.signatures);
+          targetSolLamports = inplace.depositedRaw;
+          log.info(
+            `🔄 SPOT SOL REBALANCE ${label} — bentuk ulang di tempat ${recordedSolUi > 0 ? `${recordedSolUi.toFixed(4)} ` : ""}SOL, bin ${fromBinId}→${toBinId} jadi Spot (pulih ${decision.lastPct}% → ${decision.stepLevel}%)`
+          );
+        } else if (inplace.partial) {
+          const partialErr = inplace.error || inplace.reason;
+          log.error(`Spot SOL Rebalance ${label}: rebalance di tempat terputus (${partialErr})`);
+          recordAction(
+            `SPOT SOL REBALANCE ${label} GAGAL (recover ${decision.lastPct}%→${decision.stepLevel}%) — ${partialErr}`
+          );
+          notifySolFn({
+            rebalanceType: "sol_spot",
+            pair: label,
+            pool: poolAddress,
+            position: positionAddress,
+            lastPct: decision.lastPct,
+            stepPct: decision.stepLevel,
+            fromBinId,
+            toBinId,
+            success: false,
+            error: partialErr,
+          });
+          return {
+            triggered: true,
+            success: false,
+            rebalanceType: "sol_spot",
+            error: partialErr,
+            stepLevel: decision.stepLevel,
+            addSignatures: inplace.signatures,
+          };
+        } else {
+          log.info(
+            `Spot SOL Rebalance ${label}: rebalance di tempat tidak dipakai (${inplace.reason}${inplace.error ? `: ${inplace.error}` : ""}) — tarik lalu setor hanya jumlah yang keluar`
+          );
+        }
+      }
+
       const maxRetry = Math.max(1, Math.floor(Number(cfg.retry) || 3));
       let lastErr = null;
       let remainingSolRaw = targetSolLamports;
       let nextFromBinId = fromBinId;
-      const addSignatures = [];
 
-      for (let attempt = 1; attempt <= maxRetry; attempt++) {
-        try {
-          if (targetSolLamports.lte(new BN(0))) {
-            throw new Error("jumlah SOL yang ditarik dari posisi 0 atau di bawah cadangan gas");
-          }
-          if (remainingSolRaw.lte(new BN(0))) break;
+      if (!usedInPlace) {
+        log.info(
+          `🔄 SPOT SOL REBALANCE ${label} — tarik semua (${recordedSolUi > 0 ? `${recordedSolUi.toFixed(4)} ` : ""}SOL) dari bin ${fromBinId}→${toBinId} lalu add Spot (recover ${decision.lastPct}% → ${decision.stepLevel}%)`
+        );
 
-          let depositToBinId = toBinId;
-          if (attempt > 1 && typeof pool.getActiveBin === "function") {
-            try {
-              const refreshed = await pool.getActiveBin();
-              if (Number.isFinite(Number(refreshed?.binId))) {
-                const maxAllowedBin = solCheck.activeBinHasBase ? Number(refreshed.binId) - 1 : Number(refreshed.binId);
-                depositToBinId = Math.max(nextFromBinId, Math.min(toBinId, maxAllowedBin));
-              }
-            } catch {}
-          }
+        let solBalanceBeforeLamports = null;
+        if (typeof connection?.getBalance === "function") {
+          try {
+            solBalanceBeforeLamports = await connection.getBalance(wallet.publicKey);
+          } catch {}
+        }
 
-          const chunks = chunkSpotRanges(nextFromBinId, depositToBinId, remainingSolRaw, DEFAULT_MAX_BINS_PER_TX);
-          if (chunks.length === 0) {
-            throw new Error("chunkSpotRanges menghasilkan 0 chunk untuk deposit SOL");
-          }
+        // 1. Tarik 100% seluruh likuiditas SOL dari [fromBinId .. toBinId] terlebih dahulu tanpa menutup posisi.
+        const rawRemoveTxs = await pool.removeLiquidity({
+          user: wallet.publicKey,
+          position: positionPubKey,
+          fromBinId,
+          toBinId,
+          bps: new BN(10000),
+          shouldClaimAndClose: false,
+        });
+        const removeTxs = Array.isArray(rawRemoveTxs) ? rawRemoveTxs : [rawRemoveTxs];
+        for (const tx of removeTxs) {
+          const sent = await sendAndConfirmFn({
+            connection,
+            tx,
+            signers: [wallet],
+            feePlan,
+            wallet,
+          });
+          if (sent?.signature) removeSignatures.push(sent.signature);
+        }
 
-          for (const chunk of chunks) {
-            const totalXAmount = baseIsX ? new BN(0) : chunk.amountRaw;
-            const totalYAmount = baseIsX ? chunk.amountRaw : new BN(0);
+        // 2. Setor ulang hanya SOL yang keluar dari posisi, tidak pernah saldo wallet penuh.
+        let solBalanceAfterLamports = null;
+        if (typeof connection?.getBalance === "function") {
+          try {
+            solBalanceAfterLamports = await connection.getBalance(wallet.publicKey);
+          } catch {}
+        }
 
-            const rawAddTxs = await pool.addLiquidityByStrategy({
-              positionPubKey,
-              user: wallet.publicKey,
-              totalXAmount,
-              totalYAmount,
-              strategy: {
-                minBinId: chunk.minBinId,
-                maxBinId: chunk.maxBinId,
-                strategyType: spotStrategyType,
-              },
-              slippage: config.entry.activeBinSlippagePct,
-            });
-            const addTxs = Array.isArray(rawAddTxs) ? rawAddTxs : [rawAddTxs];
-            for (const tx of addTxs) {
-              const sent = await sendAndConfirmFn({
-                connection,
-                tx,
-                signers: [wallet],
-                feePlan,
-                wallet,
-              });
-              if (sent?.signature) addSignatures.push(sent.signature);
+        const gasReserveSol = Number(config.wallet?.minSolReserve ?? config.entry?.gasReserve ?? 0.05) || 0;
+        const beforeBn =
+          solBalanceBeforeLamports == null ? null : new BN(String(Math.floor(Number(solBalanceBeforeLamports))));
+        const afterBn =
+          solBalanceAfterLamports == null ? null : new BN(String(Math.floor(Number(solBalanceAfterLamports))));
+        targetSolLamports = capRedepositRaw({
+          positionRaw: solCheck.totalSolLamports,
+          balanceBeforeRaw: beforeBn,
+          balanceAfterRaw: afterBn,
+          walletCapRaw: afterBn ? solSpendCapRaw(afterBn, gasReserveSol) : null,
+        });
+        remainingSolRaw = targetSolLamports;
+
+        for (let attempt = 1; attempt <= maxRetry; attempt++) {
+          try {
+            if (targetSolLamports.lte(new BN(0))) {
+              throw new Error("jumlah SOL yang ditarik dari posisi 0 atau di bawah cadangan gas");
             }
-            remainingSolRaw = BN.max(new BN(0), remainingSolRaw.sub(chunk.amountRaw));
-            nextFromBinId = chunk.maxBinId + 1;
-          }
+            if (remainingSolRaw.lte(new BN(0))) break;
 
-          lastErr = null;
-          break;
-        } catch (err) {
-          lastErr = err.message || String(err);
-          log.warn(`Spot SOL Rebalance ${label}: gagal re-deposit Spot (${attempt}/${maxRetry}): ${lastErr}`);
-          if (attempt < maxRetry) await sleepFn(2500);
+            let depositToBinId = toBinId;
+            if (attempt > 1 && typeof pool.getActiveBin === "function") {
+              try {
+                const refreshed = await pool.getActiveBin();
+                if (Number.isFinite(Number(refreshed?.binId))) {
+                  const maxAllowedBin = solCheck.activeBinHasBase
+                    ? Number(refreshed.binId) - 1
+                    : Number(refreshed.binId);
+                  depositToBinId = Math.max(nextFromBinId, Math.min(toBinId, maxAllowedBin));
+                }
+              } catch {}
+            }
+
+            const chunks = chunkSpotRanges(nextFromBinId, depositToBinId, remainingSolRaw, DEFAULT_MAX_BINS_PER_TX);
+            if (chunks.length === 0) {
+              throw new Error("chunkSpotRanges menghasilkan 0 chunk untuk deposit SOL");
+            }
+
+            for (const chunk of chunks) {
+              const totalXAmount = baseIsX ? new BN(0) : chunk.amountRaw;
+              const totalYAmount = baseIsX ? chunk.amountRaw : new BN(0);
+
+              const rawAddTxs = await pool.addLiquidityByStrategy({
+                positionPubKey,
+                user: wallet.publicKey,
+                totalXAmount,
+                totalYAmount,
+                strategy: {
+                  minBinId: chunk.minBinId,
+                  maxBinId: chunk.maxBinId,
+                  strategyType: spotStrategyType,
+                },
+                slippage: config.entry.activeBinSlippagePct,
+              });
+              const addTxs = Array.isArray(rawAddTxs) ? rawAddTxs : [rawAddTxs];
+              for (const tx of addTxs) {
+                const sent = await sendAndConfirmFn({
+                  connection,
+                  tx,
+                  signers: [wallet],
+                  feePlan,
+                  wallet,
+                });
+                if (sent?.signature) addSignatures.push(sent.signature);
+              }
+              remainingSolRaw = BN.max(new BN(0), remainingSolRaw.sub(chunk.amountRaw));
+              nextFromBinId = chunk.maxBinId + 1;
+            }
+
+            lastErr = null;
+            break;
+          } catch (err) {
+            lastErr = err.message || String(err);
+            log.warn(`Spot SOL Rebalance ${label}: gagal re-deposit Spot (${attempt}/${maxRetry}): ${lastErr}`);
+            if (attempt < maxRetry) await sleepFn(2500);
+          }
         }
       }
 
@@ -1045,90 +1087,162 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     }
 
     const label = pairName || pair;
-    log.info(
-      `📐 SPOT TOKEN BIDASK ${label} — tarik semua token dari bin ${fromBinId}→${toBinId} lalu add BidAsk (step ${decision.stepLevel}%, ${decision.tokenBinPct.toFixed(1)}% bin token)`
-    );
-
-    // 1. Tarik 100% seluruh likuiditas dari bin di atas activeBin (fromBinId .. toBinId) terlebih dahulu tanpa menutup posisi.
-    const rawRemoveTxs = await pool.removeLiquidity({
-      user: wallet.publicKey,
-      position: positionPubKey,
-      fromBinId,
-      toBinId,
-      bps: new BN(10000),
-      shouldClaimAndClose: false,
-    });
-    const removeTxs = Array.isArray(rawRemoveTxs) ? rawRemoveTxs : [rawRemoveTxs];
+    const mode = resolveRebalanceMode(deps.rebalanceMode, config.rebalance?.mode);
     const removeSignatures = [];
-    for (const tx of removeTxs) {
-      const sent = await sendAndConfirmFn({
-        connection,
-        tx,
-        signers: [wallet],
-        feePlan,
+    const addSignatures = [];
+    const decimals = await getMintDecimalsFn(baseMint);
+    let depositedUi = 0;
+    let cappedRaw = new BN(0);
+    let usedInPlace = false;
+
+    if (mode === "inplace") {
+      const inplace = await tryInPlaceRebalance({
+        pool,
+        positionPubKey,
+        positionData: onChainPos.positionData,
         wallet,
+        connection,
+        feePlan,
+        sendAndConfirmFn,
+        fromBinId,
+        toBinId,
+        activeBinId,
+        binStep: pool?.lbPair?.binStep,
+        token: baseIsX ? "x" : "y",
+        strategyType: bidAskStrategyType,
+        builders: rebalanceBuildersFromSdk(sdkMod),
+        slippagePct: config.entry.activeBinSlippagePct,
       });
-      if (sent?.signature) removeSignatures.push(sent.signature);
+      if (inplace.ok) {
+        usedInPlace = true;
+        addSignatures.push(...inplace.signatures);
+        cappedRaw = inplace.depositedRaw;
+        depositedUi = Number(cappedRaw.toString()) / Math.pow(10, decimals);
+        log.info(
+          `📐 SPOT TOKEN BIDASK ${label} — bentuk ulang di tempat bin ${fromBinId}→${toBinId} jadi BidAsk (step ${decision.stepLevel}%, ${decision.tokenBinPct.toFixed(1)}% bin token)`
+        );
+      } else if (inplace.partial) {
+        const partialErr = inplace.error || inplace.reason;
+        log.error(`Spot Token BidAsk ${label}: rebalance di tempat terputus (${partialErr})`);
+        recordAction(`SPOT BIDASK ${label} GAGAL (step ${decision.stepLevel}%) — ${partialErr}`);
+        notifyTokenFn({
+          rebalanceType: "token_bidask",
+          pair: label,
+          pool: poolAddress,
+          position: positionAddress,
+          stepPct: decision.stepLevel,
+          tokenBinPct: decision.tokenBinPct,
+          fromBinId,
+          toBinId,
+          success: false,
+          error: partialErr,
+        });
+        return {
+          triggered: true,
+          success: false,
+          rebalanceType: "token_bidask",
+          error: partialErr,
+          stepLevel: decision.stepLevel,
+          addSignatures: inplace.signatures,
+        };
+      } else {
+        log.info(
+          `Spot Token BidAsk ${label}: rebalance di tempat tidak dipakai (${inplace.reason}${inplace.error ? `: ${inplace.error}` : ""}) — tarik lalu setor hanya jumlah yang keluar`
+        );
+      }
     }
 
-    // 2. Baca saldo base token di wallet dan deposit ulang 100% ke posisi yang sama dengan kurva BidAsk utuh yang mulus.
-    const decimals = await getMintDecimalsFn(baseMint);
     const maxRetry = Math.max(1, Math.floor(Number(cfg.retry) || 3));
     let lastErr = null;
-    let depositedUi = 0;
-    const addSignatures = [];
 
-    for (let attempt = 1; attempt <= maxRetry; attempt++) {
+    if (!usedInPlace) {
+      log.info(
+        `📐 SPOT TOKEN BIDASK ${label} — tarik semua token dari bin ${fromBinId}→${toBinId} lalu add BidAsk (step ${decision.stepLevel}%, ${decision.tokenBinPct.toFixed(1)}% bin token)`
+      );
+
+      let balanceBeforeRaw = null;
       try {
-        const balanceUi = await getTokenBalanceFn(baseMint);
-        if (!Number.isFinite(balanceUi) || balanceUi <= 0) {
-          if (depositedUi > 0) break;
-          throw new Error("saldo token base 0 setelah removeLiquidity");
-        }
+        balanceBeforeRaw = uiToRaw(await getTokenBalanceFn(baseMint), decimals);
+      } catch {}
 
-        const baseAmountRaw = new BN(Math.floor(balanceUi * Math.pow(10, decimals)));
-        if (baseAmountRaw.lte(new BN(0))) {
-          if (depositedUi > 0) break;
-          throw new Error("jumlah raw token base 0 setelah konversi desimal");
-        }
-
-        let depositFromBinId = fromBinId;
-        if (typeof pool.getActiveBin === "function") {
-          try {
-            const refreshed = await pool.getActiveBin();
-            if (Number.isFinite(Number(refreshed?.binId))) {
-              depositFromBinId = Math.min(toBinId, Math.max(lowerBinId, Number(refreshed.binId) + 1));
-            }
-          } catch {}
-        }
-
-        const totalXAmount = baseIsX ? baseAmountRaw : new BN(0);
-        const totalYAmount = baseIsX ? new BN(0) : baseAmountRaw;
-
-        const sigs = await depositContinuousBidAsk({
-          pool,
-          positionPubKey,
-          wallet,
+      // 1. Tarik 100% seluruh likuiditas dari bin di atas activeBin (fromBinId .. toBinId) terlebih dahulu tanpa menutup posisi.
+      const rawRemoveTxs = await pool.removeLiquidity({
+        user: wallet.publicKey,
+        position: positionPubKey,
+        fromBinId,
+        toBinId,
+        bps: new BN(10000),
+        shouldClaimAndClose: false,
+      });
+      const removeTxs = Array.isArray(rawRemoveTxs) ? rawRemoveTxs : [rawRemoveTxs];
+      for (const tx of removeTxs) {
+        const sent = await sendAndConfirmFn({
           connection,
+          tx,
+          signers: [wallet],
           feePlan,
-          sendAndConfirmFn,
-          minBinId: depositFromBinId,
-          maxBinId: toBinId,
-          totalXAmount,
-          totalYAmount,
-          strategyType: bidAskStrategyType,
-          slippage: config.entry.activeBinSlippagePct,
-          baseIsX,
+          wallet,
         });
-        addSignatures.push(...sigs);
+        if (sent?.signature) removeSignatures.push(sent.signature);
+      }
 
-        depositedUi = balanceUi;
-        lastErr = null;
-        break;
-      } catch (err) {
-        lastErr = err.message || String(err);
-        log.warn(`Spot Token BidAsk ${label}: gagal re-deposit BidAsk (${attempt}/${maxRetry}): ${lastErr}`);
-        if (attempt < maxRetry) await sleepFn(2500);
+      // 2. Setor ulang hanya token yang keluar dari posisi, bukan saldo wallet penuh.
+      let balanceAfterRaw = null;
+      try {
+        balanceAfterRaw = uiToRaw(await getTokenBalanceFn(baseMint), decimals);
+      } catch {}
+      cappedRaw = capRedepositRaw({
+        positionRaw: liqCheck.hasBinData ? liqCheck.totalTokenRaw : null,
+        balanceBeforeRaw,
+        balanceAfterRaw,
+      });
+
+      for (let attempt = 1; attempt <= maxRetry; attempt++) {
+        try {
+          if (cappedRaw.lte(new BN(0))) {
+            if (depositedUi > 0) break;
+            throw new Error("jumlah token yang ditarik dari posisi 0");
+          }
+          const baseAmountRaw = cappedRaw;
+
+          let depositFromBinId = fromBinId;
+          if (typeof pool.getActiveBin === "function") {
+            try {
+              const refreshed = await pool.getActiveBin();
+              if (Number.isFinite(Number(refreshed?.binId))) {
+                depositFromBinId = Math.min(toBinId, Math.max(lowerBinId, Number(refreshed.binId) + 1));
+              }
+            } catch {}
+          }
+
+          const totalXAmount = baseIsX ? baseAmountRaw : new BN(0);
+          const totalYAmount = baseIsX ? new BN(0) : baseAmountRaw;
+
+          const sigs = await depositContinuousBidAsk({
+            pool,
+            positionPubKey,
+            wallet,
+            connection,
+            feePlan,
+            sendAndConfirmFn,
+            minBinId: depositFromBinId,
+            maxBinId: toBinId,
+            totalXAmount,
+            totalYAmount,
+            strategyType: bidAskStrategyType,
+            slippage: config.entry.activeBinSlippagePct,
+            baseIsX,
+          });
+          addSignatures.push(...sigs);
+
+          depositedUi = Number(cappedRaw.toString()) / Math.pow(10, decimals);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err.message || String(err);
+          log.warn(`Spot Token BidAsk ${label}: gagal re-deposit BidAsk (${attempt}/${maxRetry}): ${lastErr}`);
+          if (attempt < maxRetry) await sleepFn(2500);
+        }
       }
     }
 

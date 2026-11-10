@@ -67,9 +67,11 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       lastSpotTokenBidaskPct: 0,
       lastSpotTokenBidaskAt: null,
       lastSpotTokenBidaskBin: null,
-      // Step rebalance token bidask:double yang sudah dikerjakan (10, 20, 30, ...).
+      // Step rebalance bidask:double yang sudah dikerjakan (10, 20, 30, ...).
+      // Bin aktif saat step itu dicatat, untuk mengukur harga yang naik lagi.
       lastBidaskDoubleRebalancePct: 0,
       lastBidaskDoubleRebalanceAt: null,
+      lastBidaskDoubleRebalanceBin: null,
     };
     writeState(state);
   }
@@ -180,13 +182,19 @@ export function updateSpotTokenBidaskState(positionAddress, pct, at = Date.now()
   writeState(state);
 }
 
-export function updateBidaskDoubleRebalanceState(positionAddress, pct, at = Date.now()) {
+export function updateBidaskDoubleRebalanceState(positionAddress, pct, at = Date.now(), bin = undefined) {
   if (!positionAddress) return;
   const state = readState();
   const p = state.positions[positionAddress];
   if (!p) return;
-  p.lastBidaskDoubleRebalancePct = Math.max(0, Number(pct) || 0);
+  const nextPct = Math.max(0, Number(pct) || 0);
+  p.lastBidaskDoubleRebalancePct = nextPct;
   p.lastBidaskDoubleRebalanceAt = at;
+  if (bin !== undefined) {
+    p.lastBidaskDoubleRebalanceBin = bin != null && Number.isFinite(Number(bin)) ? Number(bin) : null;
+  } else if (nextPct === 0) {
+    p.lastBidaskDoubleRebalanceBin = null;
+  }
   writeState(state);
 }
 

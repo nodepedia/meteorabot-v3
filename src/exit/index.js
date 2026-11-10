@@ -433,7 +433,7 @@ export async function mainLoop(opts = {}) {
           armIndicatorTrailing(pos.position, exit.reason, pos.pnlPct);
           log.info(`${pairLabel}: ${humanReason(exit.reason)} → trailing profit disiapkan`);
         }
-        // Rebalance sisi token: spot (persen bin) dan bidask:double (persen harga entry).
+        // Rebalance: spot (persen bin) dan bidask:double (persen harga entry, token turun / SOL pulih).
         if (pos.mode === "spot") {
           await handleSpotTokenBidask(pos);
         } else if (pos.mode === "bidask:double") {

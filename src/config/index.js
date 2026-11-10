@@ -94,6 +94,18 @@ export function buildConfig(e = {}) {
     maxNonRefundableSol: Math.max(0, num(e.SPOT_REENTRY_MAX_NONREFUNDABLE_SOL, 0)),
   };
 
+  // Cara membentuk ulang likuiditas. inplace = instruksi rebalance_liquidity
+  // (jumlah yang ditarik disetor ulang di tempat, saldo wallet tidak ikut).
+  // withdraw = tarik ke wallet lalu setor hanya jumlah yang benar-benar keluar.
+  const rebalance = {
+    mode:
+      String(e.REBALANCE_MODE || "inplace")
+        .trim()
+        .toLowerCase() === "withdraw"
+        ? "withdraw"
+        : "inplace",
+  };
+
   // Rebalance sisi token posisi spot ke BidAsk tiap kelipatan stepPct% bin di atas activeBin.
   const spotTokenBidask = {
     enabled: bool(e.SPOT_TOKEN_BIDASK_ENABLED, true),
@@ -106,6 +118,9 @@ export function buildConfig(e = {}) {
   // dari entryPoolPrice posisi itu sendiri (bukan % bin seperti spot).
   const bidaskDoubleRebalance = {
     enabled: bool(e.BIDASK_DOUBLE_REBALANCE_ENABLED, true),
+    // Sisi SOL: saat harga pulih satu step dari rebalance terakhir, SOL di bawah
+    // bin aktif dibentuk ulang jadi BidAsk. Ikut mati bila enabled = false.
+    solEnabled: bool(e.BIDASK_DOUBLE_SOL_REBALANCE_ENABLED, true),
     stepPct: Math.max(1, num(e.BIDASK_DOUBLE_REBALANCE_STEP_PCT, 10)),
     cooldownSec: Math.max(0, num(e.BIDASK_DOUBLE_REBALANCE_COOLDOWN_SEC, 60)),
     retry: Math.max(1, Math.floor(num(e.BIDASK_DOUBLE_REBALANCE_RETRY, 3))),
@@ -307,6 +322,7 @@ export function buildConfig(e = {}) {
     dca,
     spotFallback,
     spotReentry,
+    rebalance,
     spotTokenBidask,
     bidaskDoubleRebalance,
 
