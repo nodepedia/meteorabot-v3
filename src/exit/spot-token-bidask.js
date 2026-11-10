@@ -533,7 +533,7 @@ async function fetchPositionOnChain(pool, positionPubKey, walletPubKey) {
 //   ke transaksi per 70 bin menggunakan `rebalance_liquidity` dengan `shrinkMode = NoShrinkBoth (3)`.
 // - Jika <= 70 bin (atau pada unit test mock yang hanya menyediakan `addLiquidityByStrategy`),
 //   gunakan `addLiquidityByStrategy`.
-async function depositContinuousBidAsk({
+export async function depositContinuousBidAsk({
   pool,
   positionPubKey,
   wallet,
@@ -652,7 +652,9 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
 
   if (decision.action !== "rebalance" && decision.action !== "rebalance_sol_spot") {
     if (decision.structural && pos?.mode === "spot" && pos?.position && shouldLogStructuralSkip(pos.position, now)) {
-      log.info(`Spot Rebalance ${pair}: dilewati (${decision.reason}, span ${decision.binSpan ?? "?"}) — log berikutnya ≥10 menit lagi`);
+      log.info(
+        `Spot Rebalance ${pair}: dilewati (${decision.reason}, span ${decision.binSpan ?? "?"}) — log berikutnya ≥10 menit lagi`
+      );
     }
     return { triggered: false, reason: decision.reason, decision };
   }
@@ -888,9 +890,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
             try {
               const refreshed = await pool.getActiveBin();
               if (Number.isFinite(Number(refreshed?.binId))) {
-                const maxAllowedBin = solCheck.activeBinHasBase
-                  ? Number(refreshed.binId) - 1
-                  : Number(refreshed.binId);
+                const maxAllowedBin = solCheck.activeBinHasBase ? Number(refreshed.binId) - 1 : Number(refreshed.binId);
                 depositToBinId = Math.max(nextFromBinId, Math.min(toBinId, maxAllowedBin));
               }
             } catch {}

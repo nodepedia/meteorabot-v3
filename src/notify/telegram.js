@@ -70,10 +70,10 @@ export function notifyEntry({ pair, pool, feeMode, feeSol }) {
   send(lines.join("\n"));
 }
 
-export function notifyDca({ pair, pool, pnlPct, sizeSol }) {
+export function notifyDca({ pair, pool, pnlPct, sizeSol, trigger = "PnL" }) {
   const pnlStr = pnlPct != null ? `${pnlPct > 0 ? "+" : ""}${pnlPct.toFixed(2)}%` : "?";
   send(
-    `📉 DCA ${pair || pool?.slice(0, 8) || ""}\nEntry baru: ${sizeSol} SOL\nPool: ${pool || "?"}\nTrigger PnL: ${pnlStr}`
+    `📉 DCA ${pair || pool?.slice(0, 8) || ""}\nEntry baru: ${sizeSol} SOL\nPool: ${pool || "?"}\nTrigger ${trigger}: ${pnlStr}`
   );
 }
 
@@ -85,6 +85,29 @@ export function notifyFallback({ pair, pool, success, amount, error }) {
   } else {
     send(
       `⚠️ FALLBACK ${label} GAGAL\nPosisi token-only tidak jadi dibuka${error ? `: ${error}` : ""}\nToken dibiarkan di wallet.\nPool: ${pool || "?"}`
+    );
+  }
+}
+
+// Rebalance sisi token posisi bidask:double ke BidAsk, tiap kelipatan turun harga.
+export function notifyBidaskDoubleRebalance({
+  pair,
+  pool,
+  stepPct,
+  priceChangePct,
+  fromBinId,
+  toBinId,
+  success,
+  error,
+}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
+  const harga = Number.isFinite(Number(priceChangePct)) ? `${Number(priceChangePct).toFixed(1)}%` : "?";
+  if (success) {
+    send(`🔄 ${label} BidAsk rebalance — step ${stepPct}% (harga ${harga}, bin ${rangeStr})`);
+  } else {
+    send(
+      `⚠️ BIDASK REBALANCE ${label} GAGAL (step ${stepPct}%)\n${error ? `Alasan: ${error}\n` : ""}Range token: ${rangeStr}\nPool: ${pool || "?"}`
     );
   }
 }

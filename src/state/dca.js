@@ -21,6 +21,182 @@ export function effectiveDcaArmPct(count, dcaOpen, cfg) {
   return armPct;
 }
 
+// Perubahan harga pool vs harga entry, dalam poin persen.
+// (now/entry - 1) * 100. Negatif = harga turun. Sama satuannya dengan PnL%
+// supaya arm / trail / rebound memakai rumus yang sama.
+export function poolPriceChangePct(entryPrice, nowPrice) {
+  const entry = Number(entryPrice);
+  const now = Number(nowPrice);
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(now) || now <= 0) return null;
+  return (now / entry - 1) * 100;
+}
+
+// Acuan harga mode price: posisi UTAMA (bukan DCA), terbuka lebih dulu.
+// Posisi utama yang sudah close tetap dipakai bila tidak ada yang terbuka,
+// supaya ambang DCA#2 tidak pindah ke harga entry posisi DCA.
+export function mainPositionEntryPoolPrice(trackedList) {
+  const mains = (trackedList || []).filter((t) => t && t.isDca !== true);
+  const valid = (t) => {
+    const v = Number(t?.entryPoolPrice);
+    return Number.isFinite(v) && v > 0;
+  };
+  const open = mains.find((t) => t.closed !== true && valid(t));
+  if (open) return { position: open.position, entryPoolPrice: Number(open.entryPoolPrice), open: true };
+  const any = mains.find((t) => valid(t));
+  if (any) return { position: any.position, entryPoolPrice: Number(any.entryPoolPrice), open: any.closed !== true };
+  return null;
+}
+
+// Ambang harga mode price. Satu acuan (entry posisi utama), dua ambang.
+// count 0 → DCA#1 (armPricePct). count >= 1 → DCA#2 (armPricePct2).
+// Tidak melihat apakah DCA#1 masih terbuka.
+export function effectiveDcaPriceArmPct(count, cfg) {
+  const arm = Number(cfg?.armPricePct);
+  if (count >= 1) {
+    const arm2 = Number(cfg?.armPricePct2);
+    return Number.isFinite(arm2) ? arm2 : arm;
+  }
+  return arm;
+}
+
+// State arm/trough/pending hanya sah untuk mode yang menulisnya.
+// Posisi lama tanpa dcaMetric dianggap mode pnl.
+export function dcaMetricMatches(tracked, mode) {
+  const sticky = tracked?.dcaArmed === true || tracked?.dcaTrough != null || tracked?.pendingDcaTrough != null;
+  if (!sticky) return true;
+  if (mode === "price") return tracked?.dcaMetric === "price";
+  return tracked?.dcaMetric !== "price";
+}
+
+function viewTrackedForMode(tracked, mode) {
+  if (!tracked || dcaMetricMatches(tracked, mode)) return tracked;
+  return {
+    ...tracked,
+    dcaArmed: false,
+    dcaTrough: null,
+    pendingDcaTrough: null,
+    pendingDcaCurrent: null,
+    pendingDcaStartedAt: null,
+  };
+}
+
+// Pilih metrik + ambang. Mode pnl = perilaku hari ini, persis.
+// Mode price tanpa entryPoolPrice posisi utama → jatuh ke pnl untuk pool itu.
+// Mode price tapi harga pool sekarang tidak ada → skip (bukan jatuh ke pnl),
+// supaya gagal RPC sesaat tidak memicu DCA dari PnL.
+export function resolveDcaEvaluation({
+  triggerMode = "price",
+  entryPoolPrice = null,
+  nowPrice = null,
+  pnlPct = null,
+  count = 0,
+  dcaOpen = false,
+  cfg = {},
+  tracked = null,
+} = {}) {
+  const wantPrice =
+    String(triggerMode || "price")
+      .trim()
+      .toLowerCase() !== "pnl";
+  if (!wantPrice) {
+    return {
+      mode: "pnl",
+      fallback: null,
+      skip: false,
+      reason: null,
+      armPct: effectiveDcaArmPct(count, dcaOpen, cfg),
+      metric: pnlPct,
+      priceConfirm: cfg?.priceConfirm !== false,
+      tracked,
+    };
+  }
+
+  const entry = Number(entryPoolPrice);
+  if (!Number.isFinite(entry) || entry <= 0) {
+    return {
+      mode: "pnl",
+      fallback: "missing_entry_pool_price",
+      skip: false,
+      reason: null,
+      armPct: effectiveDcaArmPct(count, dcaOpen, cfg),
+      metric: pnlPct,
+      priceConfirm: cfg?.priceConfirm !== false,
+      tracked: viewTrackedForMode(tracked, "pnl"),
+    };
+  }
+
+  const change = poolPriceChangePct(entry, nowPrice);
+  if (change == null) {
+    return {
+      mode: "price",
+      fallback: null,
+      skip: true,
+      reason: "no_pool_price",
+      armPct: effectiveDcaPriceArmPct(count, cfg),
+      metric: null,
+      priceConfirm: false,
+      tracked,
+    };
+  }
+
+  return {
+    mode: "price",
+    fallback: null,
+    skip: false,
+    reason: null,
+    armPct: effectiveDcaPriceArmPct(count, cfg),
+    metric: change,
+    // Pemicu sudah harga pool; cross-check flat vs PnL tidak dipakai.
+    priceConfirm: false,
+    tracked: viewTrackedForMode(tracked, "price"),
+  };
+}
+
+// Keputusan arm / trail / rebound. Di mode price, `metric` = perubahan harga
+// (poin persen dari entry posisi utama), rebound = selisih poin dari trough.
+export function evaluateDcaForTrigger(input = {}) {
+  const resolved = resolveDcaEvaluation(input);
+  if (!input.cfg?.enabled) {
+    return {
+      action: "noop",
+      reason: "disabled",
+      mode: resolved.mode,
+      fallback: resolved.fallback,
+      priceConfirm: false,
+    };
+  }
+  if (resolved.skip) {
+    return {
+      action: "noop",
+      reason: resolved.reason,
+      mode: resolved.mode,
+      fallback: resolved.fallback,
+      skip: true,
+      priceConfirm: false,
+    };
+  }
+  const decision = evaluateDca({ pnlPct: resolved.metric }, resolved.tracked, {
+    ...input.cfg,
+    armPct: resolved.armPct,
+  });
+  return {
+    ...decision,
+    mode: resolved.mode,
+    fallback: resolved.fallback,
+    metric: resolved.metric,
+    armPct: resolved.armPct,
+    priceConfirm: resolved.priceConfirm === true,
+  };
+}
+
+// Eksekusi DCA (bukan arm/trail) ditahan selama pool sedang dipakai
+// (entry, DCA lain, atau rebalance) atau sedang ditutup.
+export function dcaExecutionBlocked({ entryInProgress = false, poolClosing = false } = {}) {
+  if (entryInProgress) return { blocked: true, reason: "entry_in_progress" };
+  if (poolClosing) return { blocked: true, reason: "pool_closing" };
+  return { blocked: false, reason: null };
+}
+
 // --- Pure decision (dipakai processDca + test) ---
 
 // evaluateDca memutuskan aksi DCA dari PnL saat ini + state tracking.
@@ -64,16 +240,41 @@ export function shouldSkipDcaArm({ priceChangePct, flatPct } = {}) {
 
 // --- State mutations (persisten) ---
 
-export function setDcaArmedAndTrough(positionAddress, trough) {
+export function setDcaArmedAndTrough(positionAddress, trough, metric) {
   if (!positionAddress || !Number.isFinite(trough)) return null;
   const state = readState();
   const p = state.positions[positionAddress];
   if (!p || !isDcaEligible(p)) return null;
+  if (metric === "price" || metric === "pnl") {
+    const stored = p.dcaMetric === "price" ? "price" : "pnl";
+    if (stored !== metric) {
+      p.dcaTrough = null;
+      p.dcaArmedAt = null;
+    }
+    p.dcaMetric = metric;
+  }
   p.dcaArmed = true;
   if (p.dcaArmedAt == null) p.dcaArmedAt = Date.now();
   if (p.dcaTrough == null || trough < p.dcaTrough) p.dcaTrough = trough;
   writeState(state);
   return p.dcaTrough;
+}
+
+// Buang arm/trough/pending bila metrik tersimpan tidak cocok dengan mode aktif.
+// dcaTriggered tidak disentuh, supaya posisi yang sudah menembak DCA tidak menembak lagi.
+export function clearDcaArmIfMetricMismatch(positionAddress, mode) {
+  if (!positionAddress) return false;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p || dcaMetricMatches(p, mode)) return false;
+  p.dcaArmed = false;
+  p.dcaTrough = null;
+  p.dcaArmedAt = null;
+  p.pendingDcaTrough = null;
+  p.pendingDcaCurrent = null;
+  p.pendingDcaStartedAt = null;
+  writeState(state);
+  return true;
 }
 
 export function queueDcaRebound(positionAddress, trough, currentPnl) {
@@ -163,6 +364,7 @@ function clearDcaFields(p) {
   p.pendingDcaTrough = null;
   p.pendingDcaCurrent = null;
   p.pendingDcaStartedAt = null;
+  p.dcaMetric = null;
 }
 
 export function clearDcaState(positionAddress) {

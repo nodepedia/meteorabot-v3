@@ -60,7 +60,12 @@ export function buildConfig(e = {}) {
 
   // Exit indikator spot: immediate (default) = langsung close saat sinyal;
   // trailing = perilaku lama (arm trailing dari sinyal, exit saat drop terkonfirmasi).
-  spot.indicatorExit = String(e.SPOT_INDICATOR_EXIT || "immediate").trim().toLowerCase() === "trailing" ? "trailing" : "immediate";
+  spot.indicatorExit =
+    String(e.SPOT_INDICATOR_EXIT || "immediate")
+      .trim()
+      .toLowerCase() === "trailing"
+      ? "trailing"
+      : "immediate";
 
   // Fallback OOR kiri spot: tutup tanpa swap, lalu buka posisi token-only
   // satu-sisi di pool yang sama memakai seluruh saldo token.
@@ -95,6 +100,15 @@ export function buildConfig(e = {}) {
     stepPct: Math.max(1, num(e.SPOT_TOKEN_BIDASK_STEP_PCT, 10)),
     cooldownSec: Math.max(0, num(e.SPOT_TOKEN_BIDASK_COOLDOWN_SEC, 60)),
     retry: Math.max(1, Math.floor(num(e.SPOT_TOKEN_BIDASK_RETRY, 3))),
+  };
+
+  // Rebalance sisi token posisi bidask:double. Step = turunnya harga pool
+  // dari entryPoolPrice posisi itu sendiri (bukan % bin seperti spot).
+  const bidaskDoubleRebalance = {
+    enabled: bool(e.BIDASK_DOUBLE_REBALANCE_ENABLED, true),
+    stepPct: Math.max(1, num(e.BIDASK_DOUBLE_REBALANCE_STEP_PCT, 10)),
+    cooldownSec: Math.max(0, num(e.BIDASK_DOUBLE_REBALANCE_COOLDOWN_SEC, 60)),
+    retry: Math.max(1, Math.floor(num(e.BIDASK_DOUBLE_REBALANCE_RETRY, 3))),
   };
 
   const entry = {
@@ -136,7 +150,8 @@ export function buildConfig(e = {}) {
     oneShotPerSignal: bool(e.ENTRY_ONE_SHOT_PER_SIGNAL, true),
     maxFailures: num(e.ENTRY_MAX_FAILURES, 3),
     // held_pullback = close harus tetap di atas garis; first_touch = sentuh garis = entry.
-    touchMode: (e.ENTRY_TOUCH_MODE || "held_pullback").toLowerCase() === "first_touch" ? "first_touch" : "held_pullback",
+    touchMode:
+      (e.ENTRY_TOUCH_MODE || "held_pullback").toLowerCase() === "first_touch" ? "first_touch" : "held_pullback",
     // Strategi fee entry. none = perilaku lama + retry; priority = ComputeBudget;
     // jito = tip Jito; both = keduanya. Lihat src/solana/{fees,send,jito}.js.
     fees: {
@@ -159,19 +174,30 @@ export function buildConfig(e = {}) {
     },
   };
 
-  // DCA (averaging-down) — trailing TP terbalik: arm saat PnL <= armPct, lacak
-  // trough (titik terendah), lalu entry baru saat PnL rebound dari trough.
+  // DCA (averaging-down). Mode price (default): arm dari turunnya harga pool
+  // vs entryPoolPrice posisi utama. Mode pnl: arm saat PnL <= armPct (perilaku lama).
   const dca = {
     enabled: bool(e.DCA_ENABLED, true),
+    triggerMode:
+      String(e.DCA_TRIGGER_MODE ?? "price")
+        .trim()
+        .toLowerCase() === "pnl"
+        ? "pnl"
+        : "price",
     armPct: num(e.DCA_ARM_PCT, -10),
     // Ambang arm DCA#2 saat DCA#1 SUDAH close (acuan posisi utama). Saat DCA#1
-    // masih open, DCA#2 tetap memakai armPct dari posisi DCA#1.
+    // masih open, DCA#2 tetap memakai armPct dari posisi DCA#1. Hanya mode pnl.
     armPct2: num(e.DCA_ARM_PCT_2, -30),
+    // Mode price: kedua ambang diukur dari entryPoolPrice posisi utama yang sama.
+    // DCA#1 saat harga <= armPricePct, DCA#2 saat <= armPricePct2, baik DCA#1
+    // masih terbuka maupun sudah close.
+    armPricePct: num(e.DCA_ARM_PRICE_PCT, -30),
+    armPricePct2: num(e.DCA_ARM_PRICE_PCT_2, -45),
     reboundPct: Math.max(0, num(e.DCA_REBOUND_PCT, 1)),
     maxAdds: Math.max(0, Math.floor(num(e.DCA_MAX_ADDS, 2))),
-    // Cross-check harga pool saat arm: tahan arm bila PnL <= armPct tapi harga
-    // pool tidak turun sepadan (penurunan kurang dari priceFlatPct%). Mencegah
-    // spike PnL palsu dari datapi memicu DCA.
+    // Cross-check harga pool saat arm mode pnl: tahan arm bila PnL <= armPct tapi
+    // harga pool tidak turun sepadan. Di mode price pemicu sudah harga pool,
+    // jadi cek ini tidak dipakai.
     priceConfirm: bool(e.DCA_PRICE_CONFIRM, true),
     priceFlatPct: num(e.DCA_PRICE_FLAT_PCT, -1),
     // Safeguard: saat DCA terakhir (kuota sesi habis) exit karena trailing TP,
@@ -279,6 +305,7 @@ export function buildConfig(e = {}) {
     spotFallback,
     spotReentry,
     spotTokenBidask,
+    bidaskDoubleRebalance,
 
     bidaskDouble,
     bidaskToken,

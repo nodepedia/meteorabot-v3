@@ -1,13 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import {
-  STATE_FILE,
-  DECISION_LOG_FILE,
-  PNL_HISTORY_FILE,
-  RUNTIME_STATE_FILE,
-  LOG_DIR,
-} from "../core/paths.js";
+import { STATE_FILE, DECISION_LOG_FILE, PNL_HISTORY_FILE, RUNTIME_STATE_FILE, LOG_DIR } from "../core/paths.js";
 import {
   formatWibTimestamp,
   formatImportantLogLine,
@@ -178,6 +172,19 @@ export function backfillImportantLogs({
         actionNeeded: null,
       });
     }
+
+    if (Number(pos.lastBidaskDoubleRebalancePct) > 0 && Number.isFinite(Number(pos.lastBidaskDoubleRebalanceAt))) {
+      const rebTs = Number(pos.lastBidaskDoubleRebalanceAt);
+      candidates.push({
+        id: `bidask-rebalance:${pos.position}:${rebTs}`,
+        ts: rebTs,
+        wib: formatWibTimestamp(rebTs),
+        type: "SUCCESS",
+        category: "REBALANCE_BIDASK",
+        message: `BIDASK REBALANCE ${pair} — step ${pos.lastBidaskDoubleRebalancePct}% (pos ${pos.position.slice(0, 8)})`,
+        actionNeeded: null,
+      });
+    }
   }
 
   // 2. Riwayat penutupan posisi dari decision-log.json
@@ -334,7 +341,7 @@ export function buildImportantLogsReport({
     const poolSummaries = watched.map((w) => {
       const name = w.pairName || `${w.pool?.slice(0, 8)}…`;
       const trend = w.trend === "bullish" ? "NAIK" : w.trend === "bearish" ? "TURUN" : "?";
-      return `${name} (${ w.sizeSol} SOL, tren ${trend}, harga ${fmtNum(w.price)} vs garis ${fmtNum(w.line)})`;
+      return `${name} (${w.sizeSol} SOL, tren ${trend}, harga ${fmtNum(w.price)} vs garis ${fmtNum(w.line)})`;
     });
     lines.push(`• Pool Dipantau  : ${watched.length} pool — ${poolSummaries.join(" | ")}`);
   }

@@ -62,13 +62,16 @@ function cleanSingleLine(msg) {
 
 export function inferActionLogMeta(text) {
   const clean = cleanSingleLine(text);
-  const isError =
-    /\b(GAGAL|ERROR|ABORTED|FAILED)\b/i.test(clean) || /batas .* tercapai/i.test(clean);
+  const isError = /\b(GAGAL|ERROR|ABORTED|FAILED)\b/i.test(clean) || /batas .* tercapai/i.test(clean);
 
   let category = "SYSTEM";
   if (/^SPOT\s+SOL\s+REBALANCE\b/i.test(clean)) {
     category = "REBALANCE_SOL_SPOT";
-  } else if (/^SPOT\s+(TOKEN\s+)?BIDASK\b/i.test(clean) || /^SPOT\s+REBALANCE\b/i.test(clean)) {
+  } else if (
+    /^SPOT\s+(TOKEN\s+)?BIDASK\b/i.test(clean) ||
+    /^SPOT\s+REBALANCE\b/i.test(clean) ||
+    /^BIDASK\s+REBALANCE\b/i.test(clean)
+  ) {
     category = "REBALANCE_BIDASK";
   } else if (/^FALLBACK\b/i.test(clean)) {
     category = "FALLBACK";
@@ -100,8 +103,7 @@ export function inferActionLogMeta(text) {
         actionNeeded = "SOL hasil withdraw tetap aman di wallet; cek koneksi RPC atau saldo gas";
         break;
       case "REBALANCE_BIDASK":
-        actionNeeded =
-          "Token base yang ditarik dilepas dari lock dan akan di-sweep otomatis ke SOL oleh worker-wallet";
+        actionNeeded = "Token base yang ditarik dilepas dari lock dan akan di-sweep otomatis ke SOL oleh worker-wallet";
         break;
       case "FALLBACK":
         actionNeeded = "Token dilepas dari lock dan akan di-sweep otomatis ke SOL oleh worker-wallet";
@@ -171,7 +173,7 @@ export function inferLoggerMeta(level, rawMsg) {
     }
   }
 
-    if (/Wallet SOL rendah/i.test(clean) || /insufficient SOL/i.test(clean)) {
+  if (/Wallet SOL rendah/i.test(clean) || /insufficient SOL/i.test(clean)) {
     return {
       shouldRecord: true,
       type: "ERROR",
