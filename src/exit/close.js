@@ -37,7 +37,15 @@ export function swapMintsFromCloseResult(result) {
 }
 
 export async function handleClose(pos, reason, opts = {}) {
-  const { skipAutoSwap = false, skipDeactivate = false, deps = {} } = opts;
+  const {
+    skipAutoSwap = false,
+    skipDeactivate = false,
+    deps = {},
+    willReenter = false,
+    nextCount = null,
+    max: reentryMax = null,
+    reentrySkipReason = null,
+  } = opts;
   const closeFn = deps.closePosition || closePosition;
   const waitPnlFn = deps.waitClosedPositionPnl || waitClosedPositionPnl;
   const deactivateFn = deps.deactivatePool || deactivatePool;
@@ -152,7 +160,13 @@ export async function handleClose(pos, reason, opts = {}) {
       log.debug(`[detail] reason=${reason} | position ${positionAddress} | peakRef=${peakPnl ?? "-"}`);
       recordAction(`CLOSE ${pairLabel} — ${humanReason(reason)} | PnL ${fmtPct(realizedPnl)}`);
 
-      notifyCloseFn(pairLabel, reason, realizedPnl, swapInfo, lowestPnl, peakPnl);
+      notifyCloseFn(pairLabel, reason, realizedPnl, swapInfo, lowestPnl, peakPnl, {
+        willReenter,
+        nextCount,
+        max: reentryMax,
+        mode: pos.mode,
+        skipReason: reentrySkipReason,
+      });
 
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.

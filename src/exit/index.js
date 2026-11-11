@@ -17,6 +17,7 @@ import {
   markClosedNotDetected,
   setEntrySizeSol,
   getEntrySizeSol,
+  getSpotReentryCount,
 } from "../state/positions.js";
 import { recordPnlSnapshot } from "../state/history.js";
 import { armIndicatorTrailing, clearTrailingState } from "../state/trailing.js";
@@ -53,7 +54,7 @@ import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
 import { handleSpotOorKiri } from "./spot-fallback.js";
-import { handleSpotOorKananReentry, canSpotReenter } from "./spot-reentry.js";
+import { handleSpotOorKananReentry, canSpotReenter, spotReentrySkipReason } from "./spot-reentry.js";
 import { handleSpotTokenBidask } from "./spot-token-bidask.js";
 import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
@@ -408,6 +409,13 @@ export async function mainLoop(opts = {}) {
         // Alasan lain (termasuk low_yield) tidak lolos canSpotReenter, jadi
         // close biasa: klaim + swap, pool ini selesai, entry pool lain tetap jalan.
         const willReenter = !handled && canSpotReenter(pos, exit.reason);
+        // Angka ini hanya untuk teks alert close. Keputusan close/re-entry tetap di willReenter.
+        const nextCount = getSpotReentryCount(pos.position) + 1;
+        const reentryMax = config.spotReentry.maxReentries;
+        const reentrySkipReason =
+          !willReenter && pos.mode === "spot" && exit.reason === "oor_kanan"
+            ? spotReentrySkipReason(pos, exit.reason)
+            : null;
         if (!handled) {
           if (willReenter) {
             if (pos.pool) addEntryInProgressPool(pos.pool);
@@ -416,7 +424,13 @@ export async function mainLoop(opts = {}) {
             if (pos.baseMint) protectMint(pos.baseMint, "oor_kanan_reentry");
           }
           try {
-            const closeRes = await handleClose(pos, exit.reason, { skipDeactivate: willReenter });
+            const closeRes = await handleClose(pos, exit.reason, {
+              skipDeactivate: willReenter,
+              willReenter,
+              nextCount,
+              max: reentryMax,
+              reentrySkipReason,
+            });
             if (closeRes?.success && willReenter) {
               await handleSpotOorKananReentry(pos);
             }
