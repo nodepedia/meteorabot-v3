@@ -494,8 +494,10 @@ test("startSpotEntry: bila redflag non-refundable rent (tangga -95/-90/-85/-80),
 
   const savedDryRun = config.dryRun;
   const savedPoolListFile = config.entry.poolListFile;
+  const savedRentFallback = config.spotRentFallbackPool;
   config.dryRun = false;
   config.entry.poolListFile = poolFile;
+  config.spotRentFallbackPool = false;
 
   const alerts = [];
 
@@ -544,6 +546,7 @@ test("startSpotEntry: bila redflag non-refundable rent (tangga -95/-90/-85/-80),
   } finally {
     config.dryRun = savedDryRun;
     config.entry.poolListFile = savedPoolListFile;
+    config.spotRentFallbackPool = savedRentFallback;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

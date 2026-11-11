@@ -1,5 +1,6 @@
 import { Keypair, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
+import config from "../config/index.js";
 import log from "../core/logger.js";
 import { sendAndConfirmRobust } from "../solana/send.js";
 import { chunkSpotRanges } from "../exit/spot-token-bidask.js";
@@ -73,9 +74,7 @@ export async function resolveSpotRangeWithRentCheck({
 
   let ladder;
   if (Array.isArray(lowerPctLadder) && lowerPctLadder.length > 0) {
-    ladder = lowerPctLadder
-      .map(Number)
-      .filter((p) => Number.isFinite(p) && p > -100 && p < 0);
+    ladder = lowerPctLadder.map(Number).filter((p) => Number.isFinite(p) && p > -100 && p < 0);
   } else if (Number.isFinite(Number(lowerPctPrimary))) {
     ladder = [Number(lowerPctPrimary)];
     if (Number.isFinite(Number(lowerPctFallback)) && Number(lowerPctFallback) !== Number(lowerPctPrimary)) {
@@ -130,9 +129,7 @@ export async function resolveSpotRangeWithRentCheck({
     }
   }
 
-  const costParts = ladder
-    .map((p) => `${p}% (${Number(costsByPct[p] || 0).toFixed(6)} SOL)`)
-    .join(", ");
+  const costParts = ladder.map((p) => `${p}% (${Number(costsByPct[p] || 0).toFixed(6)} SOL)`).join(", ");
   const reason = `non-refundable rent masih muncul pada ${costParts} > batas ${maxNonRefundableSol} SOL`;
   return {
     ok: false,
@@ -330,8 +327,7 @@ export async function fetchTokenSolDlmmPools(baseMint, { fetchFn = fetch, timeou
       if (!p?.address || p.is_blacklisted) continue;
       const xAddr = p.token_x?.address;
       const yAddr = p.token_y?.address;
-      const isTokenSol =
-        (xAddr === WSOL_MINT && yAddr === baseMint) || (yAddr === WSOL_MINT && xAddr === baseMint);
+      const isTokenSol = (xAddr === WSOL_MINT && yAddr === baseMint) || (yAddr === WSOL_MINT && xAddr === baseMint);
       if (!isTokenSol) continue;
 
       const tvlUsd = Number(p.tvl || 0);
@@ -405,7 +401,9 @@ export async function auditSpotPoolCandidate({
         for (let offset = 0; offset <= 34; offset++) {
           const bid = xIsSol ? activeBinId + offset : activeBinId - offset;
           const b = binMap.get(bid);
-          const rawLamports = b ? Number(xIsSol ? b.xAmount?.toString?.() ?? b.xAmount : b.yAmount?.toString?.() ?? b.yAmount) : 0;
+          const rawLamports = b
+            ? Number(xIsSol ? (b.xAmount?.toString?.() ?? b.xAmount) : (b.yAmount?.toString?.() ?? b.yAmount))
+            : 0;
           const solAmt = (Number(rawLamports) || 0) / 1e9;
           totalSolIn35Bins += solAmt;
           if (offset >= 4 && solAmt >= 1.0) {
@@ -494,8 +492,11 @@ export function compareSpotPoolAudits(a, b) {
 }
 
 /**
- * Evaluasi seluruh kandidat pool DLMM TOKEN/SOL untuk baseMint dan pilih 1 pool paling efisien
- * untuk reposisi Spot. Bila tidak ada pool lain yang lebih unggul & lolos rent check, tetap di currentPool.
+ * Evaluasi seluruh kandidat pool DLMM TOKEN/SOL untuk baseMint dan pilih pool
+ * paling efisien yang rentOk (urutan compareSpotPoolAudits: sewa, kepadatan bin,
+ * LP, skor, TVL). Tidak ada syarat bin step. Pool di `notRentOkPools` dipaksa
+ * tidak rentOk bila SPOT_RENT_FALLBACK_POOL nyala. Bila tidak ada yang rentOk,
+ * tetap di currentPool.
  */
 export async function selectMostEfficientSpotPool({
   currentPool,
@@ -507,6 +508,8 @@ export async function selectMostEfficientSpotPool({
   fetchFn = fetch,
   discoverPoolsFn = null,
   maxCandidates = 3,
+  notRentOkPools = null,
+  rentFallbackPool = null,
 }) {
   if (!currentPool || !baseMint) {
     return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
@@ -564,11 +567,41 @@ export async function selectMostEfficientSpotPool({
     return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
   }
 
+  const fallbackOn = rentFallbackPool == null ? config.spotRentFallbackPool !== false : rentFallbackPool !== false;
+  const blocked = new Set((Array.isArray(notRentOkPools) ? notRentOkPools : []).filter(Boolean));
+  if (fallbackOn && blocked.size > 0) {
+    for (const audit of audited) {
+      if (!blocked.has(audit.poolAddress)) continue;
+      audit.rentOk = false;
+      audit.passedStage2 = false;
+    }
+  }
+
   audited.sort(compareSpotPoolAudits);
   const best = audited[0];
   const currentAudit = audited.find((a) => a.poolAddress === currentPool) || null;
 
-  // Jangan pindah ke pool baru bila pool baru gagal rentCheck!
+  if (fallbackOn) {
+    const pick = audited.find((a) => a.rentOk);
+    if (!pick) {
+      return {
+        chosenPoolAddress: currentPool,
+        switched: false,
+        chosenAudit: currentAudit,
+        currentAudit,
+        candidatesAudited: audited,
+      };
+    }
+    return {
+      chosenPoolAddress: pick.poolAddress,
+      switched: pick.poolAddress !== currentPool,
+      chosenAudit: pick,
+      currentAudit,
+      candidatesAudited: audited,
+    };
+  }
+
+  // Sakelar mati: perilaku lama. Jangan pindah bila pool teratas gagal rent.
   if (best.poolAddress !== currentPool && !best.rentOk) {
     return {
       chosenPoolAddress: currentPool,

@@ -6,6 +6,8 @@ import { loadPoolList, commentPoolInList } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
+import { getConnection } from "../solana/connection.js";
+import { selectMostEfficientSpotPool } from "../meteora/spot-position.js";
 import { executeEntry, executeSpotEntry } from "./execute.js";
 import {
   selectWatchCandidates,
@@ -115,6 +117,23 @@ function isStrategySlotBusy(pool, mint, strategy) {
   if (isEntryInProgressMint(mint) || isMintClosing(mint)) return true;
   if (mintBlocksEntry(getOpenTrackedPositions(), { pool, mint, strategy }).block) return true;
   return false;
+}
+
+// Slot spot pool lain. Lock mint entry yang sedang berjalan diabaikan karena
+// lock itu milik pemanggilan ini sendiri.
+function isSpotPoolSlotFree(pool, mint) {
+  if (!pool) return false;
+  const key = quotaKey(pool, "spot");
+  if (inFlightPools.has(pool) || inFlightPools.has(key)) return false;
+  if (isPoolClosing(pool) || isPoolSwapPending(pool) || isMintSwapPending(mint)) return false;
+  if (enteredPools.has(key)) return false;
+  if (isMintClosing(mint)) return false;
+  if (mintBlocksEntry(getOpenTrackedPositions(), { pool, mint, strategy: "spot" }).block) return false;
+  return true;
+}
+
+function spotRentFallbackEnabled() {
+  return config.spotRentFallbackPool !== false;
 }
 
 // Matikan pool secara persisten: beri `#` di pool.txt + hentikan pemantauan
@@ -616,6 +635,53 @@ function alertSpotRentRedflag(payload, notifyFn) {
   }
 }
 
+function notifySpotRentPoolSwitch(fromPool, toPool, notifyFn) {
+  const text = `pindah pool karena rent: ${fromPool} -> ${toPool}`;
+  log.info(text);
+  try {
+    const pending = notifyFn({ fromPool, toPool, text });
+    Promise.resolve(pending).catch((err) => {
+      log.warn(`Info pindah pool karena rent gagal dikirim: ${err.message}`);
+    });
+  } catch (err) {
+    log.warn(`Info pindah pool karena rent gagal dikirim: ${err.message}`);
+  }
+}
+
+async function chooseSpotRentFallbackPool(pool, mint, deps) {
+  if (!spotRentFallbackEnabled() || !pool || !mint) return null;
+  const selectFn = deps.selectMostEfficientSpotPool || selectMostEfficientSpotPool;
+  const args = {
+    currentPool: pool,
+    baseMint: mint,
+    notRentOkPools: [pool],
+    rentFallbackPool: true,
+    skipNonRefundable: config.spotReentry?.skipNonRefundable ?? true,
+    maxNonRefundableSol: config.spotReentry?.maxNonRefundableSol ?? 0,
+    getPoolInfoFn: deps.getPoolInfo || getPoolInfo,
+  };
+  if (typeof deps.discoverPoolsFn === "function") args.discoverPoolsFn = deps.discoverPoolsFn;
+  if (typeof deps.fetchFn === "function") args.fetchFn = deps.fetchFn;
+  if (typeof deps.getConnection === "function") {
+    args.connection = deps.getConnection();
+  } else if (!deps.selectMostEfficientSpotPool) {
+    args.connection = getConnection();
+  }
+  try {
+    const selection = await selectFn(args);
+    const chosen = selection?.chosenPoolAddress;
+    if (!chosen || chosen === pool || selection?.chosenAudit?.rentOk !== true) return null;
+    if (!isSpotPoolSlotFree(chosen, mint)) {
+      log.info(`Pool ${pool.slice(0, 8)} tidak pindah ke ${chosen.slice(0, 8)}: slot spot pool itu sedang terpakai`);
+      return null;
+    }
+    return chosen;
+  } catch (err) {
+    log.warn(`Pool ${pool.slice(0, 8)} pencarian pool pengganti rent gagal: ${err.message}`);
+    return null;
+  }
+}
+
 // Entry instan untuk pool mode="spot" (Runner Spot): langsung eksekusi saat refreshCandidates
 // tanpa menunggu sinyal Supertrend 15m.
 export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry, deps = {}) {
@@ -635,35 +701,60 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
   }
 
   const slotKey = quotaKey(pool, strategy);
+  let fallbackSlotKey = null;
   addEntryInProgressPool(slotKey);
   addEntryInProgressMint(mint);
 
   return executeSpotEntryFn(pool, sizeSol)
-    .then((result) => {
+    .then(async (result) => {
+      let activePool = pool;
+      let activeSlotKey = slotKey;
+      let activePair = pair;
+
+      if (result?.skipped && result.redflagNonRefundable && spotRentFallbackEnabled()) {
+        const altPool = await chooseSpotRentFallbackPool(pool, mint || result.baseMint, deps);
+        if (altPool) {
+          const altKey = quotaKey(altPool, "spot");
+          fallbackSlotKey = altKey;
+          addEntryInProgressPool(altKey);
+          notifySpotRentPoolSwitch(pool, altPool, deps.notifySpotRentPoolSwitch || tg.notifySpotRentPoolSwitch);
+          const retry = await executeSpotEntryFn(altPool, sizeSol);
+          const retryRedflag = Boolean(retry?.skipped && retry.redflagNonRefundable);
+          if (retry && !retryRedflag) {
+            result = retry;
+            activePool = altPool;
+            activeSlotKey = altKey;
+            activePair = retry.pair || pair;
+          }
+        }
+      }
+
       if (result.success) {
-        enteredPools.set(slotKey, Date.now());
-        firstSeenAt.delete(pool);
-        const alias = getPoolAlias(pool);
-        if (alias) firstSeenAt.delete(alias);
-        failureCooldownUntil.delete(pool);
-        failureCounts.delete(pool);
+        enteredPools.set(activeSlotKey, Date.now());
+        for (const addr of new Set([pool, activePool])) {
+          firstSeenAt.delete(addr);
+          const alias = getPoolAlias(addr);
+          if (alias) firstSeenAt.delete(alias);
+          failureCooldownUntil.delete(addr);
+          failureCounts.delete(addr);
+        }
         return result;
       }
 
       if (result.skipped && result.redflagNonRefundable) {
         log.warn(
-          `Pool ${pool.slice(0, 8)} (${pair}) REDFLAG non-refundable rent pada tangga -95/-90/-85/-80% — skip & nonaktifkan pool`
+          `Pool ${activePool.slice(0, 8)} (${activePair}) REDFLAG non-refundable rent pada tangga -95/-90/-85/-80% — skip & nonaktifkan pool`
         );
         let watchDisabled = false;
         try {
-          watchDisabled = deactivatePool(pool, "redflag non-refundable rent (-95/-90/-85/-80%)") === true;
+          watchDisabled = deactivatePool(activePool, "redflag non-refundable rent (-95/-90/-85/-80%)") === true;
         } catch (err) {
-          log.warn(`Pool ${pool.slice(0, 8)} gagal dinonaktifkan: ${err.message}`);
+          log.warn(`Pool ${activePool.slice(0, 8)} gagal dinonaktifkan: ${err.message}`);
         }
         alertSpotRentRedflag(
           {
-            pool,
-            pair: result.pair || pair,
+            pool: activePool,
+            pair: result.pair || activePair,
             costsByPct: result.costsByPct,
             cost95Sol: result.cost95Sol,
             cost90Sol: result.cost90Sol,
@@ -680,19 +771,19 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
       }
 
       if (result.skipped) {
-        log.warn(`Pool ${pool.slice(0, 8)} dilewati: ${result.reason || "spot entry skipped"}`);
+        log.warn(`Pool ${activePool.slice(0, 8)} dilewati: ${result.reason || "spot entry skipped"}`);
         return result;
       }
 
-      log.warn(`Spot entry failed for ${pool.slice(0, 8)}: ${result.error}`);
-      const failures = (failureCounts.get(pool) || 0) + 1;
-      failureCounts.set(pool, failures);
+      log.warn(`Spot entry failed for ${activePool.slice(0, 8)}: ${result.error}`);
+      const failures = (failureCounts.get(activePool) || 0) + 1;
+      failureCounts.set(activePool, failures);
       if (failures >= config.entry.maxFailures) {
-        deactivatePool(pool, `gagal spot entry ${failures}x`);
-        log.error(`Pool ${pool.slice(0, 8)} aborted after ${failures} failed spot entries — dinonaktifkan`);
+        deactivatePool(activePool, `gagal spot entry ${failures}x`);
+        log.error(`Pool ${activePool.slice(0, 8)} aborted after ${failures} failed spot entries — dinonaktifkan`);
         tg.notifyEntryAborted({
-          pool,
-          pair,
+          pool: activePool,
+          pair: activePair,
           attempts: failures,
           error: result.error,
         });
@@ -700,14 +791,14 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
         const cooldownSec = Math.max(0, Number(config.entry.failureCooldownSec) || 0);
         const cooldownMs = cooldownSec * 1000;
         if (cooldownMs > 0) {
-          failureCooldownUntil.set(pool, Date.now() + cooldownMs);
+          failureCooldownUntil.set(activePool, Date.now() + cooldownMs);
           log.info(
-            `Pool ${pool.slice(0, 8)} cooldown ${config.entry.failureCooldownSec}s after failed spot entry (${failures}/${config.entry.maxFailures})`
+            `Pool ${activePool.slice(0, 8)} cooldown ${config.entry.failureCooldownSec}s after failed spot entry (${failures}/${config.entry.maxFailures})`
           );
         }
         tg.notifyEntryFailed({
-          pool,
-          pair,
+          pool: activePool,
+          pair: activePair,
           error: result.error,
           attempts: failures,
           maxFailures: config.entry.maxFailures,
@@ -719,6 +810,7 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
     .catch((err) => log.error(`Spot entry error for ${pool.slice(0, 8)}: ${err.message}`))
     .finally(() => {
       removeEntryInProgressPool(slotKey);
+      if (fallbackSlotKey && fallbackSlotKey !== slotKey) removeEntryInProgressPool(fallbackSlotKey);
       removeEntryInProgressMint(mint);
     });
 }
