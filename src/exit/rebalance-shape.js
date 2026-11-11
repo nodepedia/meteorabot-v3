@@ -1,5 +1,6 @@
 import { Transaction } from "@solana/web3.js";
 import BN from "bn.js";
+import { toAmountIntoBins } from "@meteora-ag/dlmm";
 
 // Batas bin per transaksi rebalance. Lebih lebar dari ini mudah melewati
 // batas compute unit, jadi rentang panjang dipecah (sama seperti setor chunk 70).
@@ -31,11 +32,6 @@ function asBn(value) {
   } catch {
     return null;
   }
-}
-
-function isPositiveAmount(value) {
-  const bn = asBn(value);
-  return !!bn && bn.gtn(0);
 }
 
 // Pure: pastikan seluruh instruksi `rebalance_liquidity` memakai
@@ -222,6 +218,86 @@ export function buildOneSidedDeposit({
   };
 }
 
+// Satu kurva untuk seluruh rentang. Tiap slice <=70 bin hanya mengambil porsi
+// bin-nya (x0, deltaX, y0, deltaY yang sama). Bentuk tidak dihitung ulang di
+// dalam slice, supaya BidAsk tidak pecah jadi tanjakan baru di tiap batas 70 bin.
+export function globalShapeSlices({
+  amountRaw,
+  fromBinId,
+  toBinId,
+  activeBinId,
+  binStep,
+  strategyType,
+  token,
+  buildLiquidityStrategyParameters,
+  getLiquidityStrategyParameterBuilder,
+  maxBinsPerTx = DEFAULT_MAX_BINS_PER_TX,
+}) {
+  const global = buildOneSidedDeposit({
+    amountRaw,
+    fromBinId,
+    toBinId,
+    activeBinId,
+    binStep,
+    strategyType,
+    token,
+    buildLiquidityStrategyParameters,
+    getLiquidityStrategyParameterBuilder,
+  });
+  if (!global) return null;
+  const active = Math.floor(Number(activeBinId));
+  const activeBn = new BN(active);
+  const stepBn = new BN(String(Math.floor(Number(binStep))));
+  return splitBinRange(fromBinId, toBinId, maxBinsPerTx).map((slice) => {
+    const deposit = {
+      minDeltaId: new BN(slice.fromBinId - active),
+      maxDeltaId: new BN(slice.toBinId - active),
+      x0: global.x0,
+      y0: global.y0,
+      deltaX: global.deltaX,
+      deltaY: global.deltaY,
+      favorXInActiveBin: global.favorXInActiveBin,
+    };
+    let targetRaw = new BN(0);
+    for (const bin of toAmountIntoBins(
+      activeBn,
+      deposit.minDeltaId,
+      deposit.maxDeltaId,
+      deposit.deltaX,
+      deposit.deltaY,
+      deposit.x0,
+      deposit.y0,
+      stepBn,
+      !!deposit.favorXInActiveBin
+    )) {
+      targetRaw = targetRaw.add(token === "y" ? bin.amountY : bin.amountX);
+    }
+    return { fromBinId: slice.fromBinId, toBinId: slice.toBinId, deposit, targetRaw };
+  });
+}
+
+function simulationBn(sim, key) {
+  return asBn(sim?.simulationResult?.[key]) || new BN(0);
+}
+
+// Token yang ditarik dari wallet hanya boleh sebesar yang sudah kembali dari
+// slice sebelumnya pada rebalance ini. Sisi token yang lain tetap ditolak.
+function walletTopupBeyondReleased(sim, token, released) {
+  const xIn = simulationBn(sim, "actualAmountXDeposited");
+  const yIn = simulationBn(sim, "actualAmountYDeposited");
+  const own = token === "y" ? yIn : xIn;
+  const other = token === "y" ? xIn : yIn;
+  if (other.gtn(0)) return true;
+  return own.gt(released);
+}
+
+function releaseAfterSlice(sim, token, released) {
+  const ownIn = simulationBn(sim, token === "y" ? "actualAmountYDeposited" : "actualAmountXDeposited");
+  const ownOut = simulationBn(sim, token === "y" ? "actualAmountYWithdrawn" : "actualAmountXWithdrawn");
+  const left = released.gt(ownIn) ? released.sub(ownIn) : new BN(0);
+  return left.add(ownOut);
+}
+
 export function instructionsToTransaction(ixs) {
   const tx = new Transaction();
   for (const ix of ixs || []) {
@@ -231,6 +307,9 @@ export function instructionsToTransaction(ixs) {
 }
 
 // Bentuk ulang satu sisi lewat rebalance_liquidity.
+// Kurva dihitung sekali untuk seluruh rentang, lalu tiap slice <=70 bin
+// menyetor porsi bin itu. Slice yang mengembalikan token ke wallet jalan
+// lebih dulu, supaya slice berikutnya tidak menarik saldo wallet lain.
 // Gagal sebelum ada tx terkirim → pemanggil boleh jatuh ke tarik+setor.
 // Sebagian chunk sudah terkirim → jangan tarik lagi.
 export async function tryInPlaceRebalance({
@@ -273,42 +352,63 @@ export async function tryInPlaceRebalance({
     depositedRaw: deposited,
   });
 
-  for (const slice of slices) {
-    const amount = sumPositionSideRaw(positionData, slice.fromBinId, slice.toBinId, token);
-    if (amount == null) return fail("no_bin_amounts");
-    if (amount.lte(new BN(0))) continue;
+  const rangeFrom = slices[0].fromBinId;
+  const rangeTo = slices[slices.length - 1].toBinId;
+  const total = sumPositionSideRaw(positionData, rangeFrom, rangeTo, token);
+  if (total == null) return fail("no_bin_amounts");
+  if (total.lte(new BN(0))) return fail("no_amount");
 
-    let deposit;
-    try {
-      deposit = buildOneSidedDeposit({
-        amountRaw: amount,
-        fromBinId: slice.fromBinId,
-        toBinId: slice.toBinId,
-        activeBinId,
-        binStep: step,
-        strategyType,
-        token,
-        buildLiquidityStrategyParameters: builders.buildLiquidityStrategyParameters,
-        getLiquidityStrategyParameterBuilder: builders.getLiquidityStrategyParameterBuilder,
-      });
-    } catch (err) {
-      return fail("strategy_failed", err.message || String(err));
-    }
-    if (!deposit) return fail("side_mismatch");
+  let planned;
+  try {
+    planned = globalShapeSlices({
+      amountRaw: total,
+      fromBinId: rangeFrom,
+      toBinId: rangeTo,
+      activeBinId,
+      binStep: step,
+      strategyType,
+      token,
+      buildLiquidityStrategyParameters: builders.buildLiquidityStrategyParameters,
+      getLiquidityStrategyParameterBuilder: builders.getLiquidityStrategyParameterBuilder,
+      maxBinsPerTx,
+    });
+  } catch (err) {
+    return fail("strategy_failed", err.message || String(err));
+  }
+  if (!planned) return fail("side_mismatch");
 
+  const queue = [];
+  for (const slice of planned) {
+    const withdrawn = sumPositionSideRaw(positionData, slice.fromBinId, slice.toBinId, token);
+    if (withdrawn == null) return fail("no_bin_amounts");
+    if (withdrawn.lte(new BN(0)) && slice.targetRaw.lte(new BN(0))) continue;
+    queue.push({ ...slice, withdrawn });
+  }
+  if (queue.length === 0) return fail("no_amount");
+  queue.sort((a, b) => {
+    const cmp = b.withdrawn.sub(b.targetRaw).cmp(a.withdrawn.sub(a.targetRaw));
+    return cmp !== 0 ? cmp : a.fromBinId - b.fromBinId;
+  });
+
+  const prepared = [];
+  let released = new BN(0);
+  for (const slice of queue) {
     const withdraws = [{ minBinId: new BN(slice.fromBinId), maxBinId: new BN(slice.toBinId), bps: new BN(10000) }];
     let sim;
     try {
-      sim = await pool.simulateRebalancePosition(positionPubKey, positionData, false, false, [deposit], withdraws);
+      sim = await pool.simulateRebalancePosition(
+        positionPubKey,
+        positionData,
+        false,
+        false,
+        [slice.deposit],
+        withdraws
+      );
     } catch (err) {
       return fail("simulate_failed", err.message || String(err));
     }
-    if (
-      isPositiveAmount(sim?.simulationResult?.actualAmountXDeposited) ||
-      isPositiveAmount(sim?.simulationResult?.actualAmountYDeposited)
-    ) {
-      return fail("wallet_topup");
-    }
+    if (walletTopupBeyondReleased(sim, token, released)) return fail("wallet_topup");
+    released = releaseAfterSlice(sim, token, released);
 
     let built;
     try {
@@ -326,9 +426,12 @@ export async function tryInPlaceRebalance({
       (group) => Array.isArray(group) && group.length > 0
     );
     if (groups.length === 0) return fail("empty_tx");
+    prepared.push({ withdrawn: slice.withdrawn, groups });
+  }
 
+  for (const item of prepared) {
     try {
-      for (const group of groups) {
+      for (const group of item.groups) {
         const tx = instructionsToTransaction(group);
         patchRebalanceNoShrink([tx]);
         const sent = await sendAndConfirmFn({ connection, tx, signers: [wallet], feePlan, wallet });
@@ -337,7 +440,7 @@ export async function tryInPlaceRebalance({
     } catch (err) {
       return fail("send_failed", err.message || String(err));
     }
-    deposited = deposited.add(amount);
+    deposited = deposited.add(item.withdrawn);
   }
 
   if (deposited.lte(new BN(0))) return fail("no_amount");
