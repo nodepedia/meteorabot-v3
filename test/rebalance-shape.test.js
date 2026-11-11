@@ -18,9 +18,11 @@ const {
   capRedepositRaw,
   splitBinRange,
   buildOneSidedDeposit,
+  globalShapeSlices,
   tryInPlaceRebalance,
   resolveRebalanceMode,
   solSpendCapRaw,
+  sumPositionSideRaw,
 } = await import("../src/exit/rebalance-shape.js");
 const { handleBidaskDoubleRebalance } = await import("../src/exit/bidask-double-rebalance.js");
 const { trackPosition, getTrackedPosition, setEntryPoolPrice } = await import("../src/state/positions.js");
@@ -381,4 +383,379 @@ test("handler bidask: token di tempat tidak memanggil saldo wallet, SOL withdraw
   assert.equal(adds[0].totalXAmount.toString(), "0");
   assert.equal(getTrackedPosition(position).lastBidaskDoubleRebalancePct, 0);
   assert.equal(getTrackedPosition(position).lastBidaskDoubleRebalanceBin, null);
+});
+
+const SHAPE_BUILDERS = { buildLiquidityStrategyParameters, getLiquidityStrategyParameterBuilder };
+const PER_BIN = "1000000000";
+
+function sideRange(token, active, count) {
+  if (token === "x") return { from: active + 1, to: active + count };
+  return { from: active - count + 1, to: active };
+}
+
+function positionBins(from, to, token, perBin) {
+  const rows = [];
+  const raw = String(perBin);
+  for (let id = from; id <= to; id++) {
+    rows.push({
+      binId: id,
+      positionXAmount: token === "x" ? raw : "0",
+      positionYAmount: token === "y" ? raw : "0",
+    });
+  }
+  return rows;
+}
+
+function tokenAmount(bin, token) {
+  return token === "y" ? bin.amountY : bin.amountX;
+}
+
+function rowsFromDeposits(deposits, active, binStep, token) {
+  const rows = [];
+  for (const item of deposits) {
+    const deposit = item.deposit || item;
+    const bins = toAmountIntoBins(
+      new BN(active),
+      deposit.minDeltaId,
+      deposit.maxDeltaId,
+      deposit.deltaX,
+      deposit.deltaY,
+      deposit.x0,
+      deposit.y0,
+      new BN(binStep),
+      !!deposit.favorXInActiveBin
+    );
+    for (const bin of bins) rows.push({ binId: bin.binId.toNumber(), amount: tokenAmount(bin, token) });
+  }
+  rows.sort((a, b) => a.binId - b.binId);
+  return rows;
+}
+
+function nearContinuous(prev, cur) {
+  return cur.muln(10).gte(prev.muln(9)) && cur.muln(10).lte(prev.muln(11));
+}
+
+// Simulasi jujur: selisih target slice vs isi posisi, sama seperti SDK
+// (yang masuk wallet vs yang diambil dari wallet).
+function honestShapePool(token, active, binStep, seen) {
+  return {
+    simulateRebalancePosition: async (_position, data, _claimFee, _claimReward, deposits, withdraws) => {
+      const deposit = deposits[0];
+      const from = withdraws[0].minBinId.toNumber();
+      const to = withdraws[0].maxBinId.toNumber();
+      seen.push({ deposit, from, to });
+      const bins = toAmountIntoBins(
+        new BN(active),
+        deposit.minDeltaId,
+        deposit.maxDeltaId,
+        deposit.deltaX,
+        deposit.deltaY,
+        deposit.x0,
+        deposit.y0,
+        new BN(binStep),
+        !!deposit.favorXInActiveBin
+      );
+      let target = new BN(0);
+      for (const bin of bins) target = target.add(tokenAmount(bin, token));
+      const withdrawn = sumPositionSideRaw(data, from, to, token) || new BN(0);
+      const topup = target.gt(withdrawn) ? target.sub(withdrawn) : new BN(0);
+      const back = withdrawn.gt(target) ? withdrawn.sub(target) : new BN(0);
+      const zero = new BN(0);
+      return {
+        simulationResult: {
+          actualAmountXDeposited: token === "x" ? topup : zero,
+          actualAmountYDeposited: token === "y" ? topup : zero,
+          actualAmountXWithdrawn: token === "x" ? back : zero,
+          actualAmountYWithdrawn: token === "y" ? back : zero,
+        },
+      };
+    },
+    rebalancePosition: async () => ({ initBinArrayInstructions: [], rebalancePositionInstruction: [rebalanceIx(0)] }),
+  };
+}
+
+test("rentang <=70 bin tetap satu BidAsk yang sama seperti setor langsung", async () => {
+  for (const token of ["x", "y"]) {
+    for (const count of [40, 70]) {
+      const active = token === "x" ? 1000 : -20;
+      const { from, to } = sideRange(token, active, count);
+      const total = new BN(PER_BIN).muln(count);
+      const direct = buildOneSidedDeposit({
+        amountRaw: total,
+        fromBinId: from,
+        toBinId: to,
+        activeBinId: active,
+        binStep: 100,
+        strategyType: StrategyType.BidAsk,
+        token,
+        ...SHAPE_BUILDERS,
+      });
+      const seen = [];
+      let sent = 0;
+      const result = await tryInPlaceRebalance({
+        pool: honestShapePool(token, active, 100, seen),
+        positionPubKey: Keypair.generate().publicKey,
+        positionData: { positionBinData: positionBins(from, to, token, PER_BIN) },
+        wallet: { publicKey: Keypair.generate().publicKey },
+        sendAndConfirmFn: async () => {
+          sent += 1;
+          return { signature: "sig-short" };
+        },
+        fromBinId: from,
+        toBinId: to,
+        activeBinId: active,
+        binStep: 100,
+        token,
+        strategyType: StrategyType.BidAsk,
+        builders: SHAPE_BUILDERS,
+      });
+      assert.equal(result.ok, true, `${token} ${count}`);
+      assert.equal(sent, 1);
+      assert.equal(seen.length, 1);
+      assert.equal(result.depositedRaw.toString(), total.toString());
+      const deposit = seen[0].deposit;
+      for (const key of ["minDeltaId", "maxDeltaId", "x0", "y0", "deltaX", "deltaY"]) {
+        assert.equal(deposit[key].toString(), direct[key].toString(), `${token} ${count} ${key}`);
+      }
+      assert.equal(deposit.favorXInActiveBin, false);
+    }
+  }
+});
+
+test("BidAsk di tempat >70 bin satu kurva: puncak di tepi jauh, tanpa patahan batas 70", async () => {
+  const binStep = 100;
+  for (const count of [191, 316]) {
+    for (const token of ["x", "y"]) {
+      const active = token === "x" ? -735 : -400;
+      const { from, to } = sideRange(token, active, count);
+      const total = new BN(PER_BIN).muln(count);
+      const label = `${token} ${count}`;
+      const planned = globalShapeSlices({
+        amountRaw: total,
+        fromBinId: from,
+        toBinId: to,
+        activeBinId: active,
+        binStep,
+        strategyType: StrategyType.BidAsk,
+        token,
+        ...SHAPE_BUILDERS,
+      });
+      assert.equal(planned.length, Math.ceil(count / 70), label);
+      const curveX0 = planned[0].deposit.x0.toString();
+      const curveDx = planned[0].deposit.deltaX.toString();
+      const curveY0 = planned[0].deposit.y0.toString();
+      const curveDy = planned[0].deposit.deltaY.toString();
+      for (const slice of planned) {
+        assert.equal(slice.deposit.x0.toString(), curveX0, label);
+        assert.equal(slice.deposit.deltaX.toString(), curveDx, label);
+        assert.equal(slice.deposit.y0.toString(), curveY0, label);
+        assert.equal(slice.deposit.deltaY.toString(), curveDy, label);
+      }
+
+      const seen = [];
+      let sent = 0;
+      const result = await tryInPlaceRebalance({
+        pool: honestShapePool(token, active, binStep, seen),
+        positionPubKey: Keypair.generate().publicKey,
+        positionData: { positionBinData: positionBins(from, to, token, PER_BIN) },
+        wallet: { publicKey: Keypair.generate().publicKey },
+        sendAndConfirmFn: async ({ tx }) => {
+          sent += 1;
+          assert.equal(tx.instructions[0].data[48], 3);
+          return { signature: `sig-${label}-${sent}` };
+        },
+        fromBinId: from,
+        toBinId: to,
+        activeBinId: active,
+        binStep,
+        token,
+        strategyType: StrategyType.BidAsk,
+        builders: SHAPE_BUILDERS,
+      });
+      assert.equal(result.ok, true, label);
+      assert.equal(result.partial, false, label);
+      assert.equal(sent, planned.length, label);
+      assert.equal(result.depositedRaw.toString(), total.toString(), label);
+      assert.equal(seen.length, planned.length, label);
+
+      const covered = seen.slice().sort((a, b) => a.from - b.from);
+      assert.equal(covered[0].from, from, label);
+      assert.equal(covered[covered.length - 1].to, to, label);
+      for (let i = 1; i < covered.length; i++) assert.equal(covered[i].from, covered[i - 1].to + 1, label);
+
+      const rows = rowsFromDeposits(seen, active, binStep, token);
+      assert.equal(rows.length, count, label);
+      for (let i = 0; i < rows.length; i++) assert.equal(rows[i].binId, from + i, label);
+
+      const global = buildOneSidedDeposit({
+        amountRaw: total,
+        fromBinId: from,
+        toBinId: to,
+        activeBinId: active,
+        binStep,
+        strategyType: StrategyType.BidAsk,
+        token,
+        ...SHAPE_BUILDERS,
+      });
+      const globalBins = toAmountIntoBins(
+        new BN(active),
+        global.minDeltaId,
+        global.maxDeltaId,
+        global.deltaX,
+        global.deltaY,
+        global.x0,
+        global.y0,
+        new BN(binStep),
+        false
+      );
+      let sum = new BN(0);
+      for (let i = 0; i < rows.length; i++) {
+        assert.equal(
+          rows[i].amount.toString(),
+          tokenAmount(globalBins[i], token).toString(),
+          `${label} bin ${rows[i].binId}`
+        );
+        sum = sum.add(rows[i].amount);
+      }
+      assert.ok(sum.lte(total), label);
+      assert.ok(total.sub(sum).muln(10000).lt(total), `${label} dust ${total.sub(sum).toString()}`);
+
+      // Bobot BidAsk (sebelum harga) naik ke tepi jauh. Jumlah token Y memang
+      // begitu. Jumlah token X masih dikali harga, jadi yang dijaga adalah
+      // bobotnya plus tidak ada jurang di batas slice.
+      if (token === "y") {
+        for (let i = 1; i < rows.length; i++) {
+          assert.ok(rows[i].amount.lte(rows[i - 1].amount), `${label} turun di ${rows[i].binId}`);
+        }
+        assert.ok(rows[0].amount.gt(rows[rows.length - 1].amount), label);
+      } else {
+        let prev = null;
+        for (const row of rows) {
+          const weight = seen[0].deposit.x0.add(seen[0].deposit.deltaX.muln(row.binId - active));
+          if (prev) assert.ok(weight.gt(prev), `${label} bobot di ${row.binId}`);
+          prev = weight;
+        }
+      }
+      for (const boundary of [70, 140, 210, 280]) {
+        if (boundary >= rows.length) continue;
+        assert.ok(
+          nearContinuous(rows[boundary - 1].amount, rows[boundary].amount),
+          `${label} patah di bin ${rows[boundary].binId}`
+        );
+      }
+
+      const broken = [];
+      for (let cur = from; cur <= to; cur += 70) {
+        const end = Math.min(cur + 70 - 1, to);
+        const local = buildOneSidedDeposit({
+          amountRaw: new BN(PER_BIN).muln(end - cur + 1),
+          fromBinId: cur,
+          toBinId: end,
+          activeBinId: active,
+          binStep,
+          strategyType: StrategyType.BidAsk,
+          token,
+          ...SHAPE_BUILDERS,
+        });
+        for (const bin of toAmountIntoBins(
+          new BN(active),
+          local.minDeltaId,
+          local.maxDeltaId,
+          local.deltaX,
+          local.deltaY,
+          local.x0,
+          local.y0,
+          new BN(binStep),
+          false
+        )) {
+          broken.push(tokenAmount(bin, token));
+        }
+      }
+      let brokenCliff = false;
+      for (const boundary of [70, 140, 210, 280]) {
+        if (boundary >= broken.length) continue;
+        if (!nearContinuous(broken[boundary - 1], broken[boundary])) brokenCliff = true;
+      }
+      assert.equal(brokenCliff, true, `${label} kurva per slice lama harusnya patah`);
+    }
+  }
+});
+
+test("rebalance panjang tidak mengirim tx bila slice butuh token di luar yang baru keluar", async () => {
+  let sent = 0;
+  let sims = 0;
+  const blocked = await tryInPlaceRebalance({
+    pool: {
+      simulateRebalancePosition: async () => {
+        sims += 1;
+        if (sims < 3) {
+          return {
+            simulationResult: {
+              actualAmountXDeposited: new BN(0),
+              actualAmountYDeposited: new BN(0),
+              actualAmountXWithdrawn: new BN(0),
+              actualAmountYWithdrawn: new BN(0),
+            },
+          };
+        }
+        return {
+          simulationResult: {
+            actualAmountXDeposited: new BN(5),
+            actualAmountYDeposited: new BN(0),
+            actualAmountXWithdrawn: new BN(0),
+            actualAmountYWithdrawn: new BN(0),
+          },
+        };
+      },
+      rebalancePosition: async () => ({ initBinArrayInstructions: [], rebalancePositionInstruction: [rebalanceIx(0)] }),
+    },
+    positionPubKey: Keypair.generate().publicKey,
+    positionData: { positionBinData: positionBins(1, 191, "x", PER_BIN) },
+    wallet: { publicKey: Keypair.generate().publicKey },
+    sendAndConfirmFn: async () => {
+      sent += 1;
+      return { signature: "should-not-send" };
+    },
+    fromBinId: 1,
+    toBinId: 191,
+    activeBinId: 0,
+    binStep: 100,
+    token: "x",
+    strategyType: StrategyType.BidAsk,
+    builders: SHAPE_BUILDERS,
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.reason, "wallet_topup");
+  assert.equal(blocked.partial, false);
+  assert.equal(blocked.signatures.length, 0);
+  assert.equal(sent, 0);
+  assert.equal(sims, 3);
+
+  let sentOther = 0;
+  const otherSide = await tryInPlaceRebalance({
+    pool: {
+      simulateRebalancePosition: async () => ({
+        simulationResult: { actualAmountXDeposited: new BN(0), actualAmountYDeposited: new BN(1) },
+      }),
+      rebalancePosition: async () => ({ rebalancePositionInstruction: [rebalanceIx(0)] }),
+    },
+    positionPubKey: Keypair.generate().publicKey,
+    positionData: { positionBinData: positionBins(1, 80, "x", PER_BIN) },
+    wallet: { publicKey: Keypair.generate().publicKey },
+    sendAndConfirmFn: async () => {
+      sentOther += 1;
+      return { signature: "nope" };
+    },
+    fromBinId: 1,
+    toBinId: 80,
+    activeBinId: 0,
+    binStep: 100,
+    token: "x",
+    strategyType: StrategyType.BidAsk,
+    builders: SHAPE_BUILDERS,
+  });
+  assert.equal(otherSide.ok, false);
+  assert.equal(otherSide.reason, "wallet_topup");
+  assert.equal(otherSide.partial, false);
+  assert.equal(sentOther, 0);
 });
