@@ -163,6 +163,25 @@ export function canSpotReenter(pos, reason) {
 }
 
 /**
+ * Alasan singkat bila posisi spot OOR kanan tidak di-re-entry.
+ * Null bila syarat terpenuhi, atau ini bukan spot + oor_kanan.
+ * Urutan cek sama dengan shouldReenter. Hanya untuk teks alert.
+ */
+export function spotReentrySkipReason(pos, reason) {
+  if (pos?.mode !== "spot" || reason !== "oor_kanan") return null;
+  const tracked = getTrackedPosition(pos.position);
+  const span = tracked?.binSpan || pos.binSpan || 0;
+  const count = getSpotReentryCount(pos.position);
+  const sizeSol = resolveSpotReentrySizeSol(tracked, pos.pool);
+  const cfg = { ...config.spotReentry, sizeSol };
+  if (!cfg?.enabled) return "re-entry nonaktif";
+  if (!(cfg.sizeSol > 0)) return "ukuran re-entry kosong";
+  if (!Number.isFinite(span) || span <= 0) return "span bin kosong";
+  if (count >= cfg.maxReentries) return "max re-entry tercapai";
+  return null;
+}
+
+/**
  * Buka posisi spot SOL-only baru setelah posisi spot lama ditutup karena OOR kanan / bin kosong atas.
  * - Mengevaluasi ulang seluruh pool DLMM TOKEN/SOL untuk baseMint dan memilih pool paling efisien
  *   (skor efisiensi TVL + 24h fees * 5 + cumFees, kepadatan 31/31 bin SOL >= 1 SOL, LP >= 20, bebas non-refundable rent).
@@ -188,6 +207,8 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
 
   if (!canSpotReenter(pos, "oor_kanan")) return { skipped: true };
 
+  const notifySpotReentry = opts.notifySpotReentry || tg.notifySpotReentry;
+  const notifySpotReentryFailed = opts.notifySpotReentryFailed || tg.notifySpotReentryFailed;
   const cfg = config.spotReentry;
   const pair = pos.pair || pos.position?.slice(0, 8) || "?";
   const tracked = getTrackedPosition(pos.position);
@@ -219,14 +240,18 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     log.warn(`${pair}: re-entry spot gagal (#${nextCount}/${cfg.maxReentries}) — ${reason}`);
     recordAction(`RE-ENTRY ${pair} GAGAL (${nextCount}/${cfg.maxReentries}) — ${reason}`);
     deactivatePool(targetPoolAddress || pos.pool, `re-entry spot gagal: ${reason}`);
-    await tg.notifySpotReentryFailed({
-      pair,
-      pool: targetPoolAddress || pos.pool,
-      oldPosition: pos.position,
-      count: nextCount,
-      max: cfg.maxReentries,
-      reason,
-    });
+    try {
+      await notifySpotReentryFailed({
+        pair,
+        pool: targetPoolAddress || pos.pool,
+        oldPosition: pos.position,
+        count: nextCount,
+        max: cfg.maxReentries,
+        reason,
+      });
+    } catch (err) {
+      log.warn(`${pair}: alert re-entry gagal tidak terkirim — ${err?.message || err}`);
+    }
     return { success: false, error: reason };
   };
 
@@ -434,7 +459,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       const nowTs = Date.now();
       setLastSpotReentryAt(pos.pool, nowTs);
       if (targetPoolAddress !== pos.pool) setLastSpotReentryAt(targetPoolAddress, nowTs);
-      await tg.notifySpotReentry({
+      await notifySpotReentry({
         pair,
         pool: targetPoolAddress,
         oldPosition: pos.position,
@@ -447,6 +472,9 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
         max: cfg.maxReentries,
         txSig: null,
         dryRun: true,
+        success: true,
+        switchedPool,
+        previousPool: pos.pool,
       });
       return {
         success: true,
@@ -553,7 +581,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       `RE-ENTRY ${pair} — ${sizeSol} SOL (${nextCount}/${cfg.maxReentries}, bin ${minBinId}..${maxBinId})${switchNote}`
     );
 
-    await tg.notifySpotReentry({
+    await notifySpotReentry({
       pair,
       pool: targetPoolAddress,
       oldPosition: pos.position,
@@ -566,6 +594,9 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       max: cfg.maxReentries,
       txSig: lastSig,
       dryRun: false,
+      success: true,
+      switchedPool,
+      previousPool: pos.pool,
     });
 
     return {

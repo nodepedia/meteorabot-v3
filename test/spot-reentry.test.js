@@ -25,6 +25,7 @@ const {
   reentryBinRange,
   shouldReenter,
   canSpotReenter,
+  spotReentrySkipReason,
   resolveSpotReentrySizeSol,
   nonRefundableCost,
   exceedsNonRefundable,
@@ -48,6 +49,7 @@ const {
 const { lookupConfiguredEntrySizeSol } = await import("../src/entry/pool-list.js");
 const { reconcileAdoptedSpotEntrySize } = await import("../src/exit/index.js");
 const { selectMostEfficientSpotPool, calcSpotPoolEfficiencyScore } = await import("../src/meteora/spot-position.js");
+const { buildSpotReentryAlert, buildSpotReentryFailedMessage } = await import("../src/notify/telegram.js");
 
 const POOL = "PoolReentry11111111111111111111111111111111";
 const POS = "PosReentry111111111111111111111111111111111";
@@ -1058,6 +1060,163 @@ test("handleSpotOorKananReentry: tanpa entrySizeSol → fallback size entry pool
     Object.assign(config.spotReentry, savedReentry);
     config.entry.poolListFile = savedPoolListFile;
     config.entry.defaultSizeSol = savedDefault;
+  }
+});
+
+test("spotReentrySkipReason: alasan singkat hanya untuk spot OOR kanan", () => {
+  resetState();
+  const savedReentry = { ...config.spotReentry };
+  const savedDefault = config.entry.defaultSizeSol;
+  try {
+    Object.assign(config.spotReentry, { enabled: true, maxReentries: 10 });
+    trackPosition(POS, POOL, "X-SOL", "mint", null, "spot");
+    const pos = { position: POS, pool: POOL, mode: "spot" };
+
+    config.entry.defaultSizeSol = 0;
+    assert.equal(spotReentrySkipReason(pos, "oor_kanan"), "ukuran re-entry kosong");
+
+    config.entry.defaultSizeSol = savedDefault;
+    setEntrySizeSol(POS, 0.2);
+    assert.equal(spotReentrySkipReason(pos, "oor_kanan"), "span bin kosong");
+
+    recordTrackedRange(POS, 100, 344);
+    assert.equal(spotReentrySkipReason(pos, "oor_kanan"), null);
+    assert.equal(canSpotReenter(pos, "oor_kanan"), true);
+
+    setSpotReentryCount(POS, 10);
+    assert.equal(spotReentrySkipReason(pos, "oor_kanan"), "max re-entry tercapai");
+
+    config.spotReentry.enabled = false;
+    assert.equal(spotReentrySkipReason(pos, "oor_kanan"), "re-entry nonaktif");
+    assert.equal(spotReentrySkipReason(pos, "oor_kiri"), null);
+    assert.equal(spotReentrySkipReason({ ...pos, mode: "bidask:double" }, "oor_kanan"), null);
+  } finally {
+    Object.assign(config.spotReentry, savedReentry);
+    config.entry.defaultSizeSol = savedDefault;
+  }
+});
+
+test("handleSpotOorKananReentry dry-run: alert sukses bukan TIDAK dibuka", async () => {
+  resetState();
+  clearSpotReentryCooldown();
+  const savedDryRun = config.dryRun;
+  config.dryRun = true;
+  const alerts = [];
+  try {
+    trackPosition(POS, POOL, "RUN-SOL", "MintRunner111111111111111111111111111111111", 1, "spot");
+    recordTrackedRange(POS, 699, 1014);
+    setEntrySizeSol(POS, 0.3);
+    const mockPool = {
+      lbPair: { binStep: 100 },
+      async getActiveBin() {
+        return { binId: 1000 };
+      },
+      async quoteCreatePosition() {
+        return { binArrayCost: 0, bitmapExtensionCost: 0, positionCost: 0 };
+      },
+    };
+    const res = await handleSpotOorKananReentry(
+      {
+        position: POS,
+        pool: POOL,
+        pair: "RUN-SOL",
+        baseMint: "MintRunner111111111111111111111111111111111",
+        mode: "spot",
+      },
+      {
+        dryRun: true,
+        getConnection: () => ({}),
+        getPoolInfo: async () => ({
+          pool: mockPool,
+          baseMint: "MintRunner111111111111111111111111111111111",
+          baseIsX: true,
+          unsupported: false,
+        }),
+        notifySpotReentry: (payload) => alerts.push(payload),
+      }
+    );
+    assert.equal(res.success, true);
+    assert.equal(res.dryRun, true);
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0].success, true);
+    assert.equal(alerts[0].count, 1);
+    assert.equal(alerts[0].dryRun, true);
+    assert.equal(alerts[0].switchedPool, false);
+    assert.equal(alerts[0].previousPool, POOL);
+    const text = buildSpotReentryAlert(alerts[0]);
+    assert.doesNotMatch(text, /TIDAK dibuka/);
+    assert.match(text, /🔁 RE-ENTRY RUN-SOL \(1\/50\) \[DRY RUN\]/);
+    assert.match(text, /Size: 0\.3 SOL/);
+    assert.match(text, /699\.\.1014 \(span 315\)/);
+    assert.match(text, new RegExp(`Pool: ${POOL}`));
+  } finally {
+    config.dryRun = savedDryRun;
+    clearSpotReentryCooldown();
+  }
+});
+
+test("handleSpotOorKananReentry gagal memanggil notifySpotReentryFailed dengan alasan", async () => {
+  resetState();
+  clearSpotReentryCooldown();
+  const savedDryRun = config.dryRun;
+  config.dryRun = true;
+  const failed = [];
+  try {
+    trackPosition(POS, POOL, "RUN-SOL", "MintRunner111111111111111111111111111111111", 1, "spot");
+    recordTrackedRange(POS, 100, 344);
+    setEntrySizeSol(POS, 0.2);
+    setLastSpotReentryAt(POOL, Date.now());
+    const res = await handleSpotOorKananReentry(
+      { position: POS, pool: POOL, pair: "RUN-SOL", mode: "spot" },
+      {
+        dryRun: true,
+        notifySpotReentryFailed: (payload) => failed.push(payload),
+      }
+    );
+    assert.equal(res.success, false);
+    assert.match(res.error, /cooldown/);
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].pair, "RUN-SOL");
+    assert.equal(failed[0].pool, POOL);
+    assert.equal(failed[0].count, 1);
+    assert.equal(failed[0].max, config.spotReentry.maxReentries);
+    assert.match(failed[0].reason, /cooldown re-entry masih aktif/);
+    const text = buildSpotReentryFailedMessage(failed[0]);
+    assert.match(text, /⚠️ RE-ENTRY RUN-SOL TIDAK dibuka \(1\/50\)/);
+    assert.match(text, /Alasan: cooldown re-entry masih aktif/);
+    assert.match(text, /Rantai re-entry dihentikan\./);
+    assert.match(text, new RegExp(`Pool: ${POOL}`));
+  } finally {
+    config.dryRun = savedDryRun;
+    clearSpotReentryCooldown();
+  }
+});
+
+test("error notifikasi re-entry gagal tidak memutus alur fail()", async () => {
+  resetState();
+  clearSpotReentryCooldown();
+  const savedDryRun = config.dryRun;
+  config.dryRun = true;
+  try {
+    trackPosition(POS, POOL, "RUN-SOL", "MintRunner111111111111111111111111111111111", 1, "spot");
+    recordTrackedRange(POS, 100, 344);
+    setEntrySizeSol(POS, 0.2);
+    setLastSpotReentryAt(POOL, Date.now());
+    const res = await handleSpotOorKananReentry(
+      { position: POS, pool: POOL, pair: "RUN-SOL", mode: "spot" },
+      {
+        dryRun: true,
+        notifySpotReentryFailed: () => {
+          throw new Error("telegram down");
+        },
+      }
+    );
+    assert.equal(res.success, false);
+    assert.match(res.error, /cooldown re-entry masih aktif/);
+    assert.doesNotMatch(res.error, /telegram down/);
+  } finally {
+    config.dryRun = savedDryRun;
+    clearSpotReentryCooldown();
   }
 });
 

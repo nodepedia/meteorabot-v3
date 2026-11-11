@@ -7,6 +7,8 @@ import { Keypair } from "@solana/web3.js";
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "meteorabot-prot-"));
 process.env.STATE_FILE = path.join(TMP, "state.json");
+process.env.DECISION_LOG_FILE = path.join(TMP, "decision-log.json");
+process.env.PNL_HISTORY_FILE = path.join(TMP, "pnl-history.json");
 process.env.RUNTIME_STATE_FILE = path.join(TMP, "runtime-state.json");
 process.env.IMPORTANT_LOG_FILE = path.join(TMP, "important.log");
 
@@ -378,4 +380,54 @@ test("swapMintsToSol: dust/sukses dianggap tuntas, saldo 0 dilewati", async () =
   });
   assert.deepEqual(r.swapped, [OTHER]);
   assert.deepEqual(r.empty, [T22]);
+});
+
+test("close OOR kanan spot meneruskan baris akan re-entry ke alert", async () => {
+  reset({ positions: { POS8: { position: "POS8", pool: "POOLH", baseMint: BASE, closed: false, mode: "spot" } } });
+  runtime.protectMint(BASE, "oor_kanan_reentry");
+  const { buildCloseMessage } = await import("../src/notify/telegram.js");
+  const notices = [];
+  const c = closeDeps();
+  c.deps.notifyClose = (...args) => notices.push(buildCloseMessage(...args));
+  await handleClose(
+    { position: "POS8", pool: "POOLH", baseMint: BASE, pair: "RUN-SOL", mode: "spot", pnlPct: 1 },
+    "oor_kanan",
+    { deps: c.deps, skipDeactivate: true, willReenter: true, nextCount: 2, max: 50 }
+  );
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /↪️ Akan re-entry \(2\/50\)/);
+  assert.doesNotMatch(notices[0], /Tidak re-entry/);
+});
+
+test("close OOR kanan spot tanpa re-entry menulis alasan, alasan lain tidak", async () => {
+  reset({ positions: { POS9: { position: "POS9", pool: "POOLI", baseMint: BASE, closed: false, mode: "spot" } } });
+  const { buildCloseMessage } = await import("../src/notify/telegram.js");
+  const notices = [];
+  const c = closeDeps();
+  c.deps.notifyClose = (...args) => notices.push(buildCloseMessage(...args));
+  await handleClose(
+    { position: "POS9", pool: "POOLI", baseMint: BASE, pair: "RUN-SOL", mode: "spot", pnlPct: 1 },
+    "oor_kanan",
+    {
+      deps: c.deps,
+      skipDeactivate: true,
+      willReenter: false,
+      nextCount: 51,
+      max: 50,
+      reentrySkipReason: "re-entry nonaktif",
+    }
+  );
+  assert.match(notices[0], /↪️ Tidak re-entry: re-entry nonaktif/);
+  assert.doesNotMatch(notices[0], /Akan re-entry/);
+
+  reset({ positions: { POS10: { position: "POS10", pool: "POOLJ", baseMint: BASE, closed: false, mode: "spot" } } });
+  const other = [];
+  const c2 = closeDeps();
+  c2.deps.notifyClose = (...args) => other.push(buildCloseMessage(...args));
+  await handleClose(
+    { position: "POS10", pool: "POOLJ", baseMint: BASE, pair: "RUN-SOL", mode: "spot", pnlPct: -2 },
+    "stop_loss",
+    { deps: c2.deps, willReenter: false, reentrySkipReason: "max re-entry tercapai" }
+  );
+  assert.doesNotMatch(other[0], /re-entry/);
 });

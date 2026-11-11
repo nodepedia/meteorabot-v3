@@ -181,18 +181,79 @@ export function notifySpotSolRebalance({
   }
 }
 
-export function notifySpotReentry({ pair, pool, sizeSol, attempt, max, bins, success, error, reason }) {
-  const label = pair || pool?.slice(0, 8) || "";
-  if (success) {
-    send(
-      `🔁 RE-ENTRY ${label}\nOOR kanan → posisi spot dibuka lagi (${attempt}/${max})\nSize: ${sizeSol} SOL | Range: ${bins} bin ke bawah\nPool: ${pool || "?"}`
-    );
-  } else {
-    const detail = reason || error;
-    send(
-      `⚠️ RE-ENTRY ${label} TIDAK dibuka (${attempt}/${max})\n${detail ? `${detail}\n` : ""}Rantai re-entry dihentikan.\nPool: ${pool || "?"}`
-    );
+function reentryProgress(count, attempt, max) {
+  return `(${count ?? attempt ?? "?"}/${max ?? "?"})`;
+}
+
+function reentryRangeText({ minBin, maxBin, span, bins }) {
+  if (minBin != null && maxBin != null) {
+    const spanNum = span != null ? span : Number(maxBin) - Number(minBin);
+    const spanText = Number.isFinite(Number(spanNum)) ? ` (span ${spanNum})` : "";
+    return `${minBin}..${maxBin}${spanText}`;
   }
+  if (bins != null) return `${bins} bin ke bawah`;
+  return "?";
+}
+
+// Sukses bila pemanggil menandai success:true, atau mengirim newPosition
+// (alamat posisi baru, atau "dry-run"). Tanpa keduanya ini bukan re-entry yang terbuka.
+function spotReentrySucceeded(payload = {}) {
+  if (payload.success === true) return true;
+  if (payload.success === false) return false;
+  return payload.newPosition != null && String(payload.newPosition).length > 0;
+}
+
+export function buildSpotReentryMessage({
+  pair,
+  pool,
+  sizeSol,
+  count,
+  attempt,
+  max,
+  minBin,
+  maxBin,
+  span,
+  bins,
+  dryRun,
+  txSig,
+  switchedPool,
+  previousPool,
+} = {}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const lines = [
+    `🔁 RE-ENTRY ${label} ${reentryProgress(count, attempt, max)}${dryRun ? " [DRY RUN]" : ""}`,
+    `Size: ${sizeSol == null || sizeSol === "" ? "?" : sizeSol} SOL`,
+    `Range: ${reentryRangeText({ minBin, maxBin, span, bins })}`,
+    `Pool: ${pool || "?"}`,
+  ];
+  if (switchedPool && previousPool && previousPool !== pool) {
+    lines.push(`Pindah pool: ${previousPool} → ${pool || "?"}`);
+  }
+  const sig = txSig == null ? "" : String(txSig).trim();
+  if (sig) lines.push(`Tx: https://solscan.io/tx/${sig}`);
+  return lines.join("\n");
+}
+
+export function buildSpotReentryFailedMessage({ pair, pool, count, attempt, max, reason, error } = {}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const detail = reason || error;
+  const lines = [`⚠️ RE-ENTRY ${label} TIDAK dibuka ${reentryProgress(count, attempt, max)}`];
+  if (detail) lines.push(`Alasan: ${detail}`);
+  lines.push("Rantai re-entry dihentikan.");
+  lines.push(`Pool: ${pool || "?"}`);
+  return lines.join("\n");
+}
+
+export function buildSpotReentryAlert(payload = {}) {
+  return spotReentrySucceeded(payload) ? buildSpotReentryMessage(payload) : buildSpotReentryFailedMessage(payload);
+}
+
+export function notifySpotReentry(payload = {}) {
+  send(buildSpotReentryAlert(payload));
+}
+
+export function notifySpotReentryFailed(payload = {}) {
+  send(buildSpotReentryFailedMessage(payload));
 }
 
 function signedPct(v) {
@@ -219,7 +280,16 @@ export function exitLabel(reason) {
   return r;
 }
 
-export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null) {
+function closeReentryLine(reason, reentry) {
+  if (!reentry) return null;
+  if (reentry.willReenter) return `↪️ Akan re-entry (${reentry.nextCount}/${reentry.max})`;
+  if (reason !== "oor_kanan") return null;
+  if (reentry.mode && reentry.mode !== "spot") return null;
+  if (!reentry.skipReason) return null;
+  return `↪️ Tidak re-entry: ${reentry.skipReason}`;
+}
+
+export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null, reentry = null) {
   const row = (label, value) => `${label.padEnd(16)}: ${value}`;
   const lines = [`🔒 Closed ${pair}`, "", row("Trigger Exit", exitLabel(reason))];
   if (peakPnl != null) lines.push(row("Peak", signedPct(peakPnl)));
@@ -231,11 +301,13 @@ export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = 
     const detail = swapInfo.error ? `: ${swapInfo.error}` : " — perlu swap manual";
     lines.push(`⚠️ Swap GAGAL${detail}`);
   }
+  const reentryLine = closeReentryLine(reason, reentry);
+  if (reentryLine) lines.push(reentryLine);
   return lines.join("\n");
 }
 
-export function notifyClose(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null) {
-  send(buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl, peakPnl));
+export function notifyClose(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null, reentry = null) {
+  send(buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl, peakPnl, reentry));
 }
 
 export function notifySwapGiveUp({ mint, pair, attempts, reason, error }) {
