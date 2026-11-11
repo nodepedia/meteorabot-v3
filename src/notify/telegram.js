@@ -433,3 +433,11 @@ export function notifySpotNonRefundableSkipped(payload) {
     log.warn(`Alert sewa non-refundable gagal disusun: ${err.message}`);
   }
 }
+
+export function notifySpotRentPoolSwitch({ fromPool, toPool, text } = {}) {
+  try {
+    send(text || `pindah pool karena rent: ${fromPool} -> ${toPool}`);
+  } catch (err) {
+    log.warn(`Info pindah pool karena rent gagal dikirim: ${err.message}`);
+  }
+}

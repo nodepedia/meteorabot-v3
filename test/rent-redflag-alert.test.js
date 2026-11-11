@@ -14,6 +14,9 @@ const { buildSpotNonRefundableSkipMessage, plainTg } = await import("../src/noti
 const { startSpotEntry, resetSpotRentRedflagAlerts } = await import("../src/entry/index.js");
 const config = (await import("../src/config/index.js")).default;
 
+// Tes ini mengunci alur redflag lama, tanpa mencari pool lain.
+config.spotRentFallbackPool = false;
+
 const POOL = "PoolTaolf11111111111111111111111111111111";
 const MINT = "MintTaolf11111111111111111111111111111111";
 
@@ -150,16 +153,12 @@ test("entry: sukses, skip lain, atau ulang pool yang sama tidak menambah alert s
     );
     assert.equal(alerts.length, 0);
 
-    await startSpotEntry(
-      { pool: POOL, mint: MINT, sizeSol: 0.1, pairName: "TAOLF-SOL" },
-      async () => redflagResult(),
-      { notifySpotNonRefundableSkipped: notify }
-    );
-    await startSpotEntry(
-      { pool: POOL, mint: MINT, sizeSol: 0.1, pairName: "TAOLF-SOL" },
-      async () => redflagResult(),
-      { notifySpotNonRefundableSkipped: notify }
-    );
+    await startSpotEntry({ pool: POOL, mint: MINT, sizeSol: 0.1, pairName: "TAOLF-SOL" }, async () => redflagResult(), {
+      notifySpotNonRefundableSkipped: notify,
+    });
+    await startSpotEntry({ pool: POOL, mint: MINT, sizeSol: 0.1, pairName: "TAOLF-SOL" }, async () => redflagResult(), {
+      notifySpotNonRefundableSkipped: notify,
+    });
     assert.equal(alerts.length, 1);
   } finally {
     config.dryRun = saved.dryRun;

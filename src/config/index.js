@@ -94,6 +94,10 @@ export function buildConfig(e = {}) {
     maxNonRefundableSol: Math.max(0, num(e.SPOT_REENTRY_MAX_NONREFUNDABLE_SOL, 0)),
   };
 
+  // Entry spot pertama kena sewa non-refundable di seluruh tangga: cari pool
+  // TOKEN/SOL lain untuk mint yang sama. false = skip pool seperti sebelumnya.
+  const spotRentFallbackPool = bool(e.SPOT_RENT_FALLBACK_POOL, true);
+
   // Cara membentuk ulang likuiditas. inplace = instruksi rebalance_liquidity
   // (jumlah yang ditarik disetor ulang di tempat, saldo wallet tidak ikut).
   // withdraw = tarik ke wallet lalu setor hanya jumlah yang benar-benar keluar.
@@ -322,6 +326,7 @@ export function buildConfig(e = {}) {
     dca,
     spotFallback,
     spotReentry,
+    spotRentFallbackPool,
     rebalance,
     spotTokenBidask,
     bidaskDoubleRebalance,
