@@ -88,8 +88,13 @@ test("entry: seluruh tangga gagal kirim satu alert dan menandai pool", async () 
     assert.equal(alerts.length, 1);
     assert.equal(alerts[0].watchDisabled, true);
     assert.equal(alerts[0].sizeSol, 0.1);
-    assert.match(buildSpotNonRefundableSkipMessage(alerts[0]), /0\.214312 SOL/);
-    assert.match(buildSpotNonRefundableSkipMessage(alerts[0]), /ditandai #/);
+    const msg = buildSpotNonRefundableSkipMessage(alerts[0]);
+    assert.match(msg, /Hanya pool asal yang dicek \(fallback nonaktif\)/);
+    assert.match(msg, /Pool dicek: 1/);
+    assert.match(msg, /min sewa 0\.071437 SOL/);
+    assert.match(msg, /ditandai #/);
+    assert.doesNotMatch(msg, /Catatan:/);
+    assert.doesNotMatch(msg, /-95%/);
   } finally {
     config.dryRun = saved.dryRun;
     config.entry.poolListFile = saved.file;
@@ -165,4 +170,92 @@ test("entry: sukses, skip lain, atau ulang pool yang sama tidak menambah alert s
     config.entry.poolListFile = saved.file;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("teks alert re-entry tetap per range dan catatan", () => {
+  const msg = buildSpotNonRefundableSkipMessage({
+    pair: "TAOLF-SOL",
+    pool: POOL,
+    costsByPct: { "-95": 0.214312 },
+    upperPct: 15,
+    maxNonRefundableSol: 0,
+    reason: "non-refundable rent masih muncul pada -95%",
+    context: "Re-entry OOR Kanan #1/3",
+  });
+  assert.match(msg, /Tahap: Re-entry OOR Kanan #1\/3/);
+  assert.match(msg, /-95%\.\.\+15%: 0\.214312 SOL/);
+  assert.match(msg, /Catatan: non-refundable rent masih muncul pada -95%/);
+  assert.doesNotMatch(msg, /Pool dicek/);
+});
+
+test("teks alert: hanya 1 pool TOKEN/SOL yang kena sewa", () => {
+  const msg = buildSpotNonRefundableSkipMessage({
+    pair: "LuckyCoin-SOL",
+    mint: MINT,
+    sizeSol: 0.125,
+    maxNonRefundableSol: 0,
+    fallbackEnabled: true,
+    watchDisabled: true,
+    reason: "jangan diulang di catatan",
+    poolsChecked: [{ pool: POOL, binStep: 80, minNonRefundableSol: 0.214312, rentOk: false }],
+  });
+  assert.match(
+    msg,
+    /^🚨 Entry Spot dibatalkan karena semua pool TOKEN\/SOL untuk token ini terkena sewa non-refundable\./
+  );
+  assert.match(msg, /Pair: LuckyCoin-SOL/);
+  assert.match(msg, /Token: MintTaol…/);
+  assert.match(msg, /Modal: 0\.125 SOL/);
+  assert.match(msg, /Pool dicek: 1/);
+  assert.match(msg, /PoolTaol… \| binStep 80 \| min sewa 0\.214312 SOL/);
+  assert.match(msg, /Batas sewa non-refundable: 0 SOL/);
+  assert.match(msg, /Pool ditandai # dan tidak dipantau lagi\./);
+  assert.doesNotMatch(msg, /Catatan:/);
+  assert.doesNotMatch(msg, /-95%/);
+  assert.doesNotMatch(msg, /fallback nonaktif/);
+});
+
+test("teks alert: beberapa pool gagal, termasuk yang tanpa angka sewa", () => {
+  const other = "OtherPool2222222222222222222222222222222";
+  const bare = "BarePool33333333333333333333333333333333";
+  const msg = buildSpotNonRefundableSkipMessage({
+    pair: "LuckyCoin-SOL",
+    mint: MINT,
+    sizeSol: 0.125,
+    maxNonRefundableSol: 0,
+    fallbackEnabled: true,
+    watchDisabled: true,
+    reason: "jangan diulang di catatan",
+    poolsChecked: [
+      { pool: POOL, binStep: 80, minNonRefundableSol: 0.214312, rentOk: false },
+      { pool: other, binStep: 100, costsByPct: { "-95": 0.05, "-90": 0.04 }, rentOk: false },
+      { pool: bare, binStep: 25, minNonRefundableSol: null, rentOk: false },
+    ],
+  });
+  assert.match(msg, /semua pool TOKEN\/SOL untuk token ini terkena sewa non-refundable/);
+  assert.match(msg, /Pool dicek: 3/);
+  assert.match(msg, /PoolTaol… \| binStep 80 \| min sewa 0\.214312 SOL/);
+  assert.match(msg, /OtherPoo… \| binStep 100 \| min sewa 0\.040000 SOL/);
+  assert.match(msg, /BarePool… \| binStep 25 \| tidak ada range bebas sewa/);
+  assert.doesNotMatch(msg, /Catatan:/);
+  assert.doesNotMatch(msg, /-95%\.\.\+15%/);
+});
+
+test("teks alert: fallback nonaktif hanya menyebut pool asal", () => {
+  const msg = buildSpotNonRefundableSkipMessage({
+    pair: "LuckyCoin-SOL",
+    mint: MINT,
+    sizeSol: 0.125,
+    maxNonRefundableSol: 0,
+    fallbackEnabled: false,
+    watchDisabled: true,
+    reason: "jangan diulang di catatan",
+    poolsChecked: [{ pool: POOL, binStep: 80, costsByPct: { "-95": 0.214312, "-80": 0.071437 }, rentOk: false }],
+  });
+  assert.match(msg, /^🚨 Entry Spot dibatalkan$/m);
+  assert.match(msg, /Hanya pool asal yang dicek \(fallback nonaktif\)\./);
+  assert.match(msg, /Pool dicek: 1/);
+  assert.match(msg, /min sewa 0\.071437 SOL/);
+  assert.doesNotMatch(msg, /semua pool TOKEN\/SOL/);
+  assert.doesNotMatch(msg, /Catatan:/);
 });

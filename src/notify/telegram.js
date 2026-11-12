@@ -455,12 +455,93 @@ export function plainTg(value, max = 180) {
     .slice(0, max);
 }
 
+function minListedRentSol(costsByPct) {
+  if (!costsByPct || typeof costsByPct !== "object") return null;
+  let min = null;
+  for (const value of Object.values(costsByPct)) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) continue;
+    if (min == null || n < min) min = n;
+  }
+  return min;
+}
+
+function shortTgId(value) {
+  const text = plainTg(value, 64);
+  if (!text) return "";
+  return text.length > 8 ? `${text.slice(0, 8)}…` : text;
+}
+
+function listedPoolRentMin(item) {
+  const fromCosts = minListedRentSol(item?.costsByPct);
+  if (fromCosts != null) return fromCosts;
+  if (item?.minNonRefundableSol == null || item.minNonRefundableSol === "") return null;
+  const n = Number(item.minNonRefundableSol);
+  return Number.isFinite(n) ? n : null;
+}
+
+function listedPoolRentIsFree(item, maxNonRefundableSol) {
+  const min = listedPoolRentMin(item);
+  const cap =
+    Number.isFinite(Number(maxNonRefundableSol)) && Number(maxNonRefundableSol) >= 0 ? Number(maxNonRefundableSol) : 0;
+  if (min != null) return min <= cap;
+  return item?.rentOk === true;
+}
+
+function formatCheckedPoolLine(item) {
+  const addr = shortTgId(item?.pool || item?.poolAddress) || "?";
+  const step = Number(item?.binStep);
+  const parts = [addr];
+  if (Number.isFinite(step) && step > 0) parts.push(`binStep ${step}`);
+  const min = listedPoolRentMin(item);
+  if (min == null) parts.push(item?.rentOk === true ? "bebas sewa" : "tidak ada range bebas sewa");
+  else parts.push(`min sewa ${min.toFixed(6)} SOL`);
+  return parts.join(" | ");
+}
+
+// Alert entry spot setelah pencarian pool lain: satu baris ringkas per pool.
+function buildSpotPoolsRentSkipMessage({
+  pair,
+  mint,
+  sizeSol,
+  maxNonRefundableSol,
+  watchDisabled,
+  fallbackEnabled,
+  poolsChecked,
+} = {}) {
+  const pools = Array.isArray(poolsChecked) ? poolsChecked : [];
+  const allFailed = pools.length > 0 && pools.every((item) => !listedPoolRentIsFree(item, maxNonRefundableSol));
+  const lines = [];
+  if (fallbackEnabled === false) {
+    lines.push("🚨 Entry Spot dibatalkan");
+    lines.push("Hanya pool asal yang dicek (fallback nonaktif).");
+  } else if (allFailed) {
+    lines.push("🚨 Entry Spot dibatalkan karena semua pool TOKEN/SOL untuk token ini terkena sewa non-refundable.");
+  } else {
+    lines.push("🚨 Entry Spot dibatalkan");
+  }
+  const pairText = plainTg(pair);
+  if (pairText) lines.push(`Pair: ${pairText}`);
+  const mintText = shortTgId(mint);
+  if (mintText) lines.push(`Token: ${mintText}`);
+  if (Number.isFinite(Number(sizeSol))) lines.push(`Modal: ${Number(sizeSol)} SOL`);
+  lines.push(`Pool dicek: ${pools.length}`);
+  for (const item of pools) lines.push(formatCheckedPoolLine(item));
+  if (Number.isFinite(Number(maxNonRefundableSol))) {
+    lines.push(`Batas sewa non-refundable: ${Number(maxNonRefundableSol)} SOL`);
+  }
+  if (watchDisabled === true) lines.push("Pool ditandai # dan tidak dipantau lagi.");
+  return lines.join("\n");
+}
+
 // Teks alert bila seluruh tangga range Spot ditolak karena sewa tidak kembali.
-// Hanya menulis angka yang benar-benar ada. Status daftar pantau hanya bila
-// penandaan # memang berhasil.
+// Payload dengan poolsChecked (entry spot instan) memakai ringkasan per pool.
+// Payload lama (re-entry OOR kanan) tetap menulis tiap range. Status daftar
+// pantau hanya bila penandaan # memang berhasil.
 export function buildSpotNonRefundableSkipMessage({
   pool,
   pair,
+  mint,
   sizeSol,
   costsByPct,
   upperPct,
@@ -468,7 +549,20 @@ export function buildSpotNonRefundableSkipMessage({
   reason,
   context,
   watchDisabled,
+  fallbackEnabled,
+  poolsChecked,
 } = {}) {
+  if (Array.isArray(poolsChecked)) {
+    return buildSpotPoolsRentSkipMessage({
+      pair,
+      mint,
+      sizeSol,
+      maxNonRefundableSol,
+      watchDisabled,
+      fallbackEnabled,
+      poolsChecked,
+    });
+  }
   const lines = ["🚨 Entry Spot dibatalkan"];
   const pairText = plainTg(pair);
   if (pairText) lines.push(`Pair: ${pairText}`);

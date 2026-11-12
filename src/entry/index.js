@@ -7,7 +7,11 @@ import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
 import { getConnection } from "../solana/connection.js";
-import { selectMostEfficientSpotPool } from "../meteora/spot-position.js";
+import {
+  selectMostEfficientSpotPool,
+  summarizeSpotRentCheck,
+  minSpotNonRefundableSol,
+} from "../meteora/spot-position.js";
 import { executeEntry, executeSpotEntry } from "./execute.js";
 import {
   selectWatchCandidates,
@@ -648,8 +652,74 @@ function notifySpotRentPoolSwitch(fromPool, toPool, notifyFn) {
   }
 }
 
+function binStepOf(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function rentChecksFromSelection(selection) {
+  if (Array.isArray(selection?.rentChecks)) return selection.rentChecks;
+  if (!Array.isArray(selection?.candidatesAudited)) return [];
+  return selection.candidatesAudited.map((audit) => summarizeSpotRentCheck(audit));
+}
+
+// Pool asal dulu, lalu kandidat fallback (tanpa dobel). Hasil retry menimpa baris pool itu.
+function buildCheckedSpotPools(originPool, originResult, rentChecks, retryRent) {
+  const rows = new Map();
+  const order = [];
+  const upsert = (addr, row) => {
+    if (!addr) return;
+    if (!rows.has(addr)) order.push(addr);
+    const prev = rows.get(addr) || {};
+    rows.set(addr, {
+      pool: addr,
+      binStep: row.binStep ?? prev.binStep,
+      costsByPct: row.costsByPct !== undefined ? row.costsByPct : prev.costsByPct,
+      minNonRefundableSol: row.minNonRefundableSol !== undefined ? row.minNonRefundableSol : prev.minNonRefundableSol,
+      rentOk: row.rentOk !== undefined ? row.rentOk : prev.rentOk,
+    });
+  };
+
+  upsert(originPool, {
+    binStep: binStepOf(originResult?.binStep),
+    costsByPct: originResult?.costsByPct,
+    minNonRefundableSol: minSpotNonRefundableSol(originResult?.costsByPct),
+    rentOk: false,
+  });
+
+  for (const check of Array.isArray(rentChecks) ? rentChecks : []) {
+    const addr = check?.poolAddress || check?.pool;
+    if (!addr) continue;
+    if (addr === originPool) {
+      const prev = rows.get(addr);
+      const step = binStepOf(check.binStep);
+      if (prev && !prev.binStep && step) rows.set(addr, { ...prev, binStep: step });
+      continue;
+    }
+    const rawMin =
+      check.minNonRefundableSol == null ? minSpotNonRefundableSol(check.costsByPct) : Number(check.minNonRefundableSol);
+    upsert(addr, {
+      binStep: binStepOf(check.binStep),
+      costsByPct: check.costsByPct,
+      minNonRefundableSol: Number.isFinite(rawMin) ? rawMin : null,
+      rentOk: check.rentOk === true,
+    });
+  }
+
+  if (retryRent?.pool) {
+    upsert(retryRent.pool, {
+      binStep: binStepOf(retryRent.result?.binStep),
+      costsByPct: retryRent.result?.costsByPct,
+      minNonRefundableSol: minSpotNonRefundableSol(retryRent.result?.costsByPct),
+      rentOk: false,
+    });
+  }
+
+  return order.map((addr) => rows.get(addr));
+}
+
 async function chooseSpotRentFallbackPool(pool, mint, deps) {
-  if (!spotRentFallbackEnabled() || !pool || !mint) return null;
+  if (!spotRentFallbackEnabled() || !pool || !mint) return { chosen: null, rentChecks: [] };
   const selectFn = deps.selectMostEfficientSpotPool || selectMostEfficientSpotPool;
   const args = {
     currentPool: pool,
@@ -669,16 +739,17 @@ async function chooseSpotRentFallbackPool(pool, mint, deps) {
   }
   try {
     const selection = await selectFn(args);
+    const rentChecks = rentChecksFromSelection(selection);
     const chosen = selection?.chosenPoolAddress;
-    if (!chosen || chosen === pool || selection?.chosenAudit?.rentOk !== true) return null;
+    if (!chosen || chosen === pool || selection?.chosenAudit?.rentOk !== true) return { chosen: null, rentChecks };
     if (!isSpotPoolSlotFree(chosen, mint)) {
       log.info(`Pool ${pool.slice(0, 8)} tidak pindah ke ${chosen.slice(0, 8)}: slot spot pool itu sedang terpakai`);
-      return null;
+      return { chosen: null, rentChecks };
     }
-    return chosen;
+    return { chosen, rentChecks };
   } catch (err) {
     log.warn(`Pool ${pool.slice(0, 8)} pencarian pool pengganti rent gagal: ${err.message}`);
-    return null;
+    return { chosen: null, rentChecks: [] };
   }
 }
 
@@ -711,8 +782,12 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
       let activeSlotKey = slotKey;
       let activePair = pair;
 
+      let rentChecks = null;
+      let retryRent = null;
       if (result?.skipped && result.redflagNonRefundable && spotRentFallbackEnabled()) {
-        const altPool = await chooseSpotRentFallbackPool(pool, mint || result.baseMint, deps);
+        const fallback = await chooseSpotRentFallbackPool(pool, mint || result.baseMint, deps);
+        rentChecks = fallback?.rentChecks || [];
+        const altPool = fallback?.chosen || null;
         if (altPool) {
           const altKey = quotaKey(altPool, "spot");
           fallbackSlotKey = altKey;
@@ -725,6 +800,8 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
             activePool = altPool;
             activeSlotKey = altKey;
             activePair = retry.pair || pair;
+          } else if (retryRedflag) {
+            retryRent = { pool: altPool, result: retry };
           }
         }
       }
@@ -755,6 +832,7 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
           {
             pool: activePool,
             pair: result.pair || activePair,
+            mint: mint || result.baseMint,
             costsByPct: result.costsByPct,
             cost95Sol: result.cost95Sol,
             cost90Sol: result.cost90Sol,
@@ -764,6 +842,8 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
             reason: result.reason,
             context: "Entry Spot Instan",
             watchDisabled,
+            fallbackEnabled: spotRentFallbackEnabled(),
+            poolsChecked: buildCheckedSpotPools(pool, result, rentChecks, retryRent),
           },
           deps.notifySpotNonRefundableSkipped || tg.notifySpotNonRefundableSkipped
         );

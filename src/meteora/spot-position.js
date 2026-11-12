@@ -491,12 +491,43 @@ export function compareSpotPoolAudits(a, b) {
   return Number(b?.tvlUsd || 0) - Number(a?.tvlUsd || 0);
 }
 
+function positiveBinStep(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Sewa non-refundable terkecil pada tangga range. Null bila angkanya tidak ada. */
+export function minSpotNonRefundableSol(costsByPct) {
+  if (!costsByPct || typeof costsByPct !== "object") return null;
+  let min = null;
+  for (const value of Object.values(costsByPct)) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) continue;
+    if (min == null || n < min) min = n;
+  }
+  return min;
+}
+
+/** Ringkas hasil sewa satu kandidat untuk alert. Tidak dipakai untuk memilih pool. */
+export function summarizeSpotRentCheck(audit, meta = {}) {
+  const costs = audit?.rangeRes?.costsByPct;
+  const minNonRefundableSol = minSpotNonRefundableSol(costs);
+  return {
+    poolAddress: audit?.poolAddress || meta?.address || null,
+    binStep: positiveBinStep(audit?.poolInfo?.pool?.lbPair?.binStep) ?? positiveBinStep(meta?.binStep),
+    rentOk: audit?.rentOk === true,
+    minNonRefundableSol,
+    costsByPct: costs && typeof costs === "object" ? costs : undefined,
+  };
+}
+
 /**
  * Evaluasi seluruh kandidat pool DLMM TOKEN/SOL untuk baseMint dan pilih pool
  * paling efisien yang rentOk (urutan compareSpotPoolAudits: sewa, kepadatan bin,
  * LP, skor, TVL). Tidak ada syarat bin step. Pool di `notRentOkPools` dipaksa
  * tidak rentOk bila SPOT_RENT_FALLBACK_POOL nyala. Bila tidak ada yang rentOk,
- * tetap di currentPool.
+ * tetap di currentPool. `rentChecks` memuat setiap kandidat yang dievaluasi
+ * (termasuk yang auditnya gagal) beserta sewa minimumnya; pilihan pool tidak berubah.
  */
 export async function selectMostEfficientSpotPool({
   currentPool,
@@ -512,7 +543,13 @@ export async function selectMostEfficientSpotPool({
   rentFallbackPool = null,
 }) {
   if (!currentPool || !baseMint) {
-    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+    return {
+      chosenPoolAddress: currentPool,
+      switched: false,
+      chosenAudit: null,
+      candidatesAudited: [],
+      rentChecks: [],
+    };
   }
 
   const discovered =
@@ -522,7 +559,13 @@ export async function selectMostEfficientSpotPool({
 
   const list = Array.isArray(discovered) ? discovered.slice() : [];
   if (list.length === 0) {
-    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+    return {
+      chosenPoolAddress: currentPool,
+      switched: false,
+      chosenAudit: null,
+      candidatesAudited: [],
+      rentChecks: [],
+    };
   }
 
   list.sort((a, b) => {
@@ -545,10 +588,17 @@ export async function selectMostEfficientSpotPool({
 
   // Bila hanya ada 1 pool (currentPool saja), tidak perlu bandingkan multi-pool
   if (shortlist.length <= 1 && shortlist[0]?.address === currentPool) {
-    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+    return {
+      chosenPoolAddress: currentPool,
+      switched: false,
+      chosenAudit: null,
+      candidatesAudited: [],
+      rentChecks: [],
+    };
   }
 
   const audited = [];
+  const attempted = [];
   for (const cand of shortlist) {
     const audit = await auditSpotPoolCandidate({
       poolAddress: cand.address,
@@ -558,13 +608,30 @@ export async function selectMostEfficientSpotPool({
       skipNonRefundable,
       maxNonRefundableSol,
     });
-    if (audit.ok) {
-      audited.push(audit);
-    }
+    attempted.push({ cand, audit });
+    if (audit.ok) audited.push(audit);
   }
 
+  const rentChecksFor = () =>
+    attempted.map(({ cand, audit }) =>
+      audit?.ok
+        ? summarizeSpotRentCheck(audit, cand)
+        : {
+            poolAddress: cand.address,
+            binStep: positiveBinStep(cand.binStep),
+            rentOk: false,
+            minNonRefundableSol: null,
+          }
+    );
+
   if (audited.length === 0) {
-    return { chosenPoolAddress: currentPool, switched: false, chosenAudit: null, candidatesAudited: [] };
+    return {
+      chosenPoolAddress: currentPool,
+      switched: false,
+      chosenAudit: null,
+      candidatesAudited: [],
+      rentChecks: rentChecksFor(),
+    };
   }
 
   const fallbackOn = rentFallbackPool == null ? config.spotRentFallbackPool !== false : rentFallbackPool !== false;
@@ -580,6 +647,7 @@ export async function selectMostEfficientSpotPool({
   audited.sort(compareSpotPoolAudits);
   const best = audited[0];
   const currentAudit = audited.find((a) => a.poolAddress === currentPool) || null;
+  const rentChecks = rentChecksFor();
 
   if (fallbackOn) {
     const pick = audited.find((a) => a.rentOk);
@@ -590,6 +658,7 @@ export async function selectMostEfficientSpotPool({
         chosenAudit: currentAudit,
         currentAudit,
         candidatesAudited: audited,
+        rentChecks,
       };
     }
     return {
@@ -598,6 +667,7 @@ export async function selectMostEfficientSpotPool({
       chosenAudit: pick,
       currentAudit,
       candidatesAudited: audited,
+      rentChecks,
     };
   }
 
@@ -609,6 +679,7 @@ export async function selectMostEfficientSpotPool({
       chosenAudit: currentAudit,
       currentAudit,
       candidatesAudited: audited,
+      rentChecks,
     };
   }
 
@@ -618,5 +689,6 @@ export async function selectMostEfficientSpotPool({
     chosenAudit: best,
     currentAudit,
     candidatesAudited: audited,
+    rentChecks,
   };
 }
