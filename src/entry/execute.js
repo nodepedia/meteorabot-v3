@@ -333,6 +333,7 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
         costsByPct: rangeRes.costsByPct,
         upperPct: rangeRes.upperPct,
         maxNonRefundableSol: rangeRes.maxNonRefundableSol,
+        binStep,
         reason: rangeRes.reason,
         baseMint,
         pair,

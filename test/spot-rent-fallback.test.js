@@ -12,6 +12,7 @@ process.env.RUNTIME_STATE_FILE = path.join(TMP, "runtime-state.json");
 
 const { default: config, buildConfig } = await import("../src/config/index.js");
 const { selectMostEfficientSpotPool } = await import("../src/meteora/spot-position.js");
+const { buildSpotNonRefundableSkipMessage } = await import("../src/notify/telegram.js");
 const { startSpotEntry, resetSpotRentRedflagAlerts } = await import("../src/entry/index.js");
 const { isEntryInProgressPool, isEntryInProgressMint, addEntryInProgressPool, resetRuntimeState } =
   await import("../src/entry/runtime.js");
@@ -33,8 +34,10 @@ function mockPool({ binStep, rentCost, bins, lp }) {
   };
 }
 
-function row(address, tvlUsd) {
-  return { address, tvlUsd, fees24hUsd: 0, cumFeesUsd: 0 };
+function row(address, tvlUsd, binStep) {
+  const base = { address, tvlUsd, fees24hUsd: 0, cumFeesUsd: 0 };
+  if (Number(binStep) > 0) base.binStep = Number(binStep);
+  return base;
 }
 
 async function selectPools(current, specs, extra = {}) {
@@ -42,7 +45,7 @@ async function selectPools(current, specs, extra = {}) {
   const rows = [];
   for (const spec of specs) {
     pools[spec.address] = mockPool(spec);
-    rows.push(row(spec.address, spec.tvlUsd));
+    rows.push(row(spec.address, spec.tvlUsd, spec.binStep));
   }
   return selectMostEfficientSpotPool({
     currentPool: current,
@@ -117,6 +120,10 @@ test("selectMostEfficientSpotPool: lewati pool terbaik yang tidak rentOk, pilih 
 
   assert.equal(res.switched, true);
   assert.equal(res.chosenPoolAddress, DENSE);
+  assert.equal(res.rentChecks.find((r) => r.poolAddress === BAD).minNonRefundableSol, 0.2);
+  assert.equal(res.rentChecks.find((r) => r.poolAddress === BAD).rentOk, false);
+  assert.equal(res.rentChecks.find((r) => r.poolAddress === DENSE).rentOk, true);
+  assert.equal(res.rentChecks.find((r) => r.poolAddress === DENSE).minNonRefundableSol, 0);
   assert.equal(res.chosenAudit.rentOk, true);
   assert.equal(res.chosenAudit.poolInfo.pool.lbPair.binStep, 25);
   assert.equal(res.candidatesAudited.find((a) => a.poolAddress === BAD).rentOk, false);
@@ -157,6 +164,15 @@ test("selectMostEfficientSpotPool: tidak ada yang rentOk tetap di currentPool", 
 
   assert.equal(res.chosenPoolAddress, CUR);
   assert.equal(res.switched, false);
+  assert.equal(res.rentChecks.length, 2);
+  const cur = res.rentChecks.find((r) => r.poolAddress === CUR);
+  const other = res.rentChecks.find((r) => r.poolAddress === OTHER);
+  assert.equal(cur.rentOk, false);
+  assert.equal(other.rentOk, false);
+  assert.equal(cur.binStep, 25);
+  assert.equal(other.binStep, 100);
+  assert.equal(cur.minNonRefundableSol, 0.2);
+  assert.equal(other.minNonRefundableSol, 0.2);
 });
 
 test("selectMostEfficientSpotPool: sakelar mati mengabaikan tanda tidak rentOk", async () => {
@@ -174,6 +190,40 @@ test("selectMostEfficientSpotPool: sakelar mati mengabaikan tanda tidak rentOk",
 
   assert.equal(res.chosenPoolAddress, BEST);
   assert.equal(res.switched, false);
+});
+
+test("selectMostEfficientSpotPool: audit yang gagal tetap masuk rentChecks", async () => {
+  const CUR = "CurAuditFail111111111111111111111111111111";
+  const BAD = "BadAuditFail222222222222222222222222222222";
+  const res = await selectPools(
+    CUR,
+    [
+      { address: CUR, tvlUsd: 10, binStep: 20, rentCost: 0.2, bins: 1, lp: 1 },
+      { address: BAD, tvlUsd: 50, binStep: 15, rentCost: 0, bins: 1, lp: 1 },
+    ],
+    {
+      getPoolInfoFn: async (addr) => {
+        if (addr === BAD) throw new Error("rpc down");
+        return {
+          pool: mockPool({ binStep: 20, rentCost: 0.2, bins: 1, lp: 1 }),
+          baseMint: MINT,
+          baseIsX: true,
+          unsupported: false,
+        };
+      },
+    }
+  );
+
+  assert.equal(res.chosenPoolAddress, CUR);
+  assert.equal(res.switched, false);
+  const bad = res.rentChecks.find((r) => r.poolAddress === BAD);
+  assert.equal(bad.rentOk, false);
+  assert.equal(bad.minNonRefundableSol, null);
+  assert.equal(bad.binStep, 15);
+  assert.equal(
+    res.candidatesAudited.some((a) => a.poolAddress === BAD),
+    false
+  );
 });
 
 test("entry spot pertama pindah ke pool lain yang rentOk dengan size yang sama", async () => {
@@ -266,6 +316,11 @@ test("entry spot pertama tanpa kandidat rentOk tetap redflag pool asal", async (
     assert.equal(alerts.length, 1);
     assert.equal(alerts[0].pool, poolA);
     assert.equal(alerts[0].watchDisabled, true);
+    const msg = buildSpotNonRefundableSkipMessage(alerts[0]);
+    assert.match(msg, /semua pool TOKEN\/SOL untuk token ini terkena sewa non-refundable/);
+    assert.match(msg, /Pool dicek: 1/);
+    assert.doesNotMatch(msg, /fallback nonaktif/);
+    assert.doesNotMatch(msg, /Catatan:/);
     assert.equal(fs.readFileSync(poolFile, "utf8"), `#${poolA},1x,1,spot\n`);
   });
 });
@@ -292,6 +347,10 @@ test("entry spot pertama tidak pindah bila slot pool pengganti sudah terpakai", 
           chosenPoolAddress: poolB,
           switched: true,
           chosenAudit: { poolAddress: poolB, rentOk: true },
+          rentChecks: [
+            { poolAddress: poolA, binStep: 80, rentOk: false, minNonRefundableSol: 0.07 },
+            { poolAddress: poolB, binStep: 20, rentOk: true, minNonRefundableSol: 0 },
+          ],
         }),
       }
     );
@@ -301,8 +360,68 @@ test("entry spot pertama tidak pindah bila slot pool pengganti sudah terpakai", 
     assert.equal(moves.length, 0);
     assert.equal(alerts.length, 1);
     assert.equal(alerts[0].pool, poolA);
+    const msg = buildSpotNonRefundableSkipMessage(alerts[0]);
+    assert.match(msg, /Pool dicek: 2/);
+    assert.doesNotMatch(msg, /semua pool TOKEN\/SOL/);
+    assert.match(msg, new RegExp(`${poolB.slice(0, 8)}… \\| binStep 20 \\| min sewa 0\\.000000 SOL`));
     assert.equal(isEntryInProgressPool(poolB), true);
     assert.equal(fs.readFileSync(poolFile, "utf8").startsWith("#"), true);
+  });
+});
+
+test("entry spot: pool pengganti juga gagal sewa, alert memuat keduanya", async () => {
+  const poolA = "PoolBothA1111111111111111111111111111111";
+  const poolB = "PoolBothB2222222222222222222222222222222";
+  const mint = "MintBoth111111111111111111111111111111111";
+  await withEntry(`${poolA},1x,1,spot\n`, async (poolFile) => {
+    const calls = [];
+    const alerts = [];
+    const res = await startSpotEntry(
+      { pool: poolA, mint, sizeSol: 0.125, pairName: "LuckyCoin-SOL", mode: "spot" },
+      async (pool) => {
+        calls.push(pool);
+        if (pool === poolB) {
+          return redflag({
+            pair: "LuckyCoin-SOL",
+            binStep: 25,
+            costsByPct: { "-95": 0.08, "-80": 0.03 },
+            maxNonRefundableSol: 0,
+          });
+        }
+        return redflag({
+          pair: "LuckyCoin-SOL",
+          binStep: 80,
+          costsByPct: { "-95": 0.2, "-80": 0.1 },
+          maxNonRefundableSol: 0,
+        });
+      },
+      {
+        notifySpotNonRefundableSkipped: (payload) => alerts.push(payload),
+        selectMostEfficientSpotPool: async () => ({
+          chosenPoolAddress: poolB,
+          switched: true,
+          chosenAudit: { poolAddress: poolB, rentOk: true },
+          rentChecks: [
+            { poolAddress: poolA, binStep: 80, rentOk: false, minNonRefundableSol: 0.2 },
+            { poolAddress: poolB, binStep: 25, rentOk: true, minNonRefundableSol: 0 },
+          ],
+        }),
+      }
+    );
+
+    assert.equal(res.redflagNonRefundable, true);
+    assert.deepEqual(calls, [poolA, poolB]);
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0].mint, mint);
+    const msg = buildSpotNonRefundableSkipMessage(alerts[0]);
+    assert.match(msg, /semua pool TOKEN\/SOL untuk token ini terkena sewa non-refundable/);
+    assert.match(msg, /Token: MintBoth…/);
+    assert.match(msg, /Modal: 0\.125 SOL/);
+    assert.match(msg, /Pool dicek: 2/);
+    assert.match(msg, /PoolBoth… \| binStep 80 \| min sewa 0\.100000 SOL/);
+    assert.match(msg, /PoolBoth… \| binStep 25 \| min sewa 0\.030000 SOL/);
+    assert.doesNotMatch(msg, /Catatan:/);
+    assert.equal(fs.readFileSync(poolFile, "utf8"), `#${poolA},1x,1,spot\n`);
   });
 });
 
@@ -338,6 +457,10 @@ test("SPOT_RENT_FALLBACK_POOL=false: entry tidak mencari pool lain dan redflag l
       assert.equal(res.redflagNonRefundable, true);
       assert.equal(alerts.length, 1);
       assert.equal(alerts[0].pool, poolA);
+      const msg = buildSpotNonRefundableSkipMessage(alerts[0]);
+      assert.match(msg, /Hanya pool asal yang dicek \(fallback nonaktif\)/);
+      assert.match(msg, /Pool dicek: 1/);
+      assert.doesNotMatch(msg, /semua pool TOKEN\/SOL/);
       assert.equal(fs.readFileSync(poolFile, "utf8"), `#${poolA},1x,1,spot\n`);
     },
     { rent: false }
