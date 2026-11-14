@@ -115,6 +115,8 @@ export async function getOpenPositions() {
             }
           }
           const binSpan = lowerBin != null && upperBin != null ? upperBin - lowerBin : 0;
+          const solRaw = xIsSol ? totalX : yIsSol ? totalY : 0;
+          const solAmountUi = Number.isFinite(solRaw) && solRaw > 0 ? solRaw / 1e9 : 0;
 
           positions.push({
             position: posAddress,
@@ -136,6 +138,7 @@ export async function getOpenPositions() {
             hasX,
             hasY,
             binSpan,
+            solAmountUi,
           });
         } catch (err) {
           log.warn(`Skip position in pool ${lbPairKey.slice(0, 8)}: ${err.message}`);

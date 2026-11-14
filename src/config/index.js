@@ -33,9 +33,19 @@ export function buildConfig(e = {}) {
     trailingTakeProfit: false,
   });
 
+  // SOL-only yang dibuka manual (classifyMode). Stop loss -40, trailing
+  // trigger 10, warmup 30 menit (trailing saja). OOR kiri, indikator, yield,
+  // dan bounce mati. OOR kanan ber-timer seperti spot, lalu re-entry
+  // bidask:sol (bukan entry pool.txt, bukan rebalance).
   const bidaskSol = modeRules(e, "BIDASK_SOL", {
-    enableIndicators: true,
+    enableStopLoss: true,
+    stopLossPct: -40,
+    enableIndicators: false,
+    exitWarmupMinutes: 30,
     trailingTakeProfit: true,
+    oorKananMinutes: 2,
+    oorKananHighVol5mUsd: 100000,
+    oorKananFastMinutes: 1,
   });
 
   // Spot-quote (satu mode, isi SOL-only, span >= SPOT_MIN_BINS): indikator sama

@@ -70,6 +70,13 @@ test("config-sync: parameter kembar OOR Kanan & Re-entry Cooldown wajib sinkron 
     cfg.spotReentry.fastCooldownSec,
     "SPOT_OOR_KANAN_FAST_MINUTES * 60 harus sama persis dengan SPOT_REENTRY_FAST_COOLDOWN_SEC"
   );
+
+  // bidask:sol memakai timer OOR kanan yang sama dengan spot.
+  assert.equal(cfg.bidaskSol.oorKananMinutes, cfg.spot.oorKananMinutes);
+  assert.equal(cfg.bidaskSol.oorKananFastMinutes, cfg.spot.oorKananFastMinutes);
+  assert.equal(cfg.bidaskSol.oorKananHighVol5mUsd, cfg.spot.oorKananHighVol5mUsd);
+  assert.equal(cfg.bidaskSol.oorKananMinutes * 60, cfg.spotReentry.cooldownSec);
+  assert.equal(cfg.bidaskSol.oorKananFastMinutes * 60, cfg.spotReentry.fastCooldownSec);
 });
 
 test("config-sync: default stepPct di calcSpotTokenBinMetrics & evaluateSpotTokenBidaskTrigger sinkron dengan SPOT_TOKEN_BIDASK_STEP_PCT (10%)", () => {

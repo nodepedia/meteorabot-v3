@@ -1,10 +1,18 @@
 import config from "../config/index.js";
 import { LEGACY_MODE } from "../config/rules.js";
 import { computeRSI, computeMACD, computeBB } from "../market/indicators.js";
-import { updateOOR, resetOOR, getOORState, clearLowYieldSince, getLowYieldSince, writeLowYieldSince } from "../state/positions.js";
+import {
+  updateOOR,
+  resetOOR,
+  getOORState,
+  clearLowYieldSince,
+  getLowYieldSince,
+  writeLowYieldSince,
+} from "../state/positions.js";
 import { isTrailingConfirmed } from "../state/trailing.js";
 import { getBounceRecoveryState } from "../state/bounce.js";
 import { getSpotReentryCooldownRemainingMs } from "./spot-reentry.js";
+import { getBidaskSolReentryCooldownRemainingMs } from "./bidask-sol-reentry.js";
 
 // Jendela data 24h Fee/TVL masih boleh dipakai untuk tutup.
 // Mengikuti irama loop exit yang sudah ada (tanpa poll baru): 10× POLL_INTERVAL_HOLD,
@@ -74,7 +82,11 @@ export function isExitWarmup(firstSeenAt, warmupMinutes, now = Date.now()) {
   return now - Number(firstSeenAt) < min * 60000;
 }
 
-export function evaluateExit(position, candles, { warmup = false, now = Date.now(), processStartedAt = YIELD_PROCESS_STARTED_AT } = {}) {
+export function evaluateExit(
+  position,
+  candles,
+  { warmup = false, now = Date.now(), processStartedAt = YIELD_PROCESS_STARTED_AT } = {}
+) {
   const rules = config.rulesFor(position.mode);
   const { activeBin, lowerBin, upperBin, pnlPct } = position;
 
@@ -106,24 +118,20 @@ export function evaluateExit(position, candles, { warmup = false, now = Date.now
   // Mode lain (oorKananMinutes = 0) tutup langsung.
   if (activeBin != null && effectiveUpperBin != null && activeBin > effectiveUpperBin) {
     const vol5m = Number(position.volume5m);
-    const isHighVol5m =
-      rules.oorKananHighVol5mUsd > 0 &&
-      Number.isFinite(vol5m) &&
-      vol5m > rules.oorKananHighVol5mUsd;
+    const isHighVol5m = rules.oorKananHighVol5mUsd > 0 && Number.isFinite(vol5m) && vol5m > rules.oorKananHighVol5mUsd;
     const effectiveOorKananMinutes =
-      isHighVol5m && rules.oorKananFastMinutes > 0
-        ? rules.oorKananFastMinutes
-        : rules.oorKananMinutes;
+      isHighVol5m && rules.oorKananFastMinutes > 0 ? rules.oorKananFastMinutes : rules.oorKananMinutes;
     const effectiveCooldownSec = isHighVol5m
       ? (config.spotReentry?.fastCooldownSec ?? effectiveOorKananMinutes * 60)
       : (config.spotReentry?.cooldownSec ?? effectiveOorKananMinutes * 60);
 
-    if (position.mode === "spot" && position.pool) {
-      const cooldownRemMs = getSpotReentryCooldownRemainingMs(
-        position.pool,
-        Date.now(),
-        effectiveCooldownSec
-      );
+    // Cooldown re-entry OOR kanan: spot dan bidask:sol saja. Mode lain tidak.
+    // Detiknya sama (spotReentry); pencatat waktunya terpisah per mode.
+    if ((position.mode === "spot" || position.mode === "bidask:sol") && position.pool) {
+      const cooldownRemMs =
+        position.mode === "bidask:sol"
+          ? getBidaskSolReentryCooldownRemainingMs(position.pool, Date.now(), effectiveCooldownSec)
+          : getSpotReentryCooldownRemainingMs(position.pool, Date.now(), effectiveCooldownSec);
       if (cooldownRemMs > 0) {
         updateOOR(position.position, "kanan");
         return { action: "hold", reason: `oor_kanan_cooldown_${Math.ceil(cooldownRemMs / 1000)}s` };

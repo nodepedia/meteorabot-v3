@@ -8,6 +8,12 @@ function finitePositive(value) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function finiteNonNegInt(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
+}
+
 // Waktu mulai warmup exit. Re-entry OOR kanan mengisi exitWarmupStartedAt;
 // entry baru (field kosong) tetap memakai firstSeenAt.
 export function resolveExitWarmupStartedAt(tracked) {
@@ -38,6 +44,13 @@ export function trackPosition(
       // Re-entry OOR kanan: waktu mulai warmup posisi yang diganti. Kosong =
       // entry baru, warmup dihitung dari firstSeenAt. Hanya diisi sekali.
       exitWarmupStartedAt: finitePositive(extra?.exitWarmupStartedAt),
+      // Offset range terhadap bin aktif saat pertama terlihat di dalam range
+      // (atau saat re-entry membuka posisi). null + noted = tidak diketahui.
+      openBinOffsetNoted:
+        extra?.openBinOffsetNoted === true ||
+        (finiteNonNegInt(extra?.openBinsBelow) != null && finiteNonNegInt(extra?.openBinsAbove) != null),
+      openBinsBelow: finiteNonNegInt(extra?.openBinsBelow),
+      openBinsAbove: finiteNonNegInt(extra?.openBinsAbove),
       collectFeeMode: collectFeeMode ?? null,
       mode: mode ?? "spot",
       // Range bin posisi (dicatat sekali saat pertama terlihat; tidak pernah
@@ -85,8 +98,8 @@ export function trackPosition(
       // exit karena trailing TP.
       dcaCloseSafeguard: false,
       missedCycles: 0,
-      // Berapa kali posisi ini adalah hasil re-entry spot OOR kanan (diwariskan
-      // ke posisi berikutnya supaya rantai berhenti di SPOT_REENTRY_MAX).
+      // Berapa kali posisi ini adalah hasil re-entry OOR kanan (spot atau
+      // bidask:sol). Diwariskan supaya rantai berhenti di SPOT_REENTRY_MAX.
       spotReentryCount: 0,
       // Level persentase bin token terakhir yang sudah di-rebalance ke BidAsk (mis. 15, 30, 45).
       lastSpotTokenBidaskPct: 0,
@@ -171,6 +184,51 @@ export function setSpotReentryCount(positionAddress, count) {
   if (!p) return;
   p.spotReentryCount = n;
   writeState(state);
+}
+
+// Catat sekali bagaimana range duduk terhadap bin aktif. Dipanggil saat posisi
+// bidask:sol pertama kali terlihat. Di dalam range = offset disimpan. Di luar
+// range = ditandai tidak diketahui, dan tidak ditimpa belakangan.
+export function noteBidaskSolOpenOffset(positionAddress, activeBin, lowerBin, upperBin) {
+  if (!positionAddress) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p || p.openBinOffsetNoted === true) {
+    return p ? { binsBelow: p.openBinsBelow ?? null, binsAbove: p.openBinsAbove ?? null } : null;
+  }
+  p.openBinOffsetNoted = true;
+  const active = Number(activeBin);
+  const lower = Number(lowerBin);
+  const upper = Number(upperBin);
+  const inRange =
+    Number.isFinite(active) && Number.isFinite(lower) && Number.isFinite(upper) && active >= lower && active <= upper;
+  if (inRange) {
+    p.openBinsBelow = Math.floor(active - lower);
+    p.openBinsAbove = Math.floor(upper - active);
+  } else {
+    p.openBinsBelow = null;
+    p.openBinsAbove = null;
+  }
+  writeState(state);
+  return { binsBelow: p.openBinsBelow, binsAbove: p.openBinsAbove };
+}
+
+// Isi offset re-entry sekali, bila baris sudah ada (deteksi on-chain lebih dulu)
+// dan offset belum dicatat.
+export function setBidaskSolOpenOffset(positionAddress, binsBelow, binsAbove) {
+  const below = finiteNonNegInt(binsBelow);
+  const above = finiteNonNegInt(binsAbove);
+  if (!positionAddress || below == null || above == null) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p || p.openBinOffsetNoted === true) {
+    return p ? { binsBelow: p.openBinsBelow ?? null, binsAbove: p.openBinsAbove ?? null } : null;
+  }
+  p.openBinOffsetNoted = true;
+  p.openBinsBelow = below;
+  p.openBinsAbove = above;
+  writeState(state);
+  return { binsBelow: below, binsAbove: above };
 }
 
 // Isi waktu mulai warmup sekali. Nilai yang sudah ada tidak ditimpa, termasuk

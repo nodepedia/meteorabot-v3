@@ -256,6 +256,56 @@ export function notifySpotReentryFailed(payload = {}) {
   send(buildSpotReentryFailedMessage(payload));
 }
 
+export function buildBidaskSolReentryMessage({
+  pair,
+  pool,
+  sizeSol,
+  count,
+  attempt,
+  max,
+  minBin,
+  maxBin,
+  span,
+  bins,
+  dryRun,
+  txSig,
+} = {}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const lines = [
+    `🔁 RE-ENTRY bidask:sol SOL-only ${label} ${reentryProgress(count, attempt, max)}${dryRun ? " [DRY RUN]" : ""}`,
+    `Size: ${sizeSol == null || sizeSol === "" ? "?" : sizeSol} SOL`,
+    `Range: ${reentryRangeText({ minBin, maxBin, span, bins })}`,
+    `Pool: ${pool || "?"}`,
+  ];
+  const sig = txSig == null ? "" : String(txSig).trim();
+  if (sig) lines.push(`Tx: https://solscan.io/tx/${sig}`);
+  return lines.join("\n");
+}
+
+export function buildBidaskSolReentryFailedMessage({ pair, pool, count, attempt, max, reason, error } = {}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const detail = reason || error;
+  const lines = [`⚠️ RE-ENTRY bidask:sol SOL-only ${label} TIDAK dibuka ${reentryProgress(count, attempt, max)}`];
+  if (detail) lines.push(`Alasan: ${detail}`);
+  lines.push("Rantai re-entry dihentikan.");
+  lines.push(`Pool: ${pool || "?"}`);
+  return lines.join("\n");
+}
+
+export function buildBidaskSolReentryAlert(payload = {}) {
+  return spotReentrySucceeded(payload)
+    ? buildBidaskSolReentryMessage(payload)
+    : buildBidaskSolReentryFailedMessage(payload);
+}
+
+export function notifyBidaskSolReentry(payload = {}) {
+  send(buildBidaskSolReentryAlert(payload));
+}
+
+export function notifyBidaskSolReentryFailed(payload = {}) {
+  send(buildBidaskSolReentryFailedMessage(payload));
+}
+
 function signedPct(v) {
   if (v == null || !Number.isFinite(Number(v))) return "?";
   const n = Number(v);
@@ -282,11 +332,14 @@ export function exitLabel(reason) {
 
 function closeReentryLine(reason, reentry) {
   if (!reentry) return null;
-  if (reentry.willReenter) return `↪️ Akan re-entry (${reentry.nextCount}/${reentry.max})`;
+  const solOnly = reentry.mode === "bidask:sol";
+  const tag = solOnly ? "bidask:sol SOL-only " : "";
+  if (reentry.willReenter) return `↪️ Akan re-entry ${tag}(${reentry.nextCount}/${reentry.max})`;
   if (reason !== "oor_kanan") return null;
-  if (reentry.mode && reentry.mode !== "spot") return null;
+  if (reentry.mode && reentry.mode !== "spot" && reentry.mode !== "bidask:sol") return null;
   if (!reentry.skipReason) return null;
-  return `↪️ Tidak re-entry: ${reentry.skipReason}`;
+  const skipTag = solOnly ? " bidask:sol SOL-only" : "";
+  return `↪️ Tidak re-entry${skipTag}: ${reentry.skipReason}`;
 }
 
 export function buildCloseMessage(pair, reason, pnlPct, swapInfo, drawdownPnl = null, peakPnl = null, reentry = null) {
