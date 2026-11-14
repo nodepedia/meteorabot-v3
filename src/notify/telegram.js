@@ -102,6 +102,30 @@ export function notifyBidaskDoubleSolRebalance({ pair, pool, lastPct, stepPct, f
   }
 }
 
+// Rebalance sisi token posisi bidask:sol ke BidAsk, tiap kelipatan porsi bin token.
+// Tidak ada sisi SOL.
+export function notifyBidaskSolTokenRebalance({
+  pair,
+  pool,
+  stepPct,
+  tokenBinPct,
+  fromBinId,
+  toBinId,
+  success,
+  error,
+}) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
+  const tokenStr = Number.isFinite(Number(tokenBinPct)) ? `${Number(tokenBinPct).toFixed(1)}%` : "?";
+  if (success) {
+    send(`✅ BIDASK SOL TOKEN REBALANCE ${label} — step ${stepPct ?? 0}% (${tokenStr} bin token, bin ${rangeStr})`);
+  } else {
+    send(
+      `⚠️ BIDASK SOL TOKEN REBALANCE ${label} GAGAL (step ${stepPct}%)\n${error ? `Alasan: ${error}\n` : ""}Range token: ${rangeStr}\nPool: ${pool || "?"}`
+    );
+  }
+}
+
 // Rebalance sisi token posisi bidask:double ke BidAsk, tiap kelipatan turun harga.
 export function notifyBidaskDoubleRebalance({
   pair,

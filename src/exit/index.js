@@ -58,6 +58,7 @@ import { handleSpotOorKiri } from "./spot-fallback.js";
 import { handleSpotOorKananReentry, planSpotOorKananReentry } from "./spot-reentry.js";
 import { handleSpotTokenBidask } from "./spot-token-bidask.js";
 import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
+import { handleBidaskSolRebalance } from "./bidask-sol-rebalance.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
 
 /**
@@ -455,6 +456,8 @@ export async function mainLoop(opts = {}) {
           await handleSpotTokenBidask(pos);
         } else if (pos.mode === "bidask:double") {
           await handleBidaskDoubleRebalance(pos);
+        } else if (pos.mode === "bidask:sol") {
+          await handleBidaskSolRebalance(pos);
         }
       }
     }
