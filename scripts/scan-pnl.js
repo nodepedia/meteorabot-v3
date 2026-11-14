@@ -1,5 +1,6 @@
 import fs from "fs";
 import process from "process";
+import { pnlFromEntry } from "../src/meteora/positions.js";
 import { collectWalletFlows, reconcilePosition } from "../src/meteora/pnl-reconcile.js";
 
 const BASE = "https://dlmm.datapi.meteora.ag";
@@ -285,8 +286,10 @@ async function main() {
       const rec = flows ? reconcilePosition(pos, flows, { thresholdPct: THRESHOLD }) : null;
       const depSol = rec ? rec.depositSol : num(pos.allTimeDeposits?.total?.sol);
       const pnlSol = rec ? rec.pnlSol : num(pos.pnlSol);
+      // Tanpa koreksi on-chain: modal bersih (setor − tarik), sama dengan bot.
+      // Koreksi on-chain memakai modal on-chain, karena numerator-nya sudah diganti dari situ.
       const pnlPct =
-        rec && rec.corrected && rec.depositSol > 0 ? (rec.pnlSol / rec.depositSol) * 100 : pos.pnlSolPctChange;
+        rec && rec.corrected && rec.depositSol > 0 ? (rec.pnlSol / rec.depositSol) * 100 : pnlFromEntry(pos);
       rows.push({
         _createdAt: Number(pos.createdAt) || 0,
         _depSol: depSol,

@@ -26,6 +26,29 @@ function mockFetch(handler) {
   global.fetch = handler;
 }
 
+test("waitClosedPositionPnl: rebalance memakai modal bersih, bukan pnlSolPctChange", async () => {
+  mockFetch(async () => ({
+    ok: true,
+    json: async () => ({
+      positions: [
+        {
+          positionAddress: POS,
+          isClosed: true,
+          pnlSol: "-0.03174",
+          pnlSolPctChange: "-2.99",
+          allTimeDeposits: { total: { sol: "1.0610" } },
+          allTimeWithdrawals: { total: { sol: "0.9360" } },
+        },
+      ],
+      hasNext: false,
+    }),
+  }));
+  const pnl = await waitClosedPositionPnl(POOL, POS, { timeoutMs: 50, intervalMs: 1, wallet: WALLET });
+  const expected = (-0.03174 / (1.061 - 0.936)) * 100;
+  assert.ok(Math.abs(pnl - expected) < 1e-9, `pnl ${pnl}`);
+  assert.ok(Math.abs(pnl - -25.4) < 0.05);
+});
+
 test("waitClosedPositionPnl: ketemu langsung (pakai pnlSolPctChange)", async () => {
   mockFetch(async () => ({
     ok: true,
