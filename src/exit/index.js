@@ -11,6 +11,7 @@ import {
   updateCollectFeeMode,
   updateTrackedMode,
   recordTrackedRange,
+  noteBidaskSolOpenOffset,
   getOpenTrackedPositions,
   registerMissedCycle,
   resetMissedCycle,
@@ -56,6 +57,7 @@ import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
 import { handleSpotOorKiri } from "./spot-fallback.js";
 import { handleSpotOorKananReentry, planSpotOorKananReentry } from "./spot-reentry.js";
+import { handleBidaskSolOorKananReentry, planBidaskSolOorKananReentry } from "./bidask-sol-reentry.js";
 import { handleSpotTokenBidask } from "./spot-token-bidask.js";
 import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
@@ -343,9 +345,13 @@ export async function mainLoop(opts = {}) {
       pos.mode = tracked?.mode ?? "spot";
       pos.ageMinutes = Math.floor((Date.now() - (tracked?.firstSeenAt || Date.now())) / 60000);
 
-      // Catat range bin sekali untuk posisi spot (lower/upper/span).
-      if (pos.mode === "spot") {
+      // Catat range bin sekali (lower/upper/span). bidask:sol juga menyimpan
+      // offset terhadap bin aktif bila saat itu masih di dalam range.
+      if (pos.mode === "spot" || pos.mode === "bidask:sol") {
         recordTrackedRange(pos.position, pos.lowerBin, pos.upperBin);
+      }
+      if (pos.mode === "bidask:sol") {
+        noteBidaskSolOpenOffset(pos.position, pos.activeBin, pos.lowerBin, pos.upperBin);
       }
 
       // Track PnL peaks
@@ -405,14 +411,17 @@ export async function mainLoop(opts = {}) {
         if (exit.reason === "oor_kiri" && pos.mode === "spot") {
           handled = await handleSpotOorKiri(pos);
         }
-        // OOR kanan spot: putuskan re-entry sebelum close (termasuk ambil candle
-        // RSI di sini, bukan setelah handleClose). Pool tidak ditandai '#' bila
-        // kita mau langsung buka lagi. RSI mentok, atau alasan lain (termasuk
-        // low_yield), tidak lolos: close biasa, klaim + swap, pool ini selesai.
+        // OOR kanan spot atau bidask:sol: putuskan re-entry sebelum close
+        // (termasuk ambil candle RSI di sini, bukan setelah handleClose).
+        // Pool tidak ditandai '#' bila kita mau langsung buka lagi. RSI mentok,
+        // atau alasan lain, tidak lolos: close biasa, klaim + swap.
         let willReenter = false;
         let reentrySkipReason = null;
-        if (!handled && pos.mode === "spot" && exit.reason === "oor_kanan") {
-          const plan = await planSpotOorKananReentry(pos, exit.reason);
+        if (!handled && exit.reason === "oor_kanan" && (pos.mode === "spot" || pos.mode === "bidask:sol")) {
+          const plan =
+            pos.mode === "bidask:sol"
+              ? await planBidaskSolOorKananReentry(pos, exit.reason)
+              : await planSpotOorKananReentry(pos, exit.reason);
           willReenter = plan.willReenter;
           reentrySkipReason = plan.reentrySkipReason;
         }
@@ -435,7 +444,8 @@ export async function mainLoop(opts = {}) {
               reentrySkipReason,
             });
             if (closeRes?.success && willReenter) {
-              await handleSpotOorKananReentry(pos);
+              if (pos.mode === "bidask:sol") await handleBidaskSolOorKananReentry(pos);
+              else await handleSpotOorKananReentry(pos);
             }
           } finally {
             if (willReenter) {

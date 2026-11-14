@@ -13,9 +13,27 @@ const config = (await import("../src/config/index.js")).default;
 const { buildConfig } = await import("../src/config/index.js");
 
 // Candle naik terus → RSI(2) ~100 & MACD hist > 0 (sinyal rsi_macd). Bar terakhir = berjalan.
-const candles = Array.from({ length: 41 }, (_, i) => ({ open: 1.1 ** i, high: 1.1 ** (i + 1), low: 1.1 ** i, close: 1.1 ** (i + 0.9), volume: 1 }));
-const pos = (mode, o = {}) => ({ position: `P-${mode}`, pool: "POOL", mode, activeBin: 150, lowerBin: 100, upperBin: 300,
-  pnlPct: 1, baseMint: "mint", xIsSol: false, hasX: true, hasY: true, ...o });
+const candles = Array.from({ length: 41 }, (_, i) => ({
+  open: 1.1 ** i,
+  high: 1.1 ** (i + 1),
+  low: 1.1 ** i,
+  close: 1.1 ** (i + 0.9),
+  volume: 1,
+}));
+const pos = (mode, o = {}) => ({
+  position: `P-${mode}`,
+  pool: "POOL",
+  mode,
+  activeBin: 150,
+  lowerBin: 100,
+  upperBin: 300,
+  pnlPct: 1,
+  baseMint: "mint",
+  xIsSol: false,
+  hasX: true,
+  hasY: true,
+  ...o,
+});
 
 test("default SPOT_INDICATOR_EXIT = immediate; nilai tak dikenal → immediate", () => {
   assert.equal(buildConfig({}).spot.indicatorExit, "immediate");
@@ -42,11 +60,20 @@ test("spot trailing: sinyal indikator → arm trailing (perilaku lama)", () => {
   config.spot.indicatorExit = "immediate";
 });
 
-test("bidask tidak berubah: tetap arm trailing walau spot=immediate", () => {
+test("bidask double/token tidak berubah: tetap arm trailing walau spot=immediate", () => {
   config.spot.indicatorExit = "immediate";
-  for (const mode of ["bidask:double", "bidask:token", "bidask:sol"]) {
+  for (const mode of ["bidask:double", "bidask:token"]) {
     const r = evaluateExit(pos(mode, { position: `B-${mode}` }), candles);
     assert.equal(r.action, "arm_indicator_trailing", mode);
   }
-  assert.deepEqual(indicatorAction("bidask:double", "rsi_bb", { indicatorExit: "immediate" }), { action: "arm_indicator_trailing", reason: "rsi_bb" });
+  assert.deepEqual(indicatorAction("bidask:double", "rsi_bb", { indicatorExit: "immediate" }), {
+    action: "arm_indicator_trailing",
+    reason: "rsi_bb",
+  });
+});
+
+test("bidask:sol mengabaikan sinyal indikator", () => {
+  const r = evaluateExit(pos("bidask:sol", { position: "B-bidask:sol" }), candles);
+  assert.equal(r.action, "hold");
+  assert.equal(r.reason, "indicators_disabled");
 });
