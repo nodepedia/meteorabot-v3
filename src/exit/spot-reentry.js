@@ -22,6 +22,9 @@ import {
 } from "../meteora/spot-position.js";
 import { getPoolInfo } from "../entry/pool-info.js";
 import { replacePoolInList, commentPoolInList, lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
+import { fetchCandles } from "../market/candles.js";
+import { computeRSI } from "../market/indicators.js";
+import { closedCandles } from "./rules.js";
 import {
   trackPosition,
   getTrackedPosition,
@@ -29,6 +32,8 @@ import {
   getSpotReentryCount,
   setSpotReentryCount,
   setEntrySizeSol,
+  setExitWarmupStartedAt,
+  resolveExitWarmupStartedAt,
   getOpenPositionsForMint,
   recordClose,
 } from "../state/positions.js";
@@ -181,6 +186,87 @@ export function spotReentrySkipReason(pos, reason) {
   return null;
 }
 
+function formatRsiValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "?";
+  return String(Math.round(n * 100) / 100);
+}
+
+// Pure: RSI terakhir dari candle yang sudah tutup, periode sama dengan exit.
+export function latestClosedRsi(candles, rsiPeriod) {
+  const closed = closedCandles(candles);
+  const closes = closed.map((c) => c.close);
+  const values = computeRSI(closes, rsiPeriod);
+  const latest = values[values.length - 1];
+  return Number.isFinite(latest) ? latest : null;
+}
+
+// Pure: alasan skip bila RSI mentok. Null bila di bawah ambang, RSI tidak
+// valid, atau ambang 0 (fitur mati).
+export function spotReentryRsiSkipReason(rsiLatest, { maxRsi = 90, rsiPeriod = 2 } = {}) {
+  const max = Number(maxRsi);
+  if (!Number.isFinite(max) || max <= 0) return null;
+  const rsi = Number(rsiLatest);
+  if (!Number.isFinite(rsi) || rsi < max) return null;
+  const period = Number.isFinite(Number(rsiPeriod)) ? Number(rsiPeriod) : 2;
+  return `re-entry dilewati karena RSI(${period}) ${formatRsiValue(rsi)} >= ${formatRsiValue(max)}`;
+}
+
+// Ambil RSI exit sebelum close. Candle kosong/gagal → null (tetap re-entry) + log.
+export async function spotReentryOverextendedSkipReason(pos, opts = {}) {
+  const cfg = opts.cfg || config.spotReentry;
+  const maxRsi = Number(cfg?.maxRsi ?? 0);
+  if (!Number.isFinite(maxRsi) || maxRsi <= 0) return null;
+
+  const rules = opts.rules || config.rulesFor("spot");
+  const fetchCandlesFn = opts.fetchCandles || fetchCandles;
+  const logWarn = opts.log?.warn || ((msg) => log.warn(msg));
+  const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
+  const timeframe = opts.timeframe || config.timeframe || "15m";
+
+  let candles = null;
+  try {
+    candles = await fetchCandlesFn(pos?.baseMint, pos?.pool, {
+      resolution: timeframe,
+      priority: "exit",
+    });
+  } catch (err) {
+    logWarn(`${pair}: candle RSI re-entry gagal diambil (${err?.message || err}) — tetap re-entry`);
+    return null;
+  }
+
+  if (!Array.isArray(candles) || candles.length === 0) {
+    logWarn(`${pair}: candle RSI re-entry tidak tersedia — tetap re-entry`);
+    return null;
+  }
+
+  const rsiLatest = latestClosedRsi(candles, rules?.rsiPeriod);
+  if (rsiLatest == null) {
+    logWarn(`${pair}: RSI re-entry tidak cukup data — tetap re-entry`);
+    return null;
+  }
+
+  return spotReentryRsiSkipReason(rsiLatest, { maxRsi, rsiPeriod: rules?.rsiPeriod });
+}
+
+// Keputusan re-entry OOR kanan sebelum close. willReenter false = tutup biasa.
+export async function planSpotOorKananReentry(pos, reason, opts = {}) {
+  if (!canSpotReenter(pos, reason)) {
+    return {
+      willReenter: false,
+      reentrySkipReason: spotReentrySkipReason(pos, reason),
+    };
+  }
+  const rsiSkip = await spotReentryOverextendedSkipReason(pos, opts);
+  if (rsiSkip) {
+    const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
+    const logInfo = opts.log?.info || ((msg) => log.info(msg));
+    logInfo(`${pair}: ${rsiSkip}`);
+    return { willReenter: false, reentrySkipReason: rsiSkip };
+  }
+  return { willReenter: true, reentrySkipReason: null };
+}
+
 /**
  * Buka posisi spot SOL-only baru setelah posisi spot lama ditutup karena OOR kanan / bin kosong atas.
  * - Mengevaluasi ulang seluruh pool DLMM TOKEN/SOL untuk baseMint dan memilih pool paling efisien
@@ -191,7 +277,9 @@ export function spotReentrySkipReason(pos, reason) {
  *   non-refundable rent; bila seluruh tangga masih kena -> redflag skip + alert).
  *   Deposit SOL satu sisi hanya di [minBinId .. activeBinId], bin di atas activeBin kosong.
  * - Counter `spotReentryCount` dan `entrySizeSol` diteruskan ke posisi baru (maks SPOT_REENTRY_MAX).
+ * - Waktu mulai warmup exit diwariskan dari posisi yang diganti (rantai dari entry pertama).
  * - Cooldown antar loop per pool dijaga sesuai SPOT_REENTRY_COOLDOWN_SEC (120s normal / 60s saat vol 5m > $100k).
+ * - Gerbang RSI (SPOT_REENTRY_MAX_RSI) diputuskan di planSpotOorKananReentry, sebelum close.
  */
 export async function handleSpotOorKananReentry(pos, opts = {}) {
   const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;
@@ -213,6 +301,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
   const pair = pos.pair || pos.position?.slice(0, 8) || "?";
   const tracked = getTrackedPosition(pos.position);
   const span = tracked?.binSpan || pos.binSpan || 0;
+  const warmupStart = resolveExitWarmupStartedAt(tracked);
   const prevCount = getSpotReentryCount(pos.position);
   const nextCount = prevCount + 1;
   const sizeSol = resolveSpotReentrySizeSol(tracked, pos.pool);
@@ -324,9 +413,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
 
     const resolvedPoolInfo =
       chosenAudit?.poolInfo ||
-      (targetPoolAddress === pos.pool && initialPoolInfo
-        ? initialPoolInfo
-        : await getPoolInfoFn(targetPoolAddress));
+      (targetPoolAddress === pos.pool && initialPoolInfo ? initialPoolInfo : await getPoolInfoFn(targetPoolAddress));
 
     const { pool, baseIsX, unsupported, collectFeeMode } = resolvedPoolInfo || {};
     const finalBaseMint = resolvedPoolInfo?.baseMint || baseMint;
@@ -567,7 +654,19 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
     }
 
     const nowTs = Date.now();
-    trackPosition(newAddr, targetPoolAddress, pair, finalBaseMint, collectFeeMode ?? pos.collectFeeMode ?? null, "spot", false);
+    trackPosition(
+      newAddr,
+      targetPoolAddress,
+      pair,
+      finalBaseMint,
+      collectFeeMode ?? pos.collectFeeMode ?? null,
+      "spot",
+      false,
+      { exitWarmupStartedAt: warmupStart }
+    );
+    // Bila deteksi on-chain sudah membuat baris lebih dulu, isi field yang masih kosong.
+    // Nilai yang sudah ada tidak ditimpa.
+    setExitWarmupStartedAt(newAddr, warmupStart);
     recordTrackedRange(newAddr, minBinId, maxBinId);
     setEntrySizeSol(newAddr, sizeSol);
     setSpotReentryCount(newAddr, nextCount);

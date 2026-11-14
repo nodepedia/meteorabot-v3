@@ -92,6 +92,8 @@ export function buildConfig(e = {}) {
     // Tolak re-entry bila akan kena biaya non-refundable (sewa bin array/bitmap).
     skipNonRefundable: bool(e.SPOT_REENTRY_SKIP_NONREFUNDABLE, true),
     maxNonRefundableSol: Math.max(0, num(e.SPOT_REENTRY_MAX_NONREFUNDABLE_SOL, 0)),
+    // Lewati re-entry bila RSI candle yang sudah tutup >= ambang. 0 = nonaktif.
+    maxRsi: Math.max(0, num(e.SPOT_REENTRY_MAX_RSI, 90)),
   };
 
   // Entry spot pertama kena sewa non-refundable di seluruh tangga: cari pool
