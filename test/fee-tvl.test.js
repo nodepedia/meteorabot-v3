@@ -4,6 +4,7 @@ import { applyPositionFeeTvl, positionFeePct24h } from "../src/meteora/positions
 import { rewardMintsOf } from "../src/meteora/close.js";
 import { swapMintsFromCloseResult } from "../src/exit/close.js";
 import { humanReason } from "../src/core/report.js";
+import config from "../src/config/index.js";
 import { WSOL_MINT } from "../src/core/constants.js";
 
 test("24h Fee/TVL posisi dibaca dari feePerTvl24h sebagai poin persen", () => {
@@ -58,5 +59,5 @@ test("close biasa men-swap saldo token sekali, tanpa menambah unclaimed fee", ()
   });
   assert.deepEqual(swapMints, ["BaseMint111", "TokenMint111"]);
   assert.equal(swapMints.includes(WSOL_MINT), false);
-  assert.equal(humanReason("low_yield"), "24h Fee/TVL di bawah ambang selama 60 detik");
+  assert.equal(humanReason("low_yield"), `24h Fee/TVL di bawah ambang selama ${config.spot.yieldCloseBelowSec} detik`);
 });
