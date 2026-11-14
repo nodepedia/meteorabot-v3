@@ -23,6 +23,7 @@ export function buildConfig(e = {}) {
   const bidaskDouble = modeRules(e, "BIDASK_DOUBLE", {
     enableIndicators: true,
     trailingTakeProfit: true,
+    trailingTriggerPct: 9,
   });
 
   // Token-only: trailing TP OFF, indikator + trailing-dari-sinyal ON.
@@ -53,9 +54,9 @@ export function buildConfig(e = {}) {
     oorKananHighVol5mUsd: 100000,
     oorKananFastMinutes: 1,
     // 24h Fee/TVL posisi, angka apa adanya. Mulai hitung bila segar dan < 7.
-    // Tutup setelah angka itu bertahan 60 detik.
+    // Tutup setelah angka itu bertahan 600 detik.
     yieldCloseBelowPct: 7,
-    yieldCloseBelowSec: 60,
+    yieldCloseBelowSec: 600,
   });
 
   // Exit indikator spot: immediate (default) = langsung close saat sinyal;
