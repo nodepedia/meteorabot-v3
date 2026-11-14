@@ -246,10 +246,54 @@ async function enrichMarketCap(positions) {
 // request ke Meteora.
 const poolPnlCache = new Map(); // pool -> { at, map: Map(position -> entry) }
 
-export function pnlFromEntry(entry) {
-  if (!entry) return null;
-  const pnl = config.solMode ? parseFloat(entry.pnlSolPctChange || "0") : parseFloat(entry.pnlPctChange || "0");
+// Persen PnL terhadap modal bersih, bukan terhadap setoran seumur hidup.
+//
+// Meteora menghitung pnlSolPctChange = pnlSol / allTimeDeposits.total.sol
+// (dan pnlPctChange = pnlUsd / allTimeDeposits.total.usd). Rebalance in-place
+// tercatat sebagai tarik lalu setor ulang, jadi penyebut itu membengkak dan
+// persennya mengecil — rugi ~25% bisa terbaca ~3%. Modal bersih = setor
+// seumur hidup − tarik seumur hidup: modal yang masih tertanam, dan tidak
+// ikut membengkak saat rebalance. Dihitung dari respons datapi yang sama;
+// tidak ada request tambahan.
+//
+// Mode SOL (config.solMode): pnlSol / (total.sol setor − total.sol tarik) × 100.
+// Mode USD: pnlUsd / (total.usd setor − total.usd tarik) × 100.
+//
+// Kembali ke field persen Meteora bila angka itu tidak aman dipakai:
+// - pnl absolut atau total setoran tidak ada / bukan angka (tarikan yang
+//   tidak ada dihitung 0, supaya posisi tanpa rebalance tetap terhitung)
+// - modal bersih bukan angka, ≤ 1e-6, atau ≤ 1% dari total setoran
+//   (pembagi ~0, termasuk modal negatif, yang akan meledakkan persen)
+// Field persen Meteora yang kosong dihitung 0, sama seperti sebelumnya.
+const NET_CAPITAL_ABS_EPSILON = 1e-6;
+const NET_CAPITAL_MIN_DEPOSIT_RATIO = 0.01;
+
+function finiteAmount(value) {
+  if (value == null || value === "") return null;
+  const n = typeof value === "number" ? value : parseFloat(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function meteoraPctChange(entry, solMode) {
+  const raw = solMode ? entry.pnlSolPctChange : entry.pnlPctChange;
+  const pnl = parseFloat(raw || "0");
   return Number.isFinite(pnl) ? pnl : null;
+}
+
+export function pnlFromEntry(entry, { solMode = config.solMode } = {}) {
+  if (!entry || typeof entry !== "object") return null;
+  const useSol = Boolean(solMode);
+  const fallback = meteoraPctChange(entry, useSol);
+  const pnlAbs = finiteAmount(useSol ? entry.pnlSol : entry.pnlUsd);
+  const deposits = finiteAmount(useSol ? entry.allTimeDeposits?.total?.sol : entry.allTimeDeposits?.total?.usd);
+  if (pnlAbs == null || deposits == null) return fallback;
+  const withdrawals =
+    finiteAmount(useSol ? entry.allTimeWithdrawals?.total?.sol : entry.allTimeWithdrawals?.total?.usd) ?? 0;
+  const net = deposits - withdrawals;
+  if (!Number.isFinite(net) || net <= NET_CAPITAL_ABS_EPSILON) return fallback;
+  if (deposits > 0 && net <= deposits * NET_CAPITAL_MIN_DEPOSIT_RATIO) return fallback;
+  const pct = (pnlAbs / net) * 100;
+  return Number.isFinite(pct) ? pct : fallback;
 }
 
 // "24h Fee/TVL" satu posisi. Field atas `feePerTvl24h`, di fixture historis

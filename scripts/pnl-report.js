@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import bs58 from "bs58";
 import { Keypair } from "@solana/web3.js";
 import { humanReason } from "../src/core/report.js";
+import { pnlFromEntry } from "../src/meteora/positions.js";
 import { collectWalletFlows, reconcilePosition } from "../src/meteora/pnl-reconcile.js";
 
 const BASE = "https://dlmm.datapi.meteora.ag";
@@ -297,7 +298,8 @@ function toRow(pos, meta, fromMs, toMs) {
     pnlSol,
     pnlUsd,
     pnl: pairCell(pos.pnlSol, pos.pnlUsd),
-    pnlPct: fmtPct(pos.pnlSolPctChange),
+    // Sama dengan bot: pnl / modal bersih, bukan pnlSolPctChange yang terencer rebalance.
+    pnlPct: fmtPct(pnlFromEntry(pos)),
     reason: isOpen ? "masih terbuka" : humanReason(meta.reason.get(pos.positionAddress) || ""),
     note: "",
     corrected: false,
@@ -319,6 +321,8 @@ function applyReconcile(row, rec) {
     row.pnlSol = rec.pnlSol;
     row.pnlUsd = rec.pnlUsd;
     row.pnl = pairCell(rec.pnlSol, rec.pnlUsd);
+    // Numerator sudah diganti (nilai sekarang − modal on-chain), jadi penyebutnya
+    // modal on-chain itu juga — bukan setoran datapi yang membengkak.
     row.pnlPct = rec.depositSol > 0 ? fmtPct((rec.pnlSol / rec.depositSol) * 100) : "-";
     row.note = "⚠ koreksi";
   } else if (!rec.verified) {

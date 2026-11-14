@@ -125,9 +125,11 @@ export async function collectWalletFlows(wallet, fromMs, toMs, { rpcUrl, concurr
 }
 
 // Bandingkan modal deposit versi datapi dengan modal on-chain. Bila beda di
-// atas thresholdPct, hitung ulang PnL pakai modal on-chain.
+// atas thresholdPct, hitung ulang PnL absolut pakai modal on-chain.
 // PnL = (nilai sekarang − modal). Nilai sekarang = pnlSol + depositSol (berlaku
 // untuk posisi closed maupun open).
+// Persen dari field datapi tidak dihitung di sini. Itu tugas pnlFromEntry:
+// pnl / (setor − tarik), supaya rebalance tidak mengencerkan penyebut.
 export function reconcilePosition(pos, flows, { thresholdPct = 25 } = {}) {
   const deposits = pos.allTimeDeposits || {};
   const apiDepSol = num(deposits.total?.sol);
