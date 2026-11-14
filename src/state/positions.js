@@ -110,6 +110,10 @@ export function trackPosition(
       lastBidaskDoubleRebalancePct: 0,
       lastBidaskDoubleRebalanceAt: null,
       lastBidaskDoubleRebalanceBin: null,
+      // Step rebalance sisi token bidask:sol (10, 20, 30, ...). Tidak ada sisi SOL.
+      lastBidaskSolRebalancePct: 0,
+      lastBidaskSolRebalanceAt: null,
+      lastBidaskSolRebalanceBin: null,
     };
     writeState(state);
   }
@@ -276,6 +280,22 @@ export function updateSpotTokenBidaskState(positionAddress, pct, at = Date.now()
     p.lastSpotTokenBidaskBin = bin != null && Number.isFinite(Number(bin)) ? Number(bin) : null;
   } else if (nextPct === 0) {
     p.lastSpotTokenBidaskBin = null;
+  }
+  writeState(state);
+}
+
+export function updateBidaskSolRebalanceState(positionAddress, pct, at = Date.now(), bin = undefined) {
+  if (!positionAddress) return;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return;
+  const nextPct = Math.max(0, Number(pct) || 0);
+  p.lastBidaskSolRebalancePct = nextPct;
+  p.lastBidaskSolRebalanceAt = at;
+  if (bin !== undefined) {
+    p.lastBidaskSolRebalanceBin = bin != null && Number.isFinite(Number(bin)) ? Number(bin) : null;
+  } else if (nextPct === 0) {
+    p.lastBidaskSolRebalanceBin = null;
   }
   writeState(state);
 }

@@ -60,6 +60,7 @@ const MODULES = [
   "../src/exit/rebalance-shape.js",
   "../src/exit/spot-token-bidask.js",
   "../src/exit/bidask-double-rebalance.js",
+  "../src/exit/bidask-sol-rebalance.js",
   "../src/worker-entry.js",
   "../src/worker-exit.js",
   "../src/worker-wallet.js",

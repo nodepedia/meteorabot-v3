@@ -143,6 +143,14 @@ export function buildConfig(e = {}) {
     retry: Math.max(1, Math.floor(num(e.BIDASK_DOUBLE_REBALANCE_RETRY, 3))),
   };
 
+  // Rebalance sisi token posisi bidask:sol. Step = porsi bin di atas active
+  // yang sudah berisi token (sama seperti spot), bukan turunnya harga entry.
+  // Tidak ada sisi SOL.
+  const bidaskSolRebalance = {
+    enabled: bool(e.BIDASK_SOL_REBALANCE_ENABLED, true),
+    stepPct: Math.max(1, num(e.BIDASK_SOL_REBALANCE_STEP_PCT, 10)),
+  };
+
   const entry = {
     enabled: bool(e.ENTRY_ENABLED, true),
     poolListFile: e.POOL_LIST_FILE || "pool.txt",
@@ -343,6 +351,7 @@ export function buildConfig(e = {}) {
     rebalance,
     spotTokenBidask,
     bidaskDoubleRebalance,
+    bidaskSolRebalance,
 
     bidaskDouble,
     bidaskToken,

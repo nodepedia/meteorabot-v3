@@ -185,6 +185,19 @@ export function backfillImportantLogs({
         actionNeeded: null,
       });
     }
+
+    if (Number(pos.lastBidaskSolRebalancePct) > 0 && Number.isFinite(Number(pos.lastBidaskSolRebalanceAt))) {
+      const rebTs = Number(pos.lastBidaskSolRebalanceAt);
+      candidates.push({
+        id: `bidask-sol-rebalance:${pos.position}:${rebTs}`,
+        ts: rebTs,
+        wib: formatWibTimestamp(rebTs),
+        type: "SUCCESS",
+        category: "REBALANCE_BIDASK",
+        message: `BIDASK SOL TOKEN REBALANCE ${pair} — step ${pos.lastBidaskSolRebalancePct}% (pos ${pos.position.slice(0, 8)})`,
+        actionNeeded: null,
+      });
+    }
   }
 
   // 2. Riwayat penutupan posisi dari decision-log.json
