@@ -64,7 +64,9 @@ export function evaluateLowYieldClose(position, rules, opts = {}) {
   return { action: "hold", reason: `low_yield_${Math.floor(elapsed / 1000)}s`, since };
 }
 
-// Pure: masih dalam masa warmup exit? (trailing & arm indikator ditahan)
+// Pure: masih dalam masa warmup exit? (trailing & arm indikator ditahan).
+// Pemanggil mengirim waktu mulai: firstSeenAt untuk entry baru, atau
+// exitWarmupStartedAt yang diwariskan re-entry OOR kanan.
 export function isExitWarmup(firstSeenAt, warmupMinutes, now = Date.now()) {
   const min = Number(warmupMinutes);
   if (!Number.isFinite(min) || min <= 0) return false;

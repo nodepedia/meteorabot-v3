@@ -18,6 +18,7 @@ import {
   setEntrySizeSol,
   getEntrySizeSol,
   getSpotReentryCount,
+  resolveExitWarmupStartedAt,
 } from "../state/positions.js";
 import { recordPnlSnapshot } from "../state/history.js";
 import { armIndicatorTrailing, clearTrailingState } from "../state/trailing.js";
@@ -54,7 +55,7 @@ import { buildSummaryBlock, humanReason, fmtPct } from "../core/report.js";
 import { runSafetySweep } from "./sweep.js";
 import { handleClose } from "./close.js";
 import { handleSpotOorKiri } from "./spot-fallback.js";
-import { handleSpotOorKananReentry, canSpotReenter, spotReentrySkipReason } from "./spot-reentry.js";
+import { handleSpotOorKananReentry, planSpotOorKananReentry } from "./spot-reentry.js";
 import { handleSpotTokenBidask } from "./spot-token-bidask.js";
 import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
@@ -382,7 +383,7 @@ export async function mainLoop(opts = {}) {
       // Evaluasi exit by mode. Warmup (khusus mode yang diatur): tahan trailing
       // & arm indikator beberapa menit pertama; stop loss/OOR/yield tetap jalan.
       const rules = config.rulesFor(pos.mode);
-      const warmup = isExitWarmup(tracked?.firstSeenAt, rules.exitWarmupMinutes);
+      const warmup = isExitWarmup(resolveExitWarmupStartedAt(tracked), rules.exitWarmupMinutes);
 
       // Trailing TP + bounce recovery state machines
       if (!warmup) processTrailing(pos, tracked, pairLabel, handleClose);
@@ -404,18 +405,20 @@ export async function mainLoop(opts = {}) {
         if (exit.reason === "oor_kiri" && pos.mode === "spot") {
           handled = await handleSpotOorKiri(pos);
         }
-        // OOR kanan spot: rencanakan re-entry sebelum close supaya pool tidak
-        // ditandai '#' saat kita mau langsung membuka posisi lagi.
-        // Alasan lain (termasuk low_yield) tidak lolos canSpotReenter, jadi
-        // close biasa: klaim + swap, pool ini selesai, entry pool lain tetap jalan.
-        const willReenter = !handled && canSpotReenter(pos, exit.reason);
+        // OOR kanan spot: putuskan re-entry sebelum close (termasuk ambil candle
+        // RSI di sini, bukan setelah handleClose). Pool tidak ditandai '#' bila
+        // kita mau langsung buka lagi. RSI mentok, atau alasan lain (termasuk
+        // low_yield), tidak lolos: close biasa, klaim + swap, pool ini selesai.
+        let willReenter = false;
+        let reentrySkipReason = null;
+        if (!handled && pos.mode === "spot" && exit.reason === "oor_kanan") {
+          const plan = await planSpotOorKananReentry(pos, exit.reason);
+          willReenter = plan.willReenter;
+          reentrySkipReason = plan.reentrySkipReason;
+        }
         // Angka ini hanya untuk teks alert close. Keputusan close/re-entry tetap di willReenter.
         const nextCount = getSpotReentryCount(pos.position) + 1;
         const reentryMax = config.spotReentry.maxReentries;
-        const reentrySkipReason =
-          !willReenter && pos.mode === "spot" && exit.reason === "oor_kanan"
-            ? spotReentrySkipReason(pos, exit.reason)
-            : null;
         if (!handled) {
           if (willReenter) {
             if (pos.pool) addEntryInProgressPool(pos.pool);

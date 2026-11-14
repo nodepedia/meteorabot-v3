@@ -3,9 +3,31 @@ import { DECISION_LOG_FILE } from "../core/paths.js";
 import { LEGACY_MODE } from "../config/rules.js";
 import { readState, writeState, readJsonArray } from "./store.js";
 
-export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeMode, mode, isDca = false) {
+function finitePositive(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+// Waktu mulai warmup exit. Re-entry OOR kanan mengisi exitWarmupStartedAt;
+// entry baru (field kosong) tetap memakai firstSeenAt.
+export function resolveExitWarmupStartedAt(tracked) {
+  return finitePositive(tracked?.exitWarmupStartedAt) ?? finitePositive(tracked?.firstSeenAt);
+}
+
+export function trackPosition(
+  positionAddress,
+  pool,
+  pair,
+  baseMint,
+  collectFeeMode,
+  mode,
+  isDca = false,
+  extra = null
+) {
   if (!positionAddress) return;
   const state = readState();
+  // Baris yang sudah ada tidak diubah. Deteksi on-chain berikutnya tidak boleh
+  // menimpa firstSeenAt atau exitWarmupStartedAt yang sudah diwariskan.
   if (!state.positions[positionAddress]) {
     state.positions[positionAddress] = {
       position: positionAddress,
@@ -13,6 +35,9 @@ export function trackPosition(positionAddress, pool, pair, baseMint, collectFeeM
       pair: pair || "",
       baseMint: baseMint || "",
       firstSeenAt: Date.now(),
+      // Re-entry OOR kanan: waktu mulai warmup posisi yang diganti. Kosong =
+      // entry baru, warmup dihitung dari firstSeenAt. Hanya diisi sekali.
+      exitWarmupStartedAt: finitePositive(extra?.exitWarmupStartedAt),
       collectFeeMode: collectFeeMode ?? null,
       mode: mode ?? "spot",
       // Range bin posisi (dicatat sekali saat pertama terlihat; tidak pernah
@@ -146,6 +171,21 @@ export function setSpotReentryCount(positionAddress, count) {
   if (!p) return;
   p.spotReentryCount = n;
   writeState(state);
+}
+
+// Isi waktu mulai warmup sekali. Nilai yang sudah ada tidak ditimpa, termasuk
+// bila deteksi on-chain sempat membuat baris lebih dulu (field masih kosong).
+export function setExitWarmupStartedAt(positionAddress, ts) {
+  const value = finitePositive(ts);
+  if (!positionAddress || value == null) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return null;
+  const existing = finitePositive(p.exitWarmupStartedAt);
+  if (existing != null) return existing;
+  p.exitWarmupStartedAt = value;
+  writeState(state);
+  return value;
 }
 
 // --- State rebalance token-side spot → BidAsk ---
