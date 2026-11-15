@@ -17,7 +17,14 @@ process.env.IMPORTANT_EVENTS_FILE = path.join(TMP, "important-events.jsonl");
 const { buildLiquidityStrategyParameters, getLiquidityStrategyParameterBuilder, StrategyType } =
   await import("@meteora-ag/dlmm");
 const { buildConfig } = await import("../src/config/index.js");
-const { evaluateBidaskSolRebalance, handleBidaskSolRebalance } = await import("../src/exit/bidask-sol-rebalance.js");
+const {
+  bidaskSolSolSideCallCount,
+  evaluateBidaskSolRebalance,
+  evaluateBidaskSolSolSide,
+  handleBidaskSolRebalance,
+  handleBidaskSolSolSideRebalance,
+  resetBidaskSolSolSideCallCount,
+} = await import("../src/exit/bidask-sol-rebalance.js");
 const { evaluateSpotTokenBidaskTrigger } = await import("../src/exit/spot-token-bidask.js");
 const { evaluateBidaskDoubleRebalance } = await import("../src/exit/bidask-double-rebalance.js");
 const { handleSpotTokenBidask } = await import("../src/exit/spot-token-bidask.js");
@@ -393,4 +400,339 @@ test("withdraw hanya menarik dan menyetor rentang bin token", async () => {
     assert.ok(add.totalXAmount.gtn(0));
   }
   assert.equal(getTrackedPosition(position).lastBidaskSolRebalancePct, 20);
+});
+
+test("jalur otomatis bidask:sol tidak pernah memanggil rebalance sisi SOL", async () => {
+  resetBidaskSolSolSideCallCount();
+  const indexSrc = fs.readFileSync(path.resolve("src/exit/index.js"), "utf8");
+  assert.equal(indexSrc.includes("handleBidaskSolSolSideRebalance"), false);
+
+  const recovered = evaluateBidaskSolRebalance({
+    pos: solPos(80),
+    tracked: { lastBidaskSolRebalancePct: 30 },
+    cfg,
+  });
+  assert.equal(recovered.action, "none");
+  assert.notEqual(recovered.action, "rebalance_sol");
+
+  const forcedEmpty = await handleBidaskSolRebalance(solPos(100), {
+    cfg,
+    force: true,
+    dryRun: true,
+    tracked: { lastBidaskSolRebalancePct: 20 },
+  });
+  assert.equal(forcedEmpty.reason, "no_token_bins");
+  assert.notEqual(forcedEmpty.rebalanceType, "sol_bidask");
+
+  const refused = await handleBidaskSolRebalance(solPos(70), {
+    cfg,
+    side: "sol",
+    force: true,
+    dryRun: true,
+    tracked: { lastBidaskSolRebalancePct: 0 },
+  });
+  assert.equal(refused.reason, "sol_side_manual_only");
+
+  const auto = await handleBidaskSolRebalance(solPos(70), {
+    cfg,
+    dryRun: true,
+    tracked: { lastBidaskSolRebalancePct: 0 },
+  });
+  assert.equal(auto.rebalanceType, "token_bidask");
+  assert.equal(bidaskSolSolSideCallCount(), 0);
+
+  const manual = await handleBidaskSolSolSideRebalance(solPos(80), { dryRun: true });
+  assert.equal(manual.rebalanceType, "sol_bidask");
+  assert.equal(manual.success, true);
+  assert.equal(bidaskSolSolSideCallCount(), 1);
+  assert.equal(evaluateBidaskSolSolSide({ pos: solPos(101) }).reason, "no_sol_bins");
+  assert.equal(evaluateBidaskSolSolSide({ pos: solPos(-1) }).reason, "no_sol_bins");
+});
+
+test("sisi SOL bidask:sol manual hanya membentuk ulang bin SOL", async () => {
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify({ positions: {} }));
+  resetBidaskSolSolSideCallCount();
+  const poolAddr = Keypair.generate().publicKey.toBase58();
+  const position = Keypair.generate().publicKey.toBase58();
+  const mint = Keypair.generate().publicKey.toBase58();
+  trackPosition(position, poolAddr, "TOK-SOL", mint, null, "bidask:sol", false);
+
+  const active = 100;
+  const lower = 80;
+  const upper = 140;
+  const withdraws = [];
+  let removeCalls = 0;
+  const ix = rebalanceIx();
+  const wallet = Keypair.generate();
+  const pos = {
+    mode: "bidask:sol",
+    position,
+    pool: poolAddr,
+    pair: "TOK-SOL",
+    baseMint: mint,
+    activeBin: active,
+    lowerBin: lower,
+    upperBin: upper,
+  };
+
+  const res = await handleBidaskSolSolSideRebalance(pos, {
+    dryRun: false,
+    cfg,
+    rebalanceMode: "inplace",
+    getPoolInfo: async () => ({
+      pool: {
+        lbPair: { binStep: 100 },
+        getActiveBin: async () => ({ binId: active }),
+        getPosition: async () => ({
+          positionData: {
+            lowerBinId: lower,
+            upperBinId: upper,
+            positionBinData: [
+              { binId: 80, positionXAmount: "0", positionYAmount: "500000000" },
+              { binId: 100, positionXAmount: "0", positionYAmount: "500000000" },
+              { binId: 101, positionXAmount: "250000", positionYAmount: "0" },
+              { binId: 120, positionXAmount: "750000", positionYAmount: "0" },
+            ],
+          },
+        }),
+        simulateRebalancePosition: async (_position, _data, _claimFee, _claimReward, deposits, wds) => {
+          withdraws.push({ deposits, withdraws: wds });
+          return { simulationResult: { actualAmountXDeposited: new BN(0), actualAmountYDeposited: new BN(0) } };
+        },
+        rebalancePosition: async () => ({ initBinArrayInstructions: [], rebalancePositionInstruction: [ix] }),
+        removeLiquidity: async () => {
+          removeCalls += 1;
+          return { id: "should-not" };
+        },
+      },
+      baseIsX: true,
+      unsupported: false,
+      pairName: "TOK-SOL",
+    }),
+    getDlmmSdk: async () => ({
+      StrategyType,
+      buildLiquidityStrategyParameters,
+      getLiquidityStrategyParameterBuilder,
+    }),
+    getConnection: () => ({}),
+    getWallet: () => wallet,
+    buildFeePlan: () => ({ mode: "none" }),
+    checkFeeCap: () => ({ ok: true, totalSol: 0, cap: 1 }),
+    sendAndConfirmRobust: async () => ({ signature: "sig-sol-side" }),
+    sleep: async () => {},
+    notifyBidaskSolSolSideRebalance: (payload) => {
+      assert.equal(payload.success, true);
+      assert.equal(payload.fromBinId, lower);
+      assert.equal(payload.toBinId, active);
+    },
+  });
+
+  assert.equal(res.success, true);
+  assert.equal(res.rebalanceType, "sol_bidask");
+  assert.equal(res.fromBinId, lower);
+  assert.equal(res.toBinId, active);
+  assert.equal(removeCalls, 0);
+  assert.ok(withdraws.length > 0);
+  for (const call of withdraws) {
+    for (const wd of call.withdraws) {
+      const from = Number(wd.minBinId.toString());
+      const to = Number(wd.maxBinId.toString());
+      assert.ok(from >= lower);
+      assert.ok(to <= active, `bin token ikut terambil: ${to}`);
+    }
+    assert.ok(call.deposits[0].deltaY.gtn(0));
+  }
+  assert.equal(getTrackedPosition(position).lastBidaskSolRebalancePct, 0);
+  assert.equal(bidaskSolSolSideCallCount(), 1);
+});
+
+test("sisi SOL kosong atau fee melewati batas tidak membentuk ulang", async () => {
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify({ positions: {} }));
+  const poolAddr = Keypair.generate().publicKey.toBase58();
+  const position = Keypair.generate().publicKey.toBase58();
+  const mint = Keypair.generate().publicKey.toBase58();
+  trackPosition(position, poolAddr, "TOK-SOL", mint, null, "bidask:sol", false);
+  const wallet = Keypair.generate();
+  let removeCalls = 0;
+  const pos = {
+    mode: "bidask:sol",
+    position,
+    pool: poolAddr,
+    pair: "TOK-SOL",
+    baseMint: mint,
+    activeBin: 80,
+    lowerBin: 80,
+    upperBin: 100,
+  };
+  const poolInfo = async () => ({
+    pool: {
+      lbPair: { binStep: 20 },
+      getActiveBin: async () => ({ binId: 80 }),
+      getPosition: async () => ({
+        positionData: {
+          lowerBinId: 80,
+          upperBinId: 100,
+          positionBinData: [{ binId: 80, positionXAmount: "1000", positionYAmount: "0" }],
+        },
+      }),
+      removeLiquidity: async () => {
+        removeCalls += 1;
+        return { id: "no" };
+      },
+    },
+    baseIsX: true,
+    unsupported: false,
+    pairName: "TOK-SOL",
+  });
+  const empty = await handleBidaskSolSolSideRebalance(pos, {
+    dryRun: false,
+    cfg,
+    rebalanceMode: "withdraw",
+    getPoolInfo: poolInfo,
+    getDlmmSdk: async () => ({ StrategyType }),
+    getConnection: () => ({}),
+    getWallet: () => wallet,
+    buildFeePlan: () => ({ mode: "none" }),
+    checkFeeCap: () => ({ ok: true, totalSol: 0, cap: 1 }),
+    sendAndConfirmRobust: async () => ({ signature: "no" }),
+    sleep: async () => {},
+    notifyBidaskSolSolSideRebalance: () => {},
+  });
+  assert.equal(empty.reason, "no_sol_liquidity");
+  assert.equal(removeCalls, 0);
+  assert.equal(getTrackedPosition(position).lastBidaskSolRebalancePct, 0);
+
+  let feeChecked = 0;
+  const capped = await handleBidaskSolSolSideRebalance(
+    { ...pos, activeBin: 90, lowerBin: 80 },
+    {
+      dryRun: false,
+      cfg,
+      rebalanceMode: "inplace",
+      getPoolInfo: async () => ({
+        pool: {
+          lbPair: { binStep: 20 },
+          getActiveBin: async () => ({ binId: 90 }),
+          getPosition: async () => ({
+            positionData: {
+              lowerBinId: 80,
+              upperBinId: 100,
+              positionBinData: [{ binId: 85, positionXAmount: "0", positionYAmount: "1000000" }],
+            },
+          }),
+          removeLiquidity: async () => {
+            removeCalls += 1;
+            return { id: "no" };
+          },
+        },
+        baseIsX: true,
+        unsupported: false,
+      }),
+      getDlmmSdk: async () => ({ StrategyType }),
+      getConnection: () => ({}),
+      getWallet: () => wallet,
+      buildFeePlan: () => ({ mode: "priority" }),
+      checkFeeCap: () => {
+        feeChecked += 1;
+        return { ok: false, totalSol: 1, cap: 0.01 };
+      },
+      tryInPlaceRebalance: async () => {
+        throw new Error("fee cap menahan rebalance");
+      },
+      sendAndConfirmRobust: async () => ({ signature: "no" }),
+      sleep: async () => {},
+      notifyBidaskSolSolSideRebalance: () => {},
+    }
+  );
+  assert.equal(capped.feeCap, true);
+  assert.equal(capped.success, false);
+  assert.equal(feeChecked, 1);
+  assert.equal(removeCalls, 0);
+});
+
+test("mode withdraw sisi SOL hanya menarik dan menyetor bin SOL", async () => {
+  fs.writeFileSync(process.env.STATE_FILE, JSON.stringify({ positions: {} }));
+  const poolAddr = Keypair.generate().publicKey.toBase58();
+  const position = Keypair.generate().publicKey.toBase58();
+  const mint = Keypair.generate().publicKey.toBase58();
+  trackPosition(position, poolAddr, "TOK-SOL", mint, null, "bidask:sol", false);
+  const active = 90;
+  const lower = 70;
+  const upper = 120;
+  const removes = [];
+  const adds = [];
+  let inplaceCalls = 0;
+  const res = await handleBidaskSolSolSideRebalance(
+    {
+      mode: "bidask:sol",
+      position,
+      pool: poolAddr,
+      pair: "TOK-SOL",
+      baseMint: mint,
+      activeBin: active,
+      lowerBin: lower,
+      upperBin: upper,
+    },
+    {
+      dryRun: false,
+      cfg: { ...cfg, retry: 1 },
+      rebalanceMode: "withdraw",
+      tryInPlaceRebalance: async () => {
+        inplaceCalls += 1;
+        throw new Error("inplace tidak dipakai pada mode withdraw");
+      },
+      getPoolInfo: async () => ({
+        pool: {
+          lbPair: { binStep: 25 },
+          getActiveBin: async () => ({ binId: active }),
+          getPosition: async () => ({
+            positionData: {
+              lowerBinId: lower,
+              upperBinId: upper,
+              positionBinData: [
+                { binId: 70, positionXAmount: "0", positionYAmount: "400000000" },
+                { binId: 90, positionXAmount: "0", positionYAmount: "200000000" },
+                { binId: 100, positionXAmount: "1000000", positionYAmount: "0" },
+              ],
+            },
+          }),
+          removeLiquidity: async (params) => {
+            removes.push(params);
+            return { id: "rm" };
+          },
+          addLiquidityByStrategy: async (params) => {
+            adds.push(params);
+            return { id: "add" };
+          },
+        },
+        baseIsX: true,
+        unsupported: false,
+        pairName: "TOK-SOL",
+      }),
+      getDlmmSdk: async () => ({ StrategyType }),
+      getConnection: () => ({}),
+      getWallet: () => Keypair.generate(),
+      buildFeePlan: () => ({ mode: "none" }),
+      checkFeeCap: () => ({ ok: true, totalSol: 0, cap: 1 }),
+      sendAndConfirmRobust: async () => ({ signature: "sig-wd-sol" }),
+      sleep: async () => {},
+      notifyBidaskSolSolSideRebalance: () => {},
+    }
+  );
+  assert.equal(res.success, true);
+  assert.equal(res.rebalanceType, "sol_bidask");
+  assert.equal(inplaceCalls, 0);
+  assert.equal(removes.length, 1);
+  assert.equal(removes[0].fromBinId, lower);
+  assert.equal(removes[0].toBinId, active);
+  assert.equal(removes[0].shouldClaimAndClose, false);
+  assert.ok(adds.length >= 1);
+  for (const add of adds) {
+    assert.ok(add.strategy.minBinId >= lower);
+    assert.ok(add.strategy.maxBinId <= active);
+    assert.equal(add.strategy.strategyType, StrategyType.BidAsk);
+    assert.equal(add.totalXAmount.toString(), "0");
+    assert.ok(add.totalYAmount.gtn(0));
+  }
+  assert.equal(getTrackedPosition(position).lastBidaskSolRebalancePct, 0);
 });

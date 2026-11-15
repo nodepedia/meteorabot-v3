@@ -74,10 +74,17 @@ test("bidask double/token tidak berubah: tetap arm trailing walau spot=immediate
 
 test("bidask:sol meng-arm trailing, bukan close langsung seperti spot", () => {
   config.spot.indicatorExit = "immediate";
-  const r = evaluateExit(pos("bidask:sol", { position: "B-bidask:sol" }), candles);
-  assert.equal(r.action, "arm_indicator_trailing");
-  assert.match(r.reason, /^rsi_(macd|bb)$/);
-  const held = evaluateExit(pos("bidask:sol", { position: "B-warm" }), candles, { warmup: true });
-  assert.equal(held.action, "hold");
-  assert.equal(held.reason, "warmup");
+  const rules = config.rulesFor("bidask:sol");
+  const savedIndicators = rules.enableIndicators;
+  rules.enableIndicators = true;
+  try {
+    const r = evaluateExit(pos("bidask:sol", { position: "B-bidask:sol" }), candles);
+    assert.equal(r.action, "arm_indicator_trailing");
+    assert.match(r.reason, /^rsi_(macd|bb)$/);
+    const held = evaluateExit(pos("bidask:sol", { position: "B-warm" }), candles, { warmup: true });
+    assert.equal(held.action, "hold");
+    assert.equal(held.reason, "warmup");
+  } finally {
+    rules.enableIndicators = savedIndicators;
+  }
 });

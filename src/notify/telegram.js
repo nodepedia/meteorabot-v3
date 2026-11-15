@@ -157,7 +157,7 @@ export function notifyBidaskDoubleSolRebalance({ pair, pool, lastPct, stepPct, f
 }
 
 // Rebalance sisi token posisi bidask:sol ke BidAsk, tiap kelipatan porsi bin token.
-// Tidak ada sisi SOL.
+// Jalur otomatis tidak menyentuh sisi SOL. Sisi SOL hanya dari tombol Telegram.
 export function notifyBidaskSolTokenRebalance({
   pair,
   pool,
@@ -176,6 +176,25 @@ export function notifyBidaskSolTokenRebalance({
   } else {
     send(
       `⚠️ BIDASK SOL TOKEN REBALANCE ${label} GAGAL (step ${stepPct}%)\n${error ? `Alasan: ${error}\n` : ""}Range token: ${rangeStr}\nPool: ${pool || "?"}`
+    );
+  }
+}
+
+export const REBALANCE_SIDE_EMPTY_TEXT = "Tidak ada yang bisa di-rebalance di sisi itu";
+
+export function notifyRebalanceSideEmpty() {
+  send(REBALANCE_SIDE_EMPTY_TEXT);
+}
+
+// Rebalance manual sisi SOL posisi bidask:sol jadi kurva BidAsk. Bukan jalur otomatis.
+export function notifyBidaskSolSolSideRebalance({ pair, pool, fromBinId, toBinId, success, error }) {
+  const label = pair || pool?.slice(0, 8) || "";
+  const rangeStr = fromBinId != null && toBinId != null ? `${fromBinId}→${toBinId}` : "?";
+  if (success) {
+    send(`🔄 ${label} rebalance sisi SOL jadi BidAsk (bin ${rangeStr})`);
+  } else {
+    send(
+      `⚠️ BIDASK SOL SISI SOL ${label} GAGAL\n${error ? `Alasan: ${error}\n` : ""}Range SOL: ${rangeStr}\nPool: ${pool || "?"}`
     );
   }
 }

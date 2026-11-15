@@ -45,6 +45,11 @@ const rebalanceInProgress = new Set();
 
 // Step dari turunnya harga pool vs entry posisi ini.
 // -10% → 10, -19.9% → 10, -20% → 20. Harga naik atau flat → 0.
+function formatPct(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(1) : "?";
+}
+
 export function bidaskDoubleStepLevel(priceChangePct, stepPct = 10) {
   const step = Math.max(1, Number(stepPct) || 10);
   const change = Number(priceChangePct);
@@ -87,26 +92,32 @@ export function evaluateBidaskDoubleRebalance({
   poolClosing = false,
   dcaConfirmPending = false,
   force = false,
+  side = null,
 }) {
   if (!pos || pos.mode !== "bidask:double") {
     return { action: "none", reason: "not_bidask_double" };
   }
-  if (!cfg?.enabled && !force) return { action: "none", reason: "disabled" };
+  const manualSide = side === "token" || side === "sol";
+  if (!cfg?.enabled && !force && !manualSide) return { action: "none", reason: "disabled" };
   if (dcaConfirmPending) return { action: "none", reason: "dca_confirm_pending" };
   if (entryInProgress) return { action: "none", reason: "entry_in_progress" };
   if (poolClosing) return { action: "none", reason: "pool_closing" };
 
   const entry = Number(tracked?.entryPoolPrice);
-  if (!Number.isFinite(entry) || entry <= 0) {
-    return { action: "none", reason: "no_entry_price" };
+  const havePrice =
+    Number.isFinite(entry) && entry > 0 && priceChangePct != null && Number.isFinite(Number(priceChangePct));
+  if (!manualSide) {
+    if (!Number.isFinite(entry) || entry <= 0) {
+      return { action: "none", reason: "no_entry_price" };
+    }
+    if (!havePrice) {
+      return { action: "none", reason: "no_pool_price" };
+    }
   }
-  if (priceChangePct == null || !Number.isFinite(Number(priceChangePct))) {
-    return { action: "none", reason: "no_pool_price" };
-  }
-  const change = Number(priceChangePct);
+  const change = havePrice ? Number(priceChangePct) : null;
 
   const step = Math.max(1, Number(cfg.stepPct) || 10);
-  const stepLevel = bidaskDoubleStepLevel(change, step);
+  const stepLevel = havePrice ? bidaskDoubleStepLevel(change, step) : 0;
   const lastPct = Math.max(0, Number(tracked?.lastBidaskDoubleRebalancePct) || 0);
   const lastAt = Number(tracked?.lastBidaskDoubleRebalanceAt) || 0;
   const cooldownMs = Math.max(0, Number(cfg.cooldownSec) || 0) * 1000;
@@ -122,7 +133,23 @@ export function evaluateBidaskDoubleRebalance({
   const binSpan = haveBins ? upperBin - lowerBin : 0;
   const inCooldown = lastAt > 0 && cooldownMs > 0 && now - lastAt < cooldownMs;
 
-  // Manual: abaikan kelipatan step. Sisi SOL hanya bila harga sudah pulih dan
+  // Sisi dipilih dari Telegram: abaikan kelipatan step. Ada bin di sisi itu → kerjakan.
+  if (manualSide) {
+    if (side === "sol") {
+      const solRange = haveBins && activeBin >= lowerBin && activeBin <= upperBin;
+      if (!solRange) {
+        return { action: "none", reason: "no_sol_bins", lastPct, stepLevel, priceChangePct: change };
+      }
+      return { action: "rebalance_sol", reason: "manual", lastPct, stepLevel, priceChangePct: change };
+    }
+    const span = haveBins ? tokenSideBinsForBidaskRebalance(activeBin, lowerBin, upperBin) : null;
+    if (!span) {
+      return { action: "none", reason: "no_token_bins", lastPct, stepLevel, priceChangePct: change };
+    }
+    return { action: "rebalance", reason: "manual", lastPct, stepLevel, priceChangePct: change };
+  }
+
+  // Manual tanpa sisi: abaikan kelipatan step. Sisi SOL hanya bila harga sudah pulih dan
   // saklar sisi SOL menyala. Selain itu, bila masih di bawah entry, sisi token.
   if (force) {
     const recovered = lastPct > 0 && stepLevel < lastPct;
@@ -545,6 +572,7 @@ export async function handleBidaskDoubleRebalance(pos, deps = {}) {
     dcaConfirmPending:
       deps.dcaConfirmPending !== undefined ? deps.dcaConfirmPending : poolHasPendingDcaConfirm(poolTracked),
     force: deps.force === true,
+    side: deps.side,
   });
 
   const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
@@ -577,7 +605,7 @@ export async function handleBidaskDoubleRebalance(pos, deps = {}) {
     );
     if (isSolRebalance) {
       log.info(
-        `[DRY RUN] Would rebalance bidask:double SOL→BidAsk ${pair} (pulih ${decision.lastPct}% → ${decision.stepLevel}%, harga ${decision.priceChangePct.toFixed(1)}%)`
+        `[DRY RUN] Would rebalance bidask:double SOL→BidAsk ${pair} (pulih ${decision.lastPct}% → ${decision.stepLevel}%, harga ${formatPct(decision.priceChangePct)}%)`
       );
       return {
         triggered: true,
@@ -589,7 +617,7 @@ export async function handleBidaskDoubleRebalance(pos, deps = {}) {
       };
     }
     log.info(
-      `[DRY RUN] Would rebalance bidask:double token→BidAsk ${pair} (step ${decision.stepLevel}%, harga ${decision.priceChangePct.toFixed(1)}%)`
+      `[DRY RUN] Would rebalance bidask:double token→BidAsk ${pair} (step ${decision.stepLevel}%, harga ${formatPct(decision.priceChangePct)}%)`
     );
     return {
       triggered: true,
@@ -746,7 +774,7 @@ export async function handleBidaskDoubleRebalance(pos, deps = {}) {
         cappedRaw = inplace.depositedRaw;
         depositedUi = Number(cappedRaw.toString()) / Math.pow(10, decimals);
         log.info(
-          `📐 BIDASK REBALANCE ${label} — bentuk ulang di tempat bin ${fromBinId}→${toBinId} jadi BidAsk (step ${decision.stepLevel}%, harga ${decision.priceChangePct.toFixed(1)}%)`
+          `📐 BIDASK REBALANCE ${label} — bentuk ulang di tempat bin ${fromBinId}→${toBinId} jadi BidAsk (step ${decision.stepLevel}%, harga ${formatPct(decision.priceChangePct)}%)`
         );
       } else if (inplace.partial) {
         const partialErr = inplace.error || inplace.reason;
@@ -782,7 +810,7 @@ export async function handleBidaskDoubleRebalance(pos, deps = {}) {
 
     if (!usedInPlace) {
       log.info(
-        `📐 BIDASK REBALANCE ${label} — tarik token bin ${fromBinId}→${toBinId} lalu add BidAsk (step ${decision.stepLevel}%, harga ${decision.priceChangePct.toFixed(1)}%)`
+        `📐 BIDASK REBALANCE ${label} — tarik token bin ${fromBinId}→${toBinId} lalu add BidAsk (step ${decision.stepLevel}%, harga ${formatPct(decision.priceChangePct)}%)`
       );
 
       let balanceBeforeRaw = null;
@@ -883,10 +911,10 @@ export async function handleBidaskDoubleRebalance(pos, deps = {}) {
 
     updateBidaskDoubleRebalanceState(positionAddress, decision.stepLevel, Date.now(), activeBinId);
     log.info(
-      `✅ BIDASK REBALANCE ${label} — step ${decision.stepLevel}% (harga ${decision.priceChangePct.toFixed(1)}%, bin ${fromBinId}→${toBinId})`
+      `✅ BIDASK REBALANCE ${label} — step ${decision.stepLevel}% (harga ${formatPct(decision.priceChangePct)}%, bin ${fromBinId}→${toBinId})`
     );
     recordAction(
-      `BIDASK REBALANCE ${label} — step ${decision.stepLevel}% (harga ${decision.priceChangePct.toFixed(1)}%, bin ${fromBinId}→${toBinId})`
+      `BIDASK REBALANCE ${label} — step ${decision.stepLevel}% (harga ${formatPct(decision.priceChangePct)}%, bin ${fromBinId}→${toBinId})`
     );
     notifyFn({
       pair: label,

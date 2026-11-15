@@ -130,9 +130,12 @@ export function evaluateSpotTokenBidaskTrigger({
   spotMinBins = config.spotMinBins, // eslint-disable-line no-unused-vars -- tidak lagi jadi gerbang (lihat di bawah)
   now = Date.now(),
   force = false,
+  side = null,
 }) {
-  // force = rebalance manual dari Telegram: abaikan step, cooldown, dan saklar auto.
-  if (!force && !cfg?.enabled) {
+  // force / side = rebalance manual dari Telegram: abaikan step, cooldown, dan saklar auto.
+  // side "token" atau "sol" memilih sisi itu langsung, tanpa menunggu pemicu step.
+  const manualSide = side === "token" || side === "sol";
+  if (!force && !manualSide && !cfg?.enabled) {
     return { action: "none", reason: "disabled" };
   }
   if (!pos || pos.mode !== "spot") {
@@ -173,7 +176,30 @@ export function evaluateSpotTokenBidaskTrigger({
       : null;
   const cooldownMs = Math.max(0, Number(cfg.cooldownSec) || 0) * 1000;
 
-  // Manual: sisi SOL bila harga sudah pulih dari step terakhir, selain itu sisi token.
+  if (manualSide) {
+    if (side === "sol") {
+      if (
+        metrics.solBins > 0 &&
+        metrics.solFromBinId != null &&
+        metrics.solToBinId != null &&
+        metrics.solFromBinId <= metrics.solToBinId
+      ) {
+        return { action: "rebalance_sol_spot", reason: "manual", lastPct, ...metrics };
+      }
+      return { action: "none", reason: "no_sol_bins", lastPct, ...metrics };
+    }
+    if (
+      metrics.tokenBins > 0 &&
+      metrics.fromBinId != null &&
+      metrics.toBinId != null &&
+      metrics.fromBinId <= metrics.toBinId
+    ) {
+      return { action: "rebalance", reason: "manual", lastPct, ...metrics };
+    }
+    return { action: "none", reason: "no_token_bins", lastPct, ...metrics };
+  }
+
+  // Manual tanpa sisi: sisi SOL bila harga sudah pulih dari step terakhir, selain itu sisi token.
   if (force) {
     if (lastPct > 0 && metrics.stepLevel < lastPct) {
       return { action: "rebalance_sol_spot", reason: "manual", lastPct, ...metrics };
@@ -645,6 +671,7 @@ export async function handleSpotTokenBidask(pos, deps = {}) {
     spotMinBins: deps.spotMinBins ?? config.spotMinBins,
     now,
     force: deps.force === true,
+    side: deps.side,
   });
 
   const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";

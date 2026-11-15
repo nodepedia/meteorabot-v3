@@ -112,7 +112,7 @@ function patchTracked(fields) {
   writeState(state);
 }
 
-test("aturan bidask:sol: stop loss -40, trailing 10, warmup 30, indikator nyala, OOR kiri/yield/bounce mati", () => {
+test("aturan bidask:sol: stop loss -40, trailing 10, warmup 30, OOR kiri/yield/bounce mati", () => {
   const rules = config.rulesFor("bidask:sol");
   assert.equal(rules.enableStopLoss, true);
   assert.equal(rules.stopLossPct, -40);
@@ -121,7 +121,8 @@ test("aturan bidask:sol: stop loss -40, trailing 10, warmup 30, indikator nyala,
   assert.equal(rules.trailingDropRatioPct, 8);
   assert.equal(rules.trailingDropPct, 1.5);
   assert.equal(rules.enableOOR, false);
-  assert.equal(rules.enableIndicators, true);
+  assert.equal(rules.enableIndicators, config.bidaskSol.enableIndicators);
+  assert.equal(rules.enableIndicators, false);
   assert.equal(rules.rsiPeriod, 2);
   assert.equal(rules.macdFast, 12);
   assert.equal(rules.macdSlow, 26);
@@ -507,39 +508,52 @@ test("indikator bidask:sol meng-arm trailing setelah warmup dan menahan saat war
   resetState();
   trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
   const rules = config.rulesFor("bidask:sol");
-  const now = Date.now();
-  const started = now - 10 * 60 * 1000;
-  setExitWarmupStartedAt(POS, started);
-  assert.equal(isExitWarmup(resolveExitWarmupStartedAt(getTrackedPosition(POS)), rules.exitWarmupMinutes, now), true);
-
-  const held = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: true, now });
-  assert.equal(held.action, "hold");
-  assert.equal(held.reason, "warmup");
-  assert.equal(getTrackedPosition(POS).trailingArmedBy, null);
-
-  assert.deepEqual(indicatorAction("bidask:sol", "rsi_macd", { indicatorExit: "immediate" }), {
-    action: "arm_indicator_trailing",
-    reason: "rsi_macd",
-  });
-
-  const savedPeriod = rules.rsiPeriod;
-  rules.rsiPeriod = 500;
+  const savedIndicators = rules.enableIndicators;
+  rules.enableIndicators = true;
   try {
-    const quiet = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: false, now });
-    assert.equal(quiet.action, "hold");
-    assert.equal(quiet.reason, "no_signal");
-  } finally {
-    rules.rsiPeriod = savedPeriod;
-  }
+    const now = Date.now();
+    const started = now - 10 * 60 * 1000;
+    setExitWarmupStartedAt(POS, started);
+    assert.equal(isExitWarmup(resolveExitWarmupStartedAt(getTrackedPosition(POS)), rules.exitWarmupMinutes, now), true);
 
-  patchTracked({ exitWarmupStartedAt: now - rules.exitWarmupMinutes * 60 * 1000 });
-  assert.equal(isExitWarmup(resolveExitWarmupStartedAt(getTrackedPosition(POS)), rules.exitWarmupMinutes, now), false);
-  const armed = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: false, now });
-  assert.equal(armed.action, "arm_indicator_trailing");
-  assert.match(armed.reason, /^rsi_(macd|bb)$/);
-  armIndicatorTrailing(POS, armed.reason, 4);
-  assert.equal(getTrackedPosition(POS).trailingActive, true);
-  assert.equal(getTrackedPosition(POS).trailingArmedBy, armed.reason);
+    const held = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: true, now });
+    assert.equal(held.action, "hold");
+    assert.equal(held.reason, "warmup");
+    assert.equal(getTrackedPosition(POS).trailingArmedBy, null);
+
+    assert.deepEqual(indicatorAction("bidask:sol", "rsi_macd", { indicatorExit: "immediate" }), {
+      action: "arm_indicator_trailing",
+      reason: "rsi_macd",
+    });
+
+    const savedPeriod = rules.rsiPeriod;
+    rules.rsiPeriod = 500;
+    try {
+      const quiet = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: false, now });
+      assert.equal(quiet.action, "hold");
+      assert.equal(quiet.reason, "no_signal");
+    } finally {
+      rules.rsiPeriod = savedPeriod;
+    }
+
+    patchTracked({ exitWarmupStartedAt: now - rules.exitWarmupMinutes * 60 * 1000 });
+    assert.equal(
+      isExitWarmup(resolveExitWarmupStartedAt(getTrackedPosition(POS)), rules.exitWarmupMinutes, now),
+      false
+    );
+    const armed = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: false, now });
+    assert.equal(armed.action, "arm_indicator_trailing");
+    assert.match(armed.reason, /^rsi_(macd|bb)$/);
+    armIndicatorTrailing(POS, armed.reason, 4);
+    assert.equal(getTrackedPosition(POS).trailingActive, true);
+    assert.equal(getTrackedPosition(POS).trailingArmedBy, armed.reason);
+    rules.enableIndicators = false;
+    const off = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: false, now });
+    assert.equal(off.action, "hold");
+    assert.equal(off.reason, "indicators_disabled");
+  } finally {
+    rules.enableIndicators = savedIndicators;
+  }
 });
 
 test("bidask:sol di bawah batas waktu tetap re-entry", async () => {

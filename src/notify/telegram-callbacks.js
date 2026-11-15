@@ -3,6 +3,7 @@ import { getOpenTrackedPositions } from "../state/positions.js";
 import { answerCallbackQuery, editMessageReplyMarkup } from "./telegram.js";
 import {
   buildStatusKeyboard,
+  buttonLabel,
   decodeCallbackData,
   isAllowedTelegramChat,
   readButtonCatalog,
@@ -83,10 +84,11 @@ export async function handleCallbackQuery(query, deps = {}) {
   const result = enqueue({
     action: decoded.action,
     position: resolved.position,
+    side: decoded.side || null,
     requestedAt: deps.now ? deps.now() : Date.now(),
   });
   if (messageId != null) await edit(chatId, messageId, restore());
-  const toast = result?.error ? "Dibatalkan" : scheduledToast(decoded.action, resolved.label);
+  const toast = result?.error ? "Dibatalkan" : scheduledToast(decoded.action, buttonLabel(resolved.label));
   await answer(query.id, toast);
   return {
     ok: !result?.error,

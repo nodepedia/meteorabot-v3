@@ -6,9 +6,13 @@ import { TELEGRAM_BUTTONS_FILE } from "../core/paths.js";
 const CALLBACK_CODE = {
   r: { kind: "ask", action: "rebalance" },
   z: { kind: "ask", action: "zap_out" },
-  R: { kind: "confirm", action: "rebalance" },
+  // Pesan yang sudah terkirim: konfirmasi rebalance lama tidak membawa sisi.
+  // Dibaca sebagai permintaan pilihan sisi, bukan perintah rebalance.
+  R: { kind: "ask", action: "rebalance" },
   Z: { kind: "confirm", action: "zap_out" },
   x: { kind: "cancel", action: null },
+  t: { kind: "confirm", action: "rebalance", side: "token" },
+  s: { kind: "confirm", action: "rebalance", side: "sol" },
 };
 
 const REBALANCE_MODES = new Set(["spot", "bidask:double", "bidask:sol"]);
@@ -21,6 +25,19 @@ export function positionLabel(p) {
   const raw = p?.pair || p?.label || (p?.position ? String(p.position).slice(0, 8) : "?");
   const text = String(raw).replace(/\s+/g, " ").trim();
   return text.slice(0, 40) || "?";
+}
+
+const QUOTE_SUFFIX = "-SOL";
+
+// Tombol memakai simbol token saja. Akhiran quote `-SOL` dibuang.
+// Tanpa akhiran itu, label penuh yang sudah dipotong tetap dipakai.
+export function buttonLabel(p) {
+  const full = typeof p === "string" ? positionLabel({ pair: p }) : positionLabel(p);
+  if (full.endsWith(QUOTE_SUFFIX) && full.length > QUOTE_SUFFIX.length) {
+    const symbol = full.slice(0, -QUOTE_SUFFIX.length).trim();
+    if (symbol) return symbol;
+  }
+  return full;
 }
 
 // Awalan unik di antara alamat yang sedang tampil. 8 karakter biasanya cukup;
@@ -62,7 +79,7 @@ export function decodeCallbackData(data) {
   const key = text.slice(idx + 1);
   const spec = CALLBACK_CODE[code];
   if (!spec || !key) return null;
-  return { code, kind: spec.kind, action: spec.action, key };
+  return { code, kind: spec.kind, action: spec.action, side: spec.side || null, key };
 }
 
 export function isAllowedTelegramChat(chatId, allowedChatId) {
@@ -77,7 +94,7 @@ function fitButton(prefix, label) {
   return `${prefix}${cut}`.slice(0, 64);
 }
 
-// Di HP, dua tombol sebaris memotong teks. Nama pair > 10 karakter
+// Di HP, dua tombol sebaris memotong teks. Simbol > 10 karakter
 // ditaruh satu tombol per baris supaya nama penuh terbaca.
 const PAIR_LABEL_ROW_MAX = 10;
 
@@ -95,33 +112,45 @@ function normalRows(key, label, allowRebalance) {
   return rowsFor(buttons, label);
 }
 
-function confirmRows(key, label, action) {
-  const prefix = action === "rebalance" ? "✅ Ya, rebalance " : "✅ Ya, zap out ";
-  const code = action === "rebalance" ? "R" : "Z";
+function confirmRows(key, label) {
   return rowsFor(
     [
-      { text: fitButton(prefix, label), callback_data: encodeCallbackData(code, key) },
+      { text: fitButton("✅ Ya, zap out ", label), callback_data: encodeCallbackData("Z", key) },
       { text: "✖️ Batal", callback_data: encodeCallbackData("x", key) },
     ],
     label
   );
 }
 
-// Satu baris per posisi (dua tombol), atau dua baris bila nama pair panjang.
-// `pendingKey` mengganti tombol posisi itu jadi konfirmasi.
+// Memilih sisi langsung mengantre. Tidak ada langkah "Ya" lagi.
+function sideRows(key, label) {
+  return rowsFor(
+    [
+      { text: fitButton("🪙 Sisi token ", label), callback_data: encodeCallbackData("t", key) },
+      { text: fitButton("◎ Sisi SOL ", label), callback_data: encodeCallbackData("s", key) },
+      { text: "✖️ Batal", callback_data: encodeCallbackData("x", key) },
+    ],
+    label
+  );
+}
+
+// Satu baris per posisi (dua tombol), atau satu tombol per baris bila simbol panjang.
+// `pendingKey` + zap_out = konfirmasi. rebalance = pilihan sisi (token / SOL / batal).
 export function buildStatusKeyboard(positions, { pendingKey = null, pendingAction = null, catalog = null } = {}) {
   const list = (positions || []).filter((p) => p?.position && p.closed !== true);
   const addresses = list.map((p) => String(p.position));
   const inline_keyboard = [];
   for (const p of list) {
     const key = keyForPosition(p.position, catalog, addresses);
-    const label = positionLabel(p);
+    const label = buttonLabel(p);
     const allowRebalance = modeSupportsRebalance(p.mode);
     if (pendingKey && key === pendingKey && (pendingAction === "zap_out" || pendingAction === "rebalance")) {
       if (pendingAction === "rebalance" && !allowRebalance) {
         inline_keyboard.push(...normalRows(key, label, false));
+      } else if (pendingAction === "rebalance") {
+        inline_keyboard.push(...sideRows(key, label));
       } else {
-        inline_keyboard.push(...confirmRows(key, label, pendingAction));
+        inline_keyboard.push(...confirmRows(key, label));
       }
       continue;
     }
