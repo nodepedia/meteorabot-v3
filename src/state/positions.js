@@ -112,7 +112,8 @@ export function trackPosition(
       lastBidaskDoubleRebalancePct: 0,
       lastBidaskDoubleRebalanceAt: null,
       lastBidaskDoubleRebalanceBin: null,
-      // Step rebalance sisi token bidask:sol (10, 20, 30, ...). Tidak ada sisi SOL.
+      // Step rebalance sisi token bidask:sol (10, 20, 30, ...).
+      // Jalur otomatis tidak menyentuh sisi SOL. Rebalance SOL manual tidak menulis field ini.
       lastBidaskSolRebalancePct: 0,
       lastBidaskSolRebalanceAt: null,
       lastBidaskSolRebalanceBin: null,

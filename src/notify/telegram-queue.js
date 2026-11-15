@@ -93,10 +93,17 @@ function newId() {
 }
 
 // Idempoten: klik kedua untuk posisi + aksi yang masih pending tidak menambah baris.
-export function enqueueTelegramCommand({ id, action, position, requestedAt } = {}, file = TELEGRAM_COMMANDS_FILE) {
+export function enqueueTelegramCommand(
+  { id, action, position, side = null, requestedAt } = {},
+  file = TELEGRAM_COMMANDS_FILE
+) {
   if (!ACTIONS.has(action) || !position) {
     return { enqueued: false, duplicate: false, command: null, error: "invalid_command" };
   }
+  if (action === "rebalance" && side !== "token" && side !== "sol") {
+    return { enqueued: false, duplicate: false, command: null, error: "invalid_command" };
+  }
+  const sideValue = action === "rebalance" ? side : null;
   return withLock(file, () => {
     const data = readTelegramCommands(file);
     if (id) {
@@ -104,13 +111,18 @@ export function enqueueTelegramCommand({ id, action, position, requestedAt } = {
       if (sameId) return { enqueued: false, duplicate: true, command: sameId };
     }
     const pending = data.commands.find(
-      (cmd) => cmd.status === "pending" && cmd.action === action && cmd.position === position
+      (cmd) =>
+        cmd.status === "pending" &&
+        cmd.action === action &&
+        cmd.position === position &&
+        (action !== "rebalance" || cmd.side === sideValue)
     );
     if (pending) return { enqueued: false, duplicate: true, command: pending };
     const command = {
       id: id || newId(),
       action,
       position: String(position),
+      side: sideValue,
       requestedAt: Number.isFinite(Number(requestedAt)) ? Number(requestedAt) : Date.now(),
       status: "pending",
       error: null,

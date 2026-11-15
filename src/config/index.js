@@ -35,14 +35,14 @@ export function buildConfig(e = {}) {
 
   // SOL-only yang dibuka manual (classifyMode). Stop loss -40, trailing
   // trigger 10, warmup 30 menit (menahan trailing dan arm indikator).
-  // Indikator menyala setelah warmup dan meng-arm trailing seperti
-  // bidask:double/token, bukan close langsung seperti spot. OOR kiri,
-  // yield, dan bounce mati. OOR kanan ber-timer seperti spot, lalu re-entry
-  // bidask:sol (bukan entry pool.txt).
+  // Indikator mengikuti BIDASK_SOL_ENABLE_INDICATORS (default mati). Bila
+  // dinyalakan, setelah warmup meng-arm trailing seperti bidask:double/token,
+  // bukan close langsung seperti spot. OOR kiri, yield, dan bounce mati.
+  // OOR kanan ber-timer seperti spot, lalu re-entry bidask:sol (bukan entry pool.txt).
   const bidaskSol = modeRules(e, "BIDASK_SOL", {
     enableStopLoss: true,
     stopLossPct: -40,
-    enableIndicators: true,
+    enableIndicators: false,
     exitWarmupMinutes: 30,
     trailingTakeProfit: true,
     oorKananMinutes: 2,

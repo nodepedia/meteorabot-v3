@@ -88,7 +88,7 @@ test("callback_data pendek, unik, dan bisa dibaca kembali", () => {
   const keyB = uniquePrefix(b, [a, b]);
   assert.notEqual(keyA, keyB);
   assert.ok(keyA.length >= 8 && keyA.length < a.length);
-  for (const code of ["r", "z", "R", "Z", "x"]) {
+  for (const code of ["r", "z", "R", "Z", "x", "t", "s"]) {
     const data = encodeCallbackData(code, keyA);
     assert.ok(Buffer.byteLength(data) < 64);
     const decoded = decodeCallbackData(data);
@@ -97,7 +97,12 @@ test("callback_data pendek, unik, dan bisa dibaca kembali", () => {
   }
   assert.equal(decodeCallbackData(encodeCallbackData("Z", keyA)).kind, "confirm");
   assert.equal(decodeCallbackData(encodeCallbackData("Z", keyA)).action, "zap_out");
+  assert.equal(decodeCallbackData(encodeCallbackData("Z", keyA)).side, null);
+  assert.equal(decodeCallbackData(encodeCallbackData("R", keyA)).kind, "ask");
   assert.equal(decodeCallbackData(encodeCallbackData("R", keyA)).action, "rebalance");
+  assert.equal(decodeCallbackData(encodeCallbackData("R", keyA)).side, null);
+  assert.equal(decodeCallbackData(encodeCallbackData("t", keyA)).side, "token");
+  assert.equal(decodeCallbackData(encodeCallbackData("s", keyA)).side, "sol");
   assert.equal(decodeCallbackData(encodeCallbackData("x", keyA)).kind, "cancel");
   assert.equal(decodeCallbackData("nope"), null);
   assert.equal(decodeCallbackData(`z:${"a".repeat(80)}`), null);
@@ -120,20 +125,20 @@ test("keyboard: rebalance disembunyikan untuk bidask:token, konfirmasi hanya men
 
   const kb = buildStatusKeyboard(positions);
   assert.equal(kb.inline_keyboard.length, 3);
-  assert.equal(kb.inline_keyboard[0][0].text, "♻️ Macca-SOL");
-  assert.equal(kb.inline_keyboard[0][1].text, "⚡ Macca-SOL");
+  assert.equal(kb.inline_keyboard[0][0].text, "♻️ Macca");
+  assert.equal(kb.inline_keyboard[0][1].text, "⚡ Macca");
   assert.equal(decodeCallbackData(kb.inline_keyboard[0][0].callback_data).code, "r");
   assert.equal(decodeCallbackData(kb.inline_keyboard[0][1].callback_data).code, "z");
   assert.equal(kb.inline_keyboard[1].length, 1);
-  assert.equal(kb.inline_keyboard[1][0].text, "⚡ Tok-SOL");
-  assert.equal(kb.inline_keyboard[2][0].text, "♻️ Sol-SOL");
+  assert.equal(kb.inline_keyboard[1][0].text, "⚡ Tok");
+  assert.equal(kb.inline_keyboard[2][0].text, "♻️ Sol");
   for (const row of kb.inline_keyboard) {
     for (const button of row) assert.ok(Buffer.byteLength(button.callback_data) < 64);
   }
 
   const zapKey = decodeCallbackData(kb.inline_keyboard[0][1].callback_data).key;
   const confirm = buildStatusKeyboard(positions, { pendingKey: zapKey, pendingAction: "zap_out" });
-  assert.equal(confirm.inline_keyboard[0][0].text, "✅ Ya, zap out Macca-SOL");
+  assert.equal(confirm.inline_keyboard[0][0].text, "✅ Ya, zap out Macca");
   assert.equal(confirm.inline_keyboard[0][1].text, "✖️ Batal");
   assert.deepEqual(confirm.inline_keyboard[1], kb.inline_keyboard[1]);
   assert.deepEqual(confirm.inline_keyboard[2], kb.inline_keyboard[2]);
@@ -142,51 +147,63 @@ test("keyboard: rebalance disembunyikan untuk bidask:token, konfirmasi hanya men
 
   const rebKey = decodeCallbackData(kb.inline_keyboard[0][0].callback_data).key;
   const reb = buildStatusKeyboard(positions, { pendingKey: rebKey, pendingAction: "rebalance" });
-  assert.equal(reb.inline_keyboard[0][0].text, "✅ Ya, rebalance Macca-SOL");
-  assert.equal(reb.inline_keyboard[0][1].text, "✖️ Batal");
+  assert.deepEqual(
+    reb.inline_keyboard[0].map((button) => button.text),
+    ["🪙 Sisi token Macca", "◎ Sisi SOL Macca", "✖️ Batal"]
+  );
+  assert.equal(decodeCallbackData(reb.inline_keyboard[0][0].callback_data).side, "token");
+  assert.equal(decodeCallbackData(reb.inline_keyboard[0][1].callback_data).side, "sol");
+  assert.equal(decodeCallbackData(reb.inline_keyboard[0][2].callback_data).kind, "cancel");
+  assert.deepEqual(reb.inline_keyboard[1], kb.inline_keyboard[1]);
+  assert.deepEqual(reb.inline_keyboard[2], kb.inline_keyboard[2]);
 
-  assert.equal(scheduledToast("zap_out", "Macca-SOL"), "Zap Out Macca-SOL dijadwalkan");
-  assert.equal(scheduledToast("rebalance", "Macca-SOL"), "Rebalance Macca-SOL dijadwalkan");
+  assert.equal(scheduledToast("zap_out", "Macca"), "Zap Out Macca dijadwalkan");
+  assert.equal(scheduledToast("rebalance", "Macca"), "Rebalance Macca dijadwalkan");
   assert.equal(humanReason("manual_telegram"), "manual (Telegram)");
 });
 
 test("keyboard: nama pair lebih dari 10 karakter satu tombol per baris", () => {
   const long = "VeryLongName-SOL";
+  const symbol = "VeryLongName";
   const positions = [
     { position: SPOT, pair: long, mode: "spot" },
     { position: TOK, pair: "Tok-SOL", mode: "bidask:token" },
   ];
   const kb = buildStatusKeyboard(positions);
-  assert.equal(long.length > 10, true);
+  assert.equal(symbol.length > 10, true);
   assert.equal(kb.inline_keyboard.length, 3);
   assert.deepEqual(
     kb.inline_keyboard[0].map((button) => button.text),
-    [`♻️ ${long}`]
+    [`♻️ ${symbol}`]
   );
   assert.deepEqual(
     kb.inline_keyboard[1].map((button) => button.text),
-    [`⚡ ${long}`]
+    [`⚡ ${symbol}`]
   );
   assert.equal(decodeCallbackData(kb.inline_keyboard[0][0].callback_data).code, "r");
   assert.equal(decodeCallbackData(kb.inline_keyboard[1][0].callback_data).code, "z");
-  assert.equal(kb.inline_keyboard[2][0].text, "⚡ Tok-SOL");
+  assert.equal(kb.inline_keyboard[2][0].text, "⚡ Tok");
   assert.equal(kb.inline_keyboard[2].length, 1);
 
   const key = decodeCallbackData(kb.inline_keyboard[0][0].callback_data).key;
   const reb = buildStatusKeyboard(positions, { pendingKey: key, pendingAction: "rebalance" });
   assert.equal(reb.inline_keyboard[0].length, 1);
-  assert.equal(reb.inline_keyboard[0][0].text, `✅ Ya, rebalance ${long}`);
-  assert.equal(decodeCallbackData(reb.inline_keyboard[0][0].callback_data).code, "R");
+  assert.equal(reb.inline_keyboard[0][0].text, `🪙 Sisi token ${symbol}`);
+  assert.equal(decodeCallbackData(reb.inline_keyboard[0][0].callback_data).side, "token");
   assert.equal(reb.inline_keyboard[1].length, 1);
-  assert.equal(reb.inline_keyboard[1][0].text, "✖️ Batal");
-  assert.equal(decodeCallbackData(reb.inline_keyboard[1][0].callback_data).code, "x");
-  assert.deepEqual(reb.inline_keyboard[2], kb.inline_keyboard[2]);
+  assert.equal(reb.inline_keyboard[1][0].text, `◎ Sisi SOL ${symbol}`);
+  assert.equal(decodeCallbackData(reb.inline_keyboard[1][0].callback_data).side, "sol");
+  assert.equal(reb.inline_keyboard[2].length, 1);
+  assert.equal(reb.inline_keyboard[2][0].text, "✖️ Batal");
+  assert.equal(decodeCallbackData(reb.inline_keyboard[2][0].callback_data).code, "x");
+  assert.deepEqual(reb.inline_keyboard[3], kb.inline_keyboard[2]);
 
   const zap = buildStatusKeyboard(positions, { pendingKey: key, pendingAction: "zap_out" });
-  assert.equal(zap.inline_keyboard[0][0].text, `✅ Ya, zap out ${long}`);
+  assert.equal(zap.inline_keyboard[0][0].text, `✅ Ya, zap out ${symbol}`);
   assert.equal(zap.inline_keyboard[0].length, 1);
   assert.equal(decodeCallbackData(zap.inline_keyboard[0][0].callback_data).code, "Z");
   assert.equal(zap.inline_keyboard[1][0].text, "✖️ Batal");
+  assert.deepEqual(zap.inline_keyboard[2], kb.inline_keyboard[2]);
 
   const ten = "ABCDEFGHIJ";
   const atTen = buildStatusKeyboard([{ position: SPOT, pair: ten, mode: "spot" }]);
@@ -205,6 +222,15 @@ test("keyboard: nama pair lebih dari 10 karakter satu tombol per baris", () => {
   assert.deepEqual(
     tenConfirm.inline_keyboard[0].map((button) => button.text),
     [`✅ Ya, zap out ${ten}`, "✖️ Batal"]
+  );
+  const tenSides = buildStatusKeyboard([{ position: SPOT, pair: ten, mode: "spot" }], {
+    pendingKey: tenKey,
+    pendingAction: "rebalance",
+  });
+  assert.equal(tenSides.inline_keyboard.length, 1);
+  assert.deepEqual(
+    tenSides.inline_keyboard[0].map((button) => button.text),
+    [`🪙 Sisi token ${ten}`, `◎ Sisi SOL ${ten}`, "✖️ Batal"]
   );
 
   const eleven = "ABCDEFGHIJK";
@@ -340,7 +366,7 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
     }
   );
   assert.equal(view.edits[0].messageId, 42);
-  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "✅ Ya, zap out Macca-SOL");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "✅ Ya, zap out Macca");
   assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "✖️ Batal");
   assert.deepEqual(view.edits[0].markup.inline_keyboard[1], kb.inline_keyboard[1]);
   assert.equal(view.answers[0].text, "");
@@ -366,9 +392,10 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
   assert.equal(confirmed.enqueued, true);
   assert.equal(queued[0].action, "zap_out");
   assert.equal(queued[0].position, SPOT);
-  assert.equal(view.answers[0].text, "Zap Out Macca-SOL dijadwalkan");
-  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "♻️ Macca-SOL");
-  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Macca-SOL");
+  assert.equal(view.answers[0].text, "Zap Out Macca dijadwalkan");
+  assert.equal(queued[0].side, null);
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "♻️ Macca");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Macca");
   assert.equal(fs.readFileSync(process.env.STATE_FILE, "utf8"), before);
 
   const again = enqueueTelegramCommand({ action: "zap_out", position: SPOT, requestedAt: Date.now() });
@@ -394,7 +421,12 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
       ...view,
     }
   );
-  const rebCancel = view.edits[0].markup.inline_keyboard[0][1].callback_data;
+  assert.deepEqual(
+    view.edits[0].markup.inline_keyboard[0].map((button) => button.text),
+    ["🪙 Sisi token Macca", "◎ Sisi SOL Macca", "✖️ Batal"]
+  );
+  const rebCancel = view.edits[0].markup.inline_keyboard[0][2].callback_data;
+  const sideTokenData = view.edits[0].markup.inline_keyboard[0][0].callback_data;
   assert.equal(rebCancel, cancelData);
   view.edits.length = 0;
   view.answers.length = 0;
@@ -411,7 +443,55 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
     }
   );
   assert.equal(view.answers[0].text, "Dibatalkan");
-  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Macca-SOL");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Macca");
+
+  view.edits.length = 0;
+  view.answers.length = 0;
+  const sideQueued = [];
+  const sided = await handleCallbackQuery(
+    { id: "side-token", data: sideTokenData, message: { message_id: 42, chat: { id: CHAT } } },
+    {
+      chatId: CHAT,
+      loadOpenPositions: () => open,
+      loadCatalog: () => catalog,
+      enqueue: (cmd) => {
+        sideQueued.push(cmd);
+        return enqueueTelegramCommand(cmd);
+      },
+      ...view,
+    }
+  );
+  assert.equal(sided.enqueued, true);
+  assert.equal(sideQueued[0].action, "rebalance");
+  assert.equal(sideQueued[0].side, "token");
+  assert.equal(sideQueued[0].position, SPOT);
+  assert.equal(view.answers[0].text, "Rebalance Macca dijadwalkan");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "♻️ Macca");
+
+  view.edits.length = 0;
+  view.answers.length = 0;
+  let oldConfirmEnqueue = 0;
+  const oldConfirm = await handleCallbackQuery(
+    {
+      id: "old-r",
+      data: encodeCallbackData("R", uniquePrefix(SPOT, [SPOT, TOK])),
+      message: { message_id: 42, chat: { id: CHAT } },
+    },
+    {
+      chatId: CHAT,
+      loadOpenPositions: () => open,
+      loadCatalog: () => catalog,
+      enqueue: () => {
+        oldConfirmEnqueue += 1;
+        return { enqueued: true };
+      },
+      ...view,
+    }
+  );
+  assert.equal(oldConfirm.pending, "rebalance");
+  assert.equal(oldConfirmEnqueue, 0);
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "🪙 Sisi token Macca");
+  assert.equal(view.answers[0].text, "");
 
   view.edits.length = 0;
   view.answers.length = 0;
@@ -434,7 +514,7 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
   assert.equal(closed.closed, true);
   assert.equal(view.answers[0].text, "Posisi sudah tutup");
   assert.equal(view.edits[0].markup.inline_keyboard.length, 1);
-  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "⚡ Tok-SOL");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "⚡ Tok");
 
   view.edits.length = 0;
   view.answers.length = 0;
@@ -463,20 +543,28 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
 test("antrean: duplikat, kedaluwarsa, dan exit menjalankan zap_out serta rebalance per mode", async () => {
   resetQueue();
   const now = Date.now();
-  const first = enqueueTelegramCommand({ action: "rebalance", position: DBL, requestedAt: now });
-  const second = enqueueTelegramCommand({ action: "rebalance", position: DBL, requestedAt: now + 1 });
+  const first = enqueueTelegramCommand({ action: "rebalance", position: DBL, side: "token", requestedAt: now });
+  const second = enqueueTelegramCommand({ action: "rebalance", position: DBL, side: "token", requestedAt: now + 1 });
+  const otherSide = enqueueTelegramCommand({ action: "rebalance", position: DBL, side: "sol", requestedAt: now + 2 });
   assert.equal(first.enqueued, true);
   assert.equal(second.duplicate, true);
   assert.equal(second.command.id, first.command.id);
+  assert.equal(otherSide.enqueued, true);
+  assert.notEqual(otherSide.command.id, first.command.id);
+  const missingSide = enqueueTelegramCommand({ action: "rebalance", position: DBL, requestedAt: now });
+  assert.equal(missingSide.error, "invalid_command");
+  assert.equal(missingSide.enqueued, false);
 
   enqueueTelegramCommand({ action: "zap_out", position: SPOT, requestedAt: now });
-  enqueueTelegramCommand({ action: "rebalance", position: SPOT2, requestedAt: now });
-  enqueueTelegramCommand({ action: "rebalance", position: SOL, requestedAt: now });
-  enqueueTelegramCommand({ action: "rebalance", position: TOK, requestedAt: now });
+  enqueueTelegramCommand({ action: "rebalance", position: SPOT2, side: "sol", requestedAt: now });
+  enqueueTelegramCommand({ action: "rebalance", position: SOL, side: "token", requestedAt: now });
+  enqueueTelegramCommand({ action: "rebalance", position: "SolSidePos", side: "sol", requestedAt: now });
+  enqueueTelegramCommand({ action: "rebalance", position: TOK, side: "token", requestedAt: now });
   enqueueTelegramCommand({ action: "zap_out", position: "missing-position", requestedAt: now });
   enqueueTelegramCommand({
     action: "rebalance",
     position: "stale-position",
+    side: "token",
     requestedAt: now - TELEGRAM_COMMAND_TTL_MS - 1000,
   });
 
@@ -487,6 +575,7 @@ test("antrean: duplikat, kedaluwarsa, dan exit menjalankan zap_out serta rebalan
       { position: SPOT2, mode: "spot", pair: "Spot2-SOL", pool: POOL, baseMint: MINT },
       { position: DBL, mode: "bidask:double", pair: "Dbl-SOL", pool: POOL, baseMint: MINT },
       { position: SOL, mode: "bidask:sol", pair: "Sol-SOL", pool: POOL, baseMint: MINT },
+      { position: "SolSidePos", mode: "bidask:sol", pair: "Side-SOL", pool: POOL, baseMint: MINT },
       { position: TOK, mode: "bidask:token", pair: "Tok-SOL", pool: POOL, baseMint: MINT },
     ],
     {
@@ -507,6 +596,10 @@ test("antrean: duplikat, kedaluwarsa, dan exit menjalankan zap_out serta rebalan
         calls.push({ fn: "sol", position: pos.position, opts });
         return { success: true, triggered: true, rebalanceType: "token_bidask" };
       },
+      handleBidaskSolSolSideRebalance: async (pos, opts) => {
+        calls.push({ fn: "solside", position: pos.position, opts });
+        return { success: true, triggered: true, rebalanceType: "sol_bidask" };
+      },
     }
   );
 
@@ -520,11 +613,17 @@ test("antrean: duplikat, kedaluwarsa, dan exit menjalankan zap_out serta rebalan
 
   const spot = calls.find((call) => call.fn === "spot");
   assert.equal(spot.position, SPOT2);
-  assert.deepEqual(spot.opts, { force: true });
-  assert.deepEqual(calls.find((call) => call.fn === "double").opts, { force: true });
-  assert.equal(calls.find((call) => call.fn === "double").position, DBL);
-  assert.deepEqual(calls.find((call) => call.fn === "sol").opts, { force: true });
+  assert.deepEqual(spot.opts, { force: true, side: "sol" });
+  const doubleToken = calls.find((call) => call.fn === "double" && call.opts.side === "token");
+  const doubleSol = calls.find((call) => call.fn === "double" && call.opts.side === "sol");
+  assert.equal(doubleToken.position, DBL);
+  assert.deepEqual(doubleToken.opts, { force: true, side: "token" });
+  assert.equal(doubleSol.position, DBL);
+  assert.deepEqual(doubleSol.opts, { force: true, side: "sol" });
+  assert.deepEqual(calls.find((call) => call.fn === "sol").opts, { force: true, side: "token" });
   assert.equal(calls.find((call) => call.fn === "sol").position, SOL);
+  assert.deepEqual(calls.find((call) => call.fn === "solside").opts, { force: true, side: "sol" });
+  assert.equal(calls.find((call) => call.fn === "solside").position, "SolSidePos");
   assert.equal(
     calls.some((call) => call.position === TOK),
     false
@@ -534,8 +633,9 @@ test("antrean: duplikat, kedaluwarsa, dan exit menjalankan zap_out serta rebalan
   const byPosition = (position, action) => saved.find((cmd) => cmd.position === position && cmd.action === action);
   assert.equal(byPosition(SPOT, "zap_out").status, "done");
   assert.equal(byPosition(SPOT2, "rebalance").status, "done");
-  assert.equal(byPosition(DBL, "rebalance").status, "done");
+  assert.equal(saved.filter((cmd) => cmd.position === DBL && cmd.status === "done").length, 2);
   assert.equal(byPosition(SOL, "rebalance").status, "done");
+  assert.equal(byPosition("SolSidePos", "rebalance").status, "done");
   assert.equal(byPosition(TOK, "rebalance").status, "failed");
   assert.equal(byPosition(TOK, "rebalance").error, "rebalance_unavailable");
   assert.equal(byPosition("missing-position", "zap_out").status, "failed");
@@ -658,4 +758,53 @@ test("rebalance manual mengabaikan step, bidask:sol hanya sisi token, dan step t
     force: true,
   });
   assert.equal(tokenOnly.reason, "not_bidask_double");
+
+  const atTop = { ...spot, activeBin: 300 };
+  const noTokenSide = evaluateSpotTokenBidaskTrigger({
+    pos: atTop,
+    tracked: getTrackedPosition(spot.position),
+    side: "token",
+  });
+  assert.equal(noTokenSide.action, "none");
+  assert.equal(noTokenSide.reason, "no_token_bins");
+  const solAnyway = evaluateSpotTokenBidaskTrigger({
+    pos: atTop,
+    tracked: getTrackedPosition(spot.position),
+    side: "sol",
+  });
+  assert.equal(solAnyway.action, "rebalance_sol_spot");
+  const solRunManual = await handleSpotTokenBidask(atTop, { force: true, side: "sol", dryRun: true });
+  assert.equal(solRunManual.success, true);
+  assert.equal(solRunManual.rebalanceType, "sol_spot");
+
+  const dblDownSol = evaluateBidaskDoubleRebalance({
+    pos: dbl,
+    tracked: getTrackedPosition(dbl.position),
+    cfg: config.bidaskDoubleRebalance,
+    priceChangePct: -15,
+    side: "sol",
+  });
+  assert.equal(dblDownSol.action, "rebalance_sol");
+});
+
+test("sisi kosong ditandai selesai dan memberi tahu tidak ada yang bisa di-rebalance", async () => {
+  resetQueue();
+  const now = Date.now();
+  enqueueTelegramCommand({ action: "rebalance", position: SPOT, side: "token", requestedAt: now });
+  const notices = [];
+  const consumed = await consumeTelegramCommands(
+    [{ position: SPOT, mode: "spot", pair: "Macca-SOL", pool: POOL, baseMint: MINT }],
+    {
+      now: () => now,
+      handleSpotTokenBidask: async () => ({ triggered: false, reason: "no_token_bins" }),
+      notifyRebalanceSideEmpty: () => notices.push("Tidak ada yang bisa di-rebalance di sisi itu"),
+    }
+  );
+  assert.deepEqual(notices, ["Tidak ada yang bisa di-rebalance di sisi itu"]);
+  assert.equal(consumed.results[0].empty, true);
+  assert.equal(consumed.results[0].ok, true);
+  const saved = readTelegramCommands().commands[0];
+  assert.equal(saved.status, "done");
+  assert.equal(saved.error, null);
+  assert.equal(saved.side, "token");
 });

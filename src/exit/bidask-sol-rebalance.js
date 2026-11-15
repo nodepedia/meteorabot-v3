@@ -21,17 +21,36 @@ import {
   recordAction,
 } from "../entry/runtime.js";
 import { getTrackedPosition, updateBidaskSolRebalanceState } from "../state/positions.js";
-import { calcSpotTokenBinMetrics, depositContinuousBidAsk, extractTokenSideLiquidity } from "./spot-token-bidask.js";
+import {
+  calcSpotTokenBinMetrics,
+  chunkSolBidAskRanges,
+  depositContinuousBidAsk,
+  extractSolSideLiquidity,
+  extractTokenSideLiquidity,
+} from "./spot-token-bidask.js";
 import { tokenSideBinsForBidaskRebalance } from "./bidask-double-rebalance.js";
 import {
   capRedepositRaw,
+  DEFAULT_MAX_BINS_PER_TX,
   rebalanceBuildersFromSdk,
   resolveRebalanceMode,
+  solSpendCapRaw,
   tryInPlaceRebalance,
   uiToRaw,
 } from "./rebalance-shape.js";
 
 const rebalanceInProgress = new Set();
+
+// Dipakai tes: jalur otomatis tidak boleh menaikkan angka ini.
+let bidaskSolSolSideCalls = 0;
+
+export function bidaskSolSolSideCallCount() {
+  return bidaskSolSolSideCalls;
+}
+
+export function resetBidaskSolSolSideCallCount() {
+  bidaskSolSolSideCalls = 0;
+}
 
 // Porsi bin yang sudah jadi token, sama seperti spot (bin di atas active / span).
 // Step 10, 20, 30, ... Hanya naik. Tidak ada rebalance sisi SOL saat harga pulih.
@@ -95,6 +114,10 @@ async function fetchPositionOnChain(pool, positionPubKey, walletPubKey) {
 // Bentuk ulang HANYA bin token (di atas active) jadi satu kurva BidAsk.
 // Bin yang masih SOL (active dan di bawahnya) tidak ikut. Range tidak berubah.
 export async function handleBidaskSolRebalance(pos, deps = {}) {
+  // Sisi SOL tidak pernah dikerjakan di sini, juga bila pemanggil mengirim side "sol".
+  if (deps.side === "sol") {
+    return { triggered: false, reason: "sol_side_manual_only" };
+  }
   const cfg = deps.cfg || config.bidaskSolRebalance;
   const now = deps.now ? deps.now() : Date.now();
   const tracked = deps.tracked !== undefined ? deps.tracked : getTrackedPosition(pos?.position);
@@ -449,6 +472,350 @@ export async function handleBidaskSolRebalance(pos, deps = {}) {
   } finally {
     removeEntryInProgressMint(baseMint);
     releaseMint(baseMint, "bidask_sol_rebalance");
+    removeEntryInProgressPool(poolAddress);
+    rebalanceInProgress.delete(positionAddress);
+  }
+}
+
+// Hanya perintah Telegram. Bin SOL = active dan di bawahnya yang masih memegang SOL.
+// Di luar range atau tidak ada SOL → tidak ada yang dikerjakan.
+export function evaluateBidaskSolSolSide({ pos } = {}) {
+  if (!pos || pos.mode !== "bidask:sol") {
+    return { action: "none", reason: "not_bidask_sol" };
+  }
+  const lower = Number(pos.lowerBin);
+  const upper = Number(pos.upperBin);
+  const active = Number(pos.activeBin);
+  if (!Number.isFinite(lower) || !Number.isFinite(upper) || !Number.isFinite(active) || upper < lower) {
+    return { action: "none", reason: "no_sol_bins" };
+  }
+  if (active < lower || active > upper) {
+    return { action: "none", reason: "no_sol_bins" };
+  }
+  return { action: "rebalance_sol", reason: "manual", fromBinId: lower, toBinId: active };
+}
+
+// Bentuk ulang HANYA bin SOL (active dan di bawahnya) jadi kurva BidAsk.
+// Range tidak berubah, tidak ada bin baru, tidak ada swap, bin token tidak ikut.
+// Jalur otomatis (handleBidaskSolRebalance) tidak memanggil fungsi ini.
+export async function handleBidaskSolSolSideRebalance(pos, deps = {}) {
+  bidaskSolSolSideCalls += 1;
+  const decision = deps.decision || evaluateBidaskSolSolSide({ pos });
+  const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
+  if (decision.action !== "rebalance_sol") {
+    return { triggered: false, reason: decision.reason, decision };
+  }
+  if (!pos?.position || !pos?.pool || !pos?.baseMint) {
+    return { triggered: false, reason: "missing_position_fields", decision };
+  }
+  if (rebalanceInProgress.has(pos.position)) {
+    return { triggered: false, reason: "in_progress", decision };
+  }
+
+  const isDryRun = deps.dryRun !== undefined ? deps.dryRun : config.dryRun;
+  if (isDryRun) {
+    log.info(`[DRY RUN] Would rebalance bidask:sol SOL→BidAsk ${pair} (bin ${decision.fromBinId}→${decision.toBinId})`);
+    return {
+      triggered: true,
+      success: true,
+      dryRun: true,
+      rebalanceType: "sol_bidask",
+      fromBinId: decision.fromBinId,
+      toBinId: decision.toBinId,
+      decision,
+    };
+  }
+
+  const cfg = deps.cfg || config.bidaskSolRebalance;
+  const getPoolInfoFn = deps.getPoolInfo || getPoolInfo;
+  const getDlmmSdkFn = deps.getDlmmSdk || getDlmmSdk;
+  const getConnectionFn = deps.getConnection || getConnection;
+  const getWalletFn = deps.getWallet || getWallet;
+  const buildFeePlanFn = deps.buildFeePlan || buildFeePlan;
+  const checkFeeCapFn = deps.checkFeeCap || checkFeeCap;
+  const sendAndConfirmFn = deps.sendAndConfirmRobust || sendAndConfirmRobust;
+  const sleepFn = deps.sleep || sleep;
+  const notifyFn = deps.notifyBidaskSolSolSideRebalance || tg.notifyBidaskSolSolSideRebalance;
+  const tryInPlaceFn = deps.tryInPlaceRebalance || tryInPlaceRebalance;
+
+  const baseMint = pos.baseMint;
+  const poolAddress = pos.pool;
+  const positionAddress = pos.position;
+
+  rebalanceInProgress.add(positionAddress);
+  addEntryInProgressMint(baseMint);
+  protectMint(baseMint, "bidask_sol_sol_rebalance");
+  addEntryInProgressPool(poolAddress);
+
+  try {
+    const { pool, baseIsX, unsupported, pairName } = await getPoolInfoFn(poolAddress);
+    if (unsupported) return { triggered: false, success: false, error: "unsupported_pool" };
+
+    const sdkMod = await getDlmmSdkFn();
+    const { StrategyType } = sdkMod;
+    const connection = getConnectionFn();
+    const wallet = getWalletFn();
+    const positionPubKey = new PublicKey(positionAddress);
+    const onChainPos = await fetchPositionOnChain(pool, positionPubKey, wallet.publicKey);
+    if (!onChainPos) {
+      log.warn(`BidAsk SOL sisi SOL ${pair}: posisi tidak ditemukan on-chain`);
+      return { triggered: false, success: false, error: "position_not_found" };
+    }
+
+    let activeBinId = Number(pos.activeBin);
+    if (typeof pool.getActiveBin === "function") {
+      try {
+        const liveActive = await pool.getActiveBin();
+        if (Number.isFinite(Number(liveActive?.binId))) activeBinId = Number(liveActive.binId);
+      } catch {
+        // pakai activeBin dari snapshot exit
+      }
+    }
+    const lowerBinId = Number.isFinite(Number(onChainPos.positionData?.lowerBinId))
+      ? Number(onChainPos.positionData.lowerBinId)
+      : Number(pos.lowerBin);
+    const upperBinId = Number.isFinite(Number(onChainPos.positionData?.upperBinId))
+      ? Number(onChainPos.positionData.upperBinId)
+      : Number(pos.upperBin);
+    if (activeBinId < lowerBinId || activeBinId > upperBinId) {
+      log.info(`BidAsk SOL sisi SOL ${pair}: activeBin ${activeBinId} di luar rentang — tidak ada sisi SOL`);
+      return { triggered: false, skipped: true, reason: "no_sol_bins", decision };
+    }
+
+    const solCheck = extractSolSideLiquidity(onChainPos.positionData, lowerBinId, activeBinId, baseIsX);
+    const fromBinId = solCheck.fromBinId;
+    const toBinId = solCheck.toBinId;
+    if (toBinId < fromBinId || toBinId > upperBinId || (solCheck.hasBinData && !solCheck.hasSolLiquidity)) {
+      log.info(`BidAsk SOL sisi SOL ${pair}: tidak ada likuiditas SOL di bin ${fromBinId}→${toBinId}`);
+      return { triggered: false, skipped: true, reason: "no_sol_liquidity", decision };
+    }
+
+    const feePlan = buildFeePlanFn();
+    const feeCap = checkFeeCapFn(feePlan);
+    if (!feeCap.ok) {
+      const errMsg = `estimasi fee ${feeCap.totalSol.toFixed(6)} SOL > cap ${feeCap.cap} SOL (mode ${feePlan.mode})`;
+      log.warn(`BidAsk SOL sisi SOL ${pair} ditunda: ${errMsg}`);
+      return { triggered: false, success: false, error: errMsg, feeCap: true };
+    }
+
+    const label = pairName || pair;
+    const bidAskStrategyType = StrategyType?.BidAsk ?? 2;
+    const mode = resolveRebalanceMode(deps.rebalanceMode, config.rebalance?.mode);
+    const removeSignatures = [];
+    const addSignatures = [];
+    let targetSolLamports = solCheck.totalSolLamports;
+    let usedInPlace = false;
+    const recordedSolUi = Number(solCheck.totalSolLamports.toString()) / 1e9;
+
+    if (mode === "inplace") {
+      const inplace = await tryInPlaceFn({
+        pool,
+        positionPubKey,
+        positionData: onChainPos.positionData,
+        wallet,
+        connection,
+        feePlan,
+        sendAndConfirmFn,
+        fromBinId,
+        toBinId,
+        activeBinId,
+        binStep: pool?.lbPair?.binStep,
+        token: baseIsX ? "y" : "x",
+        strategyType: bidAskStrategyType,
+        builders: rebalanceBuildersFromSdk(sdkMod),
+        slippagePct: config.entry.activeBinSlippagePct,
+      });
+      if (inplace.ok) {
+        usedInPlace = true;
+        addSignatures.push(...inplace.signatures);
+        targetSolLamports = inplace.depositedRaw;
+        log.info(
+          `🔄 BIDASK SOL SISI SOL ${label} — bentuk ulang di tempat ${recordedSolUi > 0 ? `${recordedSolUi.toFixed(4)} ` : ""}SOL, bin ${fromBinId}→${toBinId} jadi BidAsk`
+        );
+      } else if (inplace.partial) {
+        const partialErr = inplace.error || inplace.reason;
+        log.error(`BidAsk SOL sisi SOL ${label}: rebalance di tempat terputus (${partialErr})`);
+        recordAction(`BIDASK SOL SISI SOL ${label} GAGAL — ${partialErr}`);
+        notifyFn({
+          pair: label,
+          pool: poolAddress,
+          position: positionAddress,
+          fromBinId,
+          toBinId,
+          success: false,
+          error: partialErr,
+        });
+        return {
+          triggered: true,
+          success: false,
+          rebalanceType: "sol_bidask",
+          error: partialErr,
+          fromBinId,
+          toBinId,
+          addSignatures: inplace.signatures,
+        };
+      } else {
+        log.info(
+          `BidAsk SOL sisi SOL ${label}: rebalance di tempat tidak dipakai (${inplace.reason}${inplace.error ? `: ${inplace.error}` : ""}) — tarik lalu setor hanya jumlah yang keluar`
+        );
+      }
+    }
+
+    const maxRetry = Math.max(1, Math.floor(Number(cfg.retry) || 3));
+    let lastErr = null;
+
+    if (!usedInPlace) {
+      log.info(`🔄 BIDASK SOL SISI SOL ${label} — tarik SOL bin ${fromBinId}→${toBinId} lalu add BidAsk`);
+      let solBalanceBeforeLamports = null;
+      if (typeof connection?.getBalance === "function") {
+        try {
+          solBalanceBeforeLamports = await connection.getBalance(wallet.publicKey);
+        } catch {
+          // saldo tidak terbaca: setor jumlah yang keluar dari posisi
+        }
+      }
+      const rawRemoveTxs = await pool.removeLiquidity({
+        user: wallet.publicKey,
+        position: positionPubKey,
+        fromBinId,
+        toBinId,
+        bps: new BN(10000),
+        shouldClaimAndClose: false,
+      });
+      const removeTxs = Array.isArray(rawRemoveTxs) ? rawRemoveTxs : [rawRemoveTxs];
+      for (const tx of removeTxs) {
+        const sent = await sendAndConfirmFn({ connection, tx, signers: [wallet], feePlan, wallet });
+        if (sent?.signature) removeSignatures.push(sent.signature);
+      }
+      let solBalanceAfterLamports = null;
+      if (typeof connection?.getBalance === "function") {
+        try {
+          solBalanceAfterLamports = await connection.getBalance(wallet.publicKey);
+        } catch {
+          // lihat catatan di atas
+        }
+      }
+      const gasReserveSol = Number(config.wallet?.minSolReserve ?? config.entry?.gasReserve ?? 0.05) || 0;
+      const beforeBn =
+        solBalanceBeforeLamports == null ? null : new BN(String(Math.floor(Number(solBalanceBeforeLamports))));
+      const afterBn =
+        solBalanceAfterLamports == null ? null : new BN(String(Math.floor(Number(solBalanceAfterLamports))));
+      targetSolLamports = capRedepositRaw({
+        positionRaw: solCheck.totalSolLamports,
+        balanceBeforeRaw: beforeBn,
+        balanceAfterRaw: afterBn,
+        walletCapRaw: afterBn ? solSpendCapRaw(afterBn, gasReserveSol) : null,
+      });
+
+      let remainingSolRaw = targetSolLamports;
+      let nextFromBinId = fromBinId;
+      for (let attempt = 1; attempt <= maxRetry; attempt++) {
+        try {
+          if (targetSolLamports.lte(new BN(0))) {
+            throw new Error("jumlah SOL yang ditarik dari posisi 0 atau di bawah cadangan gas");
+          }
+          if (remainingSolRaw.lte(new BN(0))) break;
+          let depositToBinId = toBinId;
+          if (attempt > 1 && typeof pool.getActiveBin === "function") {
+            try {
+              const refreshed = await pool.getActiveBin();
+              if (Number.isFinite(Number(refreshed?.binId))) {
+                const maxAllowed = solCheck.activeBinHasBase ? Number(refreshed.binId) - 1 : Number(refreshed.binId);
+                depositToBinId = Math.max(nextFromBinId, Math.min(toBinId, maxAllowed));
+              }
+            } catch {
+              // tetap pakai rentang SOL awal
+            }
+          }
+          const chunks = chunkSolBidAskRanges(nextFromBinId, depositToBinId, remainingSolRaw, DEFAULT_MAX_BINS_PER_TX);
+          if (chunks.length === 0) throw new Error("chunkSolBidAskRanges menghasilkan 0 chunk untuk deposit SOL");
+          for (const chunk of chunks) {
+            const rawAddTxs = await pool.addLiquidityByStrategy({
+              positionPubKey,
+              user: wallet.publicKey,
+              totalXAmount: baseIsX ? new BN(0) : chunk.amountRaw,
+              totalYAmount: baseIsX ? chunk.amountRaw : new BN(0),
+              strategy: {
+                minBinId: chunk.minBinId,
+                maxBinId: chunk.maxBinId,
+                strategyType: bidAskStrategyType,
+              },
+              slippage: config.entry.activeBinSlippagePct,
+            });
+            const addTxs = Array.isArray(rawAddTxs) ? rawAddTxs : [rawAddTxs];
+            for (const tx of addTxs) {
+              const sent = await sendAndConfirmFn({ connection, tx, signers: [wallet], feePlan, wallet });
+              if (sent?.signature) addSignatures.push(sent.signature);
+            }
+            remainingSolRaw = BN.max(new BN(0), remainingSolRaw.sub(chunk.amountRaw));
+            nextFromBinId = chunk.maxBinId + 1;
+          }
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err.message || String(err);
+          log.warn(`BidAsk SOL sisi SOL ${label}: gagal re-deposit BidAsk (${attempt}/${maxRetry}): ${lastErr}`);
+          if (attempt < maxRetry) await sleepFn(2500);
+        }
+      }
+    }
+
+    if (lastErr) {
+      log.error(`BidAsk SOL sisi SOL ${label}: gagal re-deposit setelah ${maxRetry}x (${lastErr})`);
+      recordAction(`BIDASK SOL SISI SOL ${label} GAGAL — ${lastErr}`);
+      notifyFn({
+        pair: label,
+        pool: poolAddress,
+        position: positionAddress,
+        fromBinId,
+        toBinId,
+        success: false,
+        error: lastErr,
+      });
+      return {
+        triggered: true,
+        success: false,
+        rebalanceType: "sol_bidask",
+        error: lastErr,
+        fromBinId,
+        toBinId,
+        removeSignatures,
+      };
+    }
+
+    const depositedSolUi = Number(targetSolLamports.toString()) / 1e9;
+    log.info(
+      `✅ BIDASK SOL SISI SOL ${label} — bin ${fromBinId}→${toBinId} — ${depositedSolUi.toFixed(4)} SOL dibentuk BidAsk`
+    );
+    recordAction(`BIDASK SOL SISI SOL ${label} — ${depositedSolUi.toFixed(4)} SOL, bin ${fromBinId}→${toBinId}`);
+    notifyFn({
+      pair: label,
+      pool: poolAddress,
+      position: positionAddress,
+      fromBinId,
+      toBinId,
+      amountSol: depositedSolUi,
+      success: true,
+    });
+    return {
+      triggered: true,
+      success: true,
+      rebalanceType: "sol_bidask",
+      fromBinId,
+      toBinId,
+      amountSol: depositedSolUi,
+      removeSignatures,
+      addSignatures,
+    };
+  } catch (err) {
+    const msg = err.message || String(err);
+    log.error(`BidAsk SOL sisi SOL ${pair} error: ${msg}`);
+    recordAction(`BIDASK SOL SISI SOL ${pair} GAGAL — ${msg}`);
+    notifyFn({ pair, pool: poolAddress, position: positionAddress, success: false, error: msg });
+    return { triggered: true, success: false, rebalanceType: "sol_bidask", error: msg };
+  } finally {
+    removeEntryInProgressMint(baseMint);
+    releaseMint(baseMint, "bidask_sol_sol_rebalance");
     removeEntryInProgressPool(poolAddress);
     rebalanceInProgress.delete(positionAddress);
   }
