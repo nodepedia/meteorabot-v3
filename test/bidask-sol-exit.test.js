@@ -23,8 +23,12 @@ const {
   noteBidaskSolOpenOffset,
   getSpotReentryCount,
   setExitWarmupStartedAt,
+  setSpotReentryCount,
+  resolveExitWarmupStartedAt,
 } = await import("../src/state/positions.js");
-const { evaluateExit, isExitWarmup } = await import("../src/exit/rules.js");
+const { evaluateExit, isExitWarmup, indicatorAction } = await import("../src/exit/rules.js");
+const { armIndicatorTrailing } = await import("../src/state/trailing.js");
+const { handleClose } = await import("../src/exit/close.js");
 const { processTrailing } = await import("../src/exit/trailing.js");
 const { shouldReenter } = await import("../src/exit/spot-reentry.js");
 const {
@@ -85,7 +89,30 @@ function risingCandles(n = 30) {
   return closesToCandles(closes);
 }
 
-test("aturan bidask:sol: stop loss -40, trailing 10, warmup 30, OOR kiri/indikator/yield/bounce mati", () => {
+function fallingCandles(n = 30) {
+  const closes = Array.from({ length: n }, (_, i) => n - i);
+  closes.push(n + 50);
+  return closesToCandles(closes);
+}
+
+function signalCandles() {
+  return Array.from({ length: 41 }, (_, i) => ({
+    time: 1_700_000_000 + i * 900,
+    open: 1.1 ** i,
+    high: 1.1 ** (i + 1),
+    low: 1.1 ** i,
+    close: 1.1 ** (i + 0.9),
+    volume: 1,
+  }));
+}
+
+function patchTracked(fields) {
+  const state = readState();
+  Object.assign(state.positions[POS], fields);
+  writeState(state);
+}
+
+test("aturan bidask:sol: stop loss -40, trailing 10, warmup 30, indikator nyala, OOR kiri/yield/bounce mati", () => {
   const rules = config.rulesFor("bidask:sol");
   assert.equal(rules.enableStopLoss, true);
   assert.equal(rules.stopLossPct, -40);
@@ -94,7 +121,13 @@ test("aturan bidask:sol: stop loss -40, trailing 10, warmup 30, OOR kiri/indikat
   assert.equal(rules.trailingDropRatioPct, 8);
   assert.equal(rules.trailingDropPct, 1.5);
   assert.equal(rules.enableOOR, false);
-  assert.equal(rules.enableIndicators, false);
+  assert.equal(rules.enableIndicators, true);
+  assert.equal(rules.rsiPeriod, 2);
+  assert.equal(rules.macdFast, 12);
+  assert.equal(rules.macdSlow, 26);
+  assert.equal(rules.macdSignal, 9);
+  assert.equal(rules.bbPeriod, 20);
+  assert.equal(rules.bbStddev, 2);
   assert.equal(rules.exitWarmupMinutes, 30);
   assert.equal(rules.yieldCloseBelowPct, 0);
   assert.equal(rules.enableBounceRecovery, false);
@@ -180,17 +213,12 @@ test("OOR kanan bidask:sol memakai timer dan cooldown yang sama dengan spot", ()
   assert.equal(fast.reason, "oor_kanan");
 });
 
-test("OOR kiri tetap mati dan indikator diabaikan", () => {
+test("OOR kiri tetap mati", () => {
   resetState();
   trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
   const left = evaluateExit(makePos({ activeBin: 90 }), null);
   assert.equal(left.action, "hold");
   assert.notEqual(left.reason, "oor_kiri");
-
-  const candles = risingCandles();
-  const signaled = evaluateExit(makePos({ activeBin: 120, pnlPct: 1 }), candles);
-  assert.equal(signaled.action, "hold");
-  assert.equal(signaled.reason, "indicators_disabled");
 });
 
 test("range re-entry: lebar sama, offset dikenal, fallback berakhir di bin aktif, span spot ditolak", () => {
@@ -464,4 +492,175 @@ test("telegram re-entry bidask:sol menyebut SOL-only", () => {
   });
   assert.match(spot, /Akan re-entry \(2\/50\)/);
   assert.doesNotMatch(spot, /bidask:sol/);
+});
+
+const TIME_LIMIT_MSG = "OOR kanan — batas waktu re-entry 3j tercapai, exit + swap ke SOL";
+const HOUR_MS = 3_600_000;
+
+function armBidask() {
+  trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
+  recordTrackedRange(POS, 100, 140);
+  return makePos();
+}
+
+test("indikator bidask:sol meng-arm trailing setelah warmup dan menahan saat warmup", () => {
+  resetState();
+  trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
+  const rules = config.rulesFor("bidask:sol");
+  const now = Date.now();
+  const started = now - 10 * 60 * 1000;
+  setExitWarmupStartedAt(POS, started);
+  assert.equal(isExitWarmup(resolveExitWarmupStartedAt(getTrackedPosition(POS)), rules.exitWarmupMinutes, now), true);
+
+  const held = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: true, now });
+  assert.equal(held.action, "hold");
+  assert.equal(held.reason, "warmup");
+  assert.equal(getTrackedPosition(POS).trailingArmedBy, null);
+
+  assert.deepEqual(indicatorAction("bidask:sol", "rsi_macd", { indicatorExit: "immediate" }), {
+    action: "arm_indicator_trailing",
+    reason: "rsi_macd",
+  });
+
+  const savedPeriod = rules.rsiPeriod;
+  rules.rsiPeriod = 500;
+  try {
+    const quiet = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: false, now });
+    assert.equal(quiet.action, "hold");
+    assert.equal(quiet.reason, "no_signal");
+  } finally {
+    rules.rsiPeriod = savedPeriod;
+  }
+
+  patchTracked({ exitWarmupStartedAt: now - rules.exitWarmupMinutes * 60 * 1000 });
+  assert.equal(isExitWarmup(resolveExitWarmupStartedAt(getTrackedPosition(POS)), rules.exitWarmupMinutes, now), false);
+  const armed = evaluateExit(makePos({ pnlPct: 4 }), signalCandles(), { warmup: false, now });
+  assert.equal(armed.action, "arm_indicator_trailing");
+  assert.match(armed.reason, /^rsi_(macd|bb)$/);
+  armIndicatorTrailing(POS, armed.reason, 4);
+  assert.equal(getTrackedPosition(POS).trailingActive, true);
+  assert.equal(getTrackedPosition(POS).trailingArmedBy, armed.reason);
+});
+
+test("bidask:sol di bawah batas waktu tetap re-entry", async () => {
+  resetState();
+  const now = Date.now();
+  const pos = armBidask();
+  patchTracked({ exitWarmupStartedAt: now - HOUR_MS, firstSeenAt: now });
+  const plan = await planBidaskSolOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => fallingCandles(),
+  });
+  assert.equal(plan.willReenter, true);
+  assert.equal(canBidaskSolReenter(pos, "oor_kanan", { now }), true);
+
+  const opened = await handleBidaskSolOorKananReentry(pos, {
+    dryRun: true,
+    getPoolInfo: async () => ({
+      pool: {
+        async getActiveBin() {
+          return { binId: 500 };
+        },
+      },
+      baseMint: MINT,
+      baseIsX: true,
+      unsupported: false,
+    }),
+    notifyBidaskSolReentry: async () => {},
+    notifyBidaskSolReentryFailed: async () => {},
+  });
+  assert.equal(opened.success, true);
+  assert.equal(opened.dryRun, true);
+  assert.equal(opened.mode, "bidask:sol");
+});
+
+test("bidask:sol tepat/lewat batas waktu: tutup + swap ke SOL, tanpa re-entry", async () => {
+  resetState();
+  const now = Date.now();
+  const pos = armBidask();
+  patchTracked({ exitWarmupStartedAt: now - 3 * HOUR_MS, firstSeenAt: now });
+  const logs = [];
+  let candleCalls = 0;
+  const plan = await planBidaskSolOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => {
+      candleCalls += 1;
+      return risingCandles();
+    },
+    log: { info: (m) => logs.push(m), warn: () => {} },
+  });
+  assert.equal(candleCalls, 0);
+  assert.equal(plan.willReenter, false);
+  assert.equal(plan.reentrySkipReason, TIME_LIMIT_MSG);
+  assert.match(logs[0], /bidask:sol SOL-only OOR kanan — batas waktu re-entry 3j/);
+
+  const swaps = [];
+  const notices = [];
+  const closeRes = await handleClose(pos, "oor_kanan", {
+    skipDeactivate: false,
+    willReenter: false,
+    reentrySkipReason: plan.reentrySkipReason,
+    deps: {
+      closePosition: async () => ({ success: true, baseMint: MINT, rewardMints: [] }),
+      waitClosedPositionPnl: async () => 2,
+      deactivatePool: () => {},
+      notifyClose: (...args) => notices.push(buildCloseMessage(...args)),
+      swapDeps: {
+        getProtectedMints: async () => new Map(),
+        getTokenBalance: async () => 3.25,
+        getTokenValueUsd: async () => 4,
+        swapToSol: async (mint, amount) => {
+          swaps.push([mint, amount]);
+          return { success: true };
+        },
+      },
+    },
+  });
+  assert.equal(closeRes.success, true);
+  assert.deepEqual(swaps, [[MINT, 3.25]]);
+  assert.match(notices[0], /Tidak re-entry bidask:sol SOL-only: OOR kanan — batas waktu re-entry 3j tercapai/);
+
+  let poolCalls = 0;
+  const skipped = await handleBidaskSolOorKananReentry(pos, {
+    getPoolInfo: async () => {
+      poolCalls += 1;
+      return {};
+    },
+  });
+  assert.deepEqual(skipped, { skipped: true });
+  assert.equal(poolCalls, 0);
+});
+
+test("bidask:sol batas waktu 0 tetap re-entry, batas jumlah tetap jalan", async () => {
+  resetState();
+  const now = Date.now();
+  const pos = armBidask();
+  patchTracked({ exitWarmupStartedAt: null, firstSeenAt: now - 4 * HOUR_MS });
+  const adopted = await planBidaskSolOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => fallingCandles(),
+  });
+  assert.equal(adopted.willReenter, false);
+  assert.equal(adopted.reentrySkipReason, TIME_LIMIT_MSG);
+
+  const saved = config.spotReentry.maxHours;
+  config.spotReentry.maxHours = 0;
+  try {
+    const unlimited = await planBidaskSolOorKananReentry(pos, "oor_kanan", {
+      now,
+      fetchCandles: async () => fallingCandles(),
+    });
+    assert.equal(unlimited.willReenter, true);
+  } finally {
+    config.spotReentry.maxHours = saved;
+  }
+
+  patchTracked({ exitWarmupStartedAt: now - 10 * 60 * 1000, firstSeenAt: now });
+  setSpotReentryCount(POS, config.spotReentry.maxReentries);
+  const counted = await planBidaskSolOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => fallingCandles(),
+  });
+  assert.equal(counted.willReenter, false);
+  assert.equal(counted.reentrySkipReason, "max re-entry tercapai");
 });

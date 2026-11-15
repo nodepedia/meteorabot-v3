@@ -13,20 +13,23 @@ process.env.IMPORTANT_LOG_FILE = path.join(TMP, "important.log");
 process.env.IMPORTANT_EVENTS_FILE = path.join(TMP, "important-events.jsonl");
 
 const { Keypair } = await import("@solana/web3.js");
-const { buildConfig } = await import("../src/config/index.js");
+const { buildConfig, default: config } = await import("../src/config/index.js");
 const { readState, writeState } = await import("../src/state/store.js");
 const {
   trackPosition,
   getTrackedPosition,
   recordTrackedRange,
   setEntrySizeSol,
+  setSpotReentryCount,
   setExitWarmupStartedAt,
   resolveExitWarmupStartedAt,
 } = await import("../src/state/positions.js");
 const { isExitWarmup } = await import("../src/exit/rules.js");
+const { handleClose } = await import("../src/exit/close.js");
 const {
   latestClosedRsi,
   spotReentryRsiSkipReason,
+  reentryTimeLimitSkipReason,
   planSpotOorKananReentry,
   handleSpotOorKananReentry,
   clearSpotReentryCooldown,
@@ -287,4 +290,157 @@ test("candle kosong, gagal, atau kurang data: tetap re-entry dan dicatat", async
   });
   assert.equal(short.willReenter, true);
   assert.match(shortLog[0], /tidak cukup data/);
+});
+
+const TIME_LIMIT_MSG = "OOR kanan — batas waktu re-entry 3j tercapai, exit + swap ke SOL";
+const HOUR_MS = 3_600_000;
+
+test("SPOT_REENTRY_MAX_HOURS default 3 jam, 0 tanpa batas", () => {
+  assert.equal(buildConfig({}).spotReentry.maxHours, 3);
+  assert.equal(buildConfig({ SPOT_REENTRY_MAX_HOURS: "0" }).spotReentry.maxHours, 0);
+  assert.equal(buildConfig({ SPOT_REENTRY_MAX_HOURS: "5" }).spotReentry.maxHours, 5);
+  const now = 1_700_000_000_000;
+  const start = now - 3 * HOUR_MS;
+  assert.equal(reentryTimeLimitSkipReason(start + 1, { maxHours: 3, now }), null);
+  assert.equal(reentryTimeLimitSkipReason(start, { maxHours: 3, now }), TIME_LIMIT_MSG);
+  assert.equal(reentryTimeLimitSkipReason(start - 1, { maxHours: 3, now }), TIME_LIMIT_MSG);
+  assert.equal(reentryTimeLimitSkipReason(start - 10 * HOUR_MS, { maxHours: 0, now }), null);
+  assert.equal(reentryTimeLimitSkipReason(null, { maxHours: 3, now }), null);
+});
+
+test("rantai di bawah 3 jam tetap re-entry", async () => {
+  resetState();
+  const now = Date.now();
+  const pos = armSpot();
+  patchTracked(POS, { exitWarmupStartedAt: now - 3 * HOUR_MS + 60_000, firstSeenAt: now });
+  const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => fallingCandles(),
+  });
+  assert.equal(plan.willReenter, true);
+  assert.equal(plan.reentrySkipReason, null);
+
+  const opened = await openReentry(pos);
+  assert.equal(opened.success, true);
+  assert.equal(getTrackedPosition(opened.position).exitWarmupStartedAt, now - 3 * HOUR_MS + 60_000);
+});
+
+test("rantai tepat/lewat 3 jam: tutup + swap seluruh token ke SOL, tanpa re-entry", async () => {
+  resetState();
+  const now = Date.now();
+  const started = now - 3 * HOUR_MS;
+  const pos = armSpot();
+  // Posisi re-entry ini baru terlihat, tetapi awal rantai sudah 3 jam.
+  patchTracked(POS, { exitWarmupStartedAt: started, firstSeenAt: now });
+  const logs = [];
+  let candleCalls = 0;
+  const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => {
+      candleCalls += 1;
+      return risingCandles();
+    },
+    log: { info: (m) => logs.push(m), warn: () => {} },
+  });
+  assert.equal(candleCalls, 0);
+  assert.equal(plan.willReenter, false);
+  assert.equal(plan.reentrySkipReason, TIME_LIMIT_MSG);
+  assert.match(logs[0], new RegExp(TIME_LIMIT_MSG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+  const swaps = [];
+  const notices = [];
+  const deactivated = [];
+  const closeRes = await handleClose(pos, "oor_kanan", {
+    skipDeactivate: plan.willReenter,
+    willReenter: plan.willReenter,
+    reentrySkipReason: plan.reentrySkipReason,
+    nextCount: 2,
+    max: config.spotReentry.maxReentries,
+    deps: {
+      closePosition: async () => ({ success: true, baseMint: MINT, rewardMints: [] }),
+      waitClosedPositionPnl: async () => 1.5,
+      deactivatePool: (p) => deactivated.push(p),
+      notifyClose: (...args) => notices.push(buildCloseMessage(...args)),
+      swapDeps: {
+        getProtectedMints: async () => new Map(),
+        getTokenBalance: async () => 9.5,
+        getTokenValueUsd: async () => 5,
+        swapToSol: async (mint, amount) => {
+          swaps.push([mint, amount]);
+          return { success: true };
+        },
+      },
+    },
+  });
+  assert.equal(closeRes.success, true);
+  assert.equal(plan.willReenter, false);
+  assert.deepEqual(swaps, [[MINT, 9.5]]);
+  assert.deepEqual(deactivated, [POOL]);
+  assert.match(notices[0], /Tidak re-entry: OOR kanan — batas waktu re-entry 3j tercapai, exit \+ swap ke SOL/);
+
+  let poolCalls = 0;
+  const skipped = await handleSpotOorKananReentry(pos, {
+    getPoolInfo: async () => {
+      poolCalls += 1;
+      return {};
+    },
+  });
+  assert.deepEqual(skipped, { skipped: true });
+  assert.equal(poolCalls, 0);
+});
+
+test("posisi diadopsi tanpa awal rantai memakai waktu pertama terlihat", async () => {
+  resetState();
+  const now = Date.now();
+  const old = armSpot();
+  patchTracked(POS, { exitWarmupStartedAt: null, firstSeenAt: now - 4 * HOUR_MS });
+  const blocked = await planSpotOorKananReentry(old, "oor_kanan", {
+    now,
+    fetchCandles: async () => risingCandles(),
+  });
+  assert.equal(blocked.willReenter, false);
+  assert.equal(blocked.reentrySkipReason, TIME_LIMIT_MSG);
+
+  resetState();
+  const young = armSpot();
+  patchTracked(POS, { exitWarmupStartedAt: null, firstSeenAt: now - HOUR_MS });
+  const open = await planSpotOorKananReentry(young, "oor_kanan", {
+    now,
+    fetchCandles: async () => fallingCandles(),
+  });
+  assert.equal(open.willReenter, true);
+  assert.equal(resolveExitWarmupStartedAt(getTrackedPosition(POS)), now - HOUR_MS);
+});
+
+test("SPOT_REENTRY_MAX_HOURS 0 = tanpa batas waktu", async () => {
+  resetState();
+  const saved = config.spotReentry.maxHours;
+  config.spotReentry.maxHours = 0;
+  try {
+    const now = Date.now();
+    const pos = armSpot();
+    patchTracked(POS, { exitWarmupStartedAt: now - 48 * HOUR_MS, firstSeenAt: now });
+    const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+      now,
+      fetchCandles: async () => fallingCandles(),
+    });
+    assert.equal(plan.willReenter, true);
+    assert.equal(plan.reentrySkipReason, null);
+  } finally {
+    config.spotReentry.maxHours = saved;
+  }
+});
+
+test("batas jumlah re-entry tetap menghentikan rantai yang masih muda", async () => {
+  resetState();
+  const now = Date.now();
+  const pos = armSpot();
+  patchTracked(POS, { exitWarmupStartedAt: now - 10 * 60 * 1000, firstSeenAt: now });
+  setSpotReentryCount(POS, config.spotReentry.maxReentries);
+  const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => fallingCandles(),
+  });
+  assert.equal(plan.willReenter, false);
+  assert.equal(plan.reentrySkipReason, "max re-entry tercapai");
 });
