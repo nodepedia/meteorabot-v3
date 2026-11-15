@@ -120,16 +120,52 @@ export function reentryBinRange(activeBinId, span) {
   };
 }
 
+function formatReentryHours(hours) {
+  const n = Number(hours);
+  const text = Number.isInteger(n) ? String(n) : String(Math.round(n * 1000) / 1000);
+  return `${text}j`;
+}
+
+// Pure: alasan skip bila umur rantai sudah mencapai SPOT_REENTRY_MAX_HOURS.
+// 0 / bukan angka = tanpa batas. Waktu mulai kosong = belum bisa diukur.
+// Null = masih boleh re-entry.
+export function reentryTimeLimitSkipReason(startedAt, { maxHours = 0, now = Date.now() } = {}) {
+  const hours = Number(maxHours);
+  if (!Number.isFinite(hours) || hours <= 0) return null;
+  const start = Number(startedAt);
+  if (!Number.isFinite(start) || start <= 0) return null;
+  const at = Number(now);
+  const clock = Number.isFinite(at) ? at : Date.now();
+  if (clock - start < hours * 3_600_000) return null;
+  return `OOR kanan — batas waktu re-entry ${formatReentryHours(hours)} tercapai, exit + swap ke SOL`;
+}
+
+function reentryChainStartedAt(tracked) {
+  return resolveExitWarmupStartedAt(tracked);
+}
+
+// Catat alasan batas waktu ke log (dan hook tes). Alasan lain tidak disentuh.
+export function noteReentryTimeSkip(pos, reason, opts = {}) {
+  if (!reason || !String(reason).includes("batas waktu re-entry")) return;
+  const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
+  const logInfo = opts.log?.info || ((msg) => log.info(msg));
+  const tag = pos?.mode === "bidask:sol" ? "bidask:sol SOL-only " : "";
+  logInfo(`${pair}: ${tag}${reason}`);
+}
+
 /**
  * Pure: apakah posisi yang ditutup memenuhi syarat re-entry OOR kanan?
+ * Batas jumlah dicek dulu, lalu batas waktu rantai. chainStartedAt kosong
+ * = waktu belum terukur, batas waktu tidak menahan.
  */
-export function shouldReenter({ mode, reason, span, count, cfg }) {
+export function shouldReenter({ mode, reason, span, count, cfg, chainStartedAt = null, now = Date.now() }) {
   if (!cfg?.enabled) return false;
   if (!(cfg.sizeSol > 0)) return false;
   if (mode !== "spot") return false;
   if (reason !== "oor_kanan") return false;
   if (!Number.isFinite(span) || span <= 0) return false;
   if (count >= cfg.maxReentries) return false;
+  if (reentryTimeLimitSkipReason(chainStartedAt, { maxHours: cfg.maxHours, now })) return false;
   return true;
 }
 
@@ -152,7 +188,7 @@ export function resolveSpotReentrySizeSol(tracked, poolAddress) {
  * Dipakai agar handleClose tidak menandai pool `#` di pool.txt saat kita
  * justru mau langsung membuka posisi baru di pool yang sama.
  */
-export function canSpotReenter(pos, reason) {
+export function canSpotReenter(pos, reason, opts = {}) {
   const tracked = getTrackedPosition(pos.position);
   const span = tracked?.binSpan || pos.binSpan || 0;
   const count = getSpotReentryCount(pos.position);
@@ -164,6 +200,8 @@ export function canSpotReenter(pos, reason) {
     span,
     count,
     cfg,
+    chainStartedAt: reentryChainStartedAt(tracked),
+    now: opts.now,
   });
 }
 
@@ -172,7 +210,7 @@ export function canSpotReenter(pos, reason) {
  * Null bila syarat terpenuhi, atau ini bukan spot + oor_kanan.
  * Urutan cek sama dengan shouldReenter. Hanya untuk teks alert.
  */
-export function spotReentrySkipReason(pos, reason) {
+export function spotReentrySkipReason(pos, reason, opts = {}) {
   if (pos?.mode !== "spot" || reason !== "oor_kanan") return null;
   const tracked = getTrackedPosition(pos.position);
   const span = tracked?.binSpan || pos.binSpan || 0;
@@ -183,6 +221,11 @@ export function spotReentrySkipReason(pos, reason) {
   if (!(cfg.sizeSol > 0)) return "ukuran re-entry kosong";
   if (!Number.isFinite(span) || span <= 0) return "span bin kosong";
   if (count >= cfg.maxReentries) return "max re-entry tercapai";
+  const timeSkip = reentryTimeLimitSkipReason(reentryChainStartedAt(tracked), {
+    maxHours: cfg.maxHours,
+    now: opts.now,
+  });
+  if (timeSkip) return timeSkip;
   return null;
 }
 
@@ -251,10 +294,12 @@ export async function spotReentryOverextendedSkipReason(pos, opts = {}) {
 
 // Keputusan re-entry OOR kanan sebelum close. willReenter false = tutup biasa.
 export async function planSpotOorKananReentry(pos, reason, opts = {}) {
-  if (!canSpotReenter(pos, reason)) {
+  if (!canSpotReenter(pos, reason, opts)) {
+    const reentrySkipReason = spotReentrySkipReason(pos, reason, opts);
+    noteReentryTimeSkip(pos, reentrySkipReason, opts);
     return {
       willReenter: false,
-      reentrySkipReason: spotReentrySkipReason(pos, reason),
+      reentrySkipReason,
     };
   }
   const rsiSkip = await spotReentryOverextendedSkipReason(pos, opts);
@@ -278,8 +323,10 @@ export async function planSpotOorKananReentry(pos, reason, opts = {}) {
  *   Deposit SOL satu sisi hanya di [minBinId .. activeBinId], bin di atas activeBin kosong.
  * - Counter `spotReentryCount` dan `entrySizeSol` diteruskan ke posisi baru (maks SPOT_REENTRY_MAX).
  * - Waktu mulai warmup exit diwariskan dari posisi yang diganti (rantai dari entry pertama).
+ *   Umur batas SPOT_REENTRY_MAX_HOURS diukur dari waktu yang sama.
  * - Cooldown antar loop per pool dijaga sesuai SPOT_REENTRY_COOLDOWN_SEC (120s normal / 60s saat vol 5m > $100k).
- * - Gerbang RSI (SPOT_REENTRY_MAX_RSI) diputuskan di planSpotOorKananReentry, sebelum close.
+ * - Gerbang RSI (SPOT_REENTRY_MAX_RSI) dan batas waktu rantai diputuskan di
+ *   planSpotOorKananReentry, sebelum close. Lewat batas = tutup biasa + swap ke SOL.
  */
 export async function handleSpotOorKananReentry(pos, opts = {}) {
   const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;

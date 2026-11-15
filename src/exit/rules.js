@@ -127,6 +127,8 @@ export function evaluateExit(
 
     // Cooldown re-entry OOR kanan: spot dan bidask:sol saja. Mode lain tidak.
     // Detiknya sama (spotReentry); pencatat waktunya terpisah per mode.
+    // Batas waktu rantai (SPOT_REENTRY_MAX_HOURS) tidak menahan close di sini.
+    // Plan re-entry yang memutuskan: umur cukup → exit final + swap, tanpa buka lagi.
     if ((position.mode === "spot" || position.mode === "bidask:sol") && position.pool) {
       const cooldownRemMs =
         position.mode === "bidask:sol"

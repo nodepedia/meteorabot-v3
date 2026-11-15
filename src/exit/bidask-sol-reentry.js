@@ -11,7 +11,12 @@ import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { bidaskSolReentryBinRange, openBidaskSolPosition } from "../meteora/open-sol-position.js";
 import { getPoolInfo } from "../entry/pool-info.js";
-import { getEffectiveSpotReentryCooldownSec, spotReentryOverextendedSkipReason } from "./spot-reentry.js";
+import {
+  getEffectiveSpotReentryCooldownSec,
+  noteReentryTimeSkip,
+  reentryTimeLimitSkipReason,
+  spotReentryOverextendedSkipReason,
+} from "./spot-reentry.js";
 import {
   trackPosition,
   getTrackedPosition,
@@ -89,7 +94,17 @@ export function readBidaskSolOpenOffset(tracked) {
  * Spot dan mode lain tidak lolos di sini. Ukuran = SOL di posisi, bukan size entry.
  * Span harus > 0 dan tetap di bawah SPOT_MIN_BINS.
  */
-export function shouldBidaskSolReenter({ mode, reason, span, count, sizeSol, cfg, maxSpan }) {
+export function shouldBidaskSolReenter({
+  mode,
+  reason,
+  span,
+  count,
+  sizeSol,
+  cfg,
+  maxSpan,
+  chainStartedAt = null,
+  now = Date.now(),
+}) {
   if (mode !== "bidask:sol") return false;
   if (reason !== "oor_kanan") return false;
   if (!cfg?.enabled) return false;
@@ -99,10 +114,11 @@ export function shouldBidaskSolReenter({ mode, reason, span, count, sizeSol, cfg
   if (!Number.isFinite(width) || width <= 0) return false;
   if (Number.isFinite(cap) && width >= cap) return false;
   if (count >= cfg.maxReentries) return false;
+  if (reentryTimeLimitSkipReason(chainStartedAt, { maxHours: cfg.maxHours, now })) return false;
   return true;
 }
 
-export function canBidaskSolReenter(pos, reason) {
+export function canBidaskSolReenter(pos, reason, opts = {}) {
   const tracked = getTrackedPosition(pos?.position);
   const span = Number(tracked?.binSpan ?? pos?.binSpan ?? 0);
   const count = getSpotReentryCount(pos?.position);
@@ -115,10 +131,12 @@ export function canBidaskSolReenter(pos, reason) {
     sizeSol,
     cfg: config.spotReentry,
     maxSpan: config.spotMinBins,
+    chainStartedAt: resolveExitWarmupStartedAt(tracked),
+    now: opts.now,
   });
 }
 
-export function bidaskSolReentrySkipReason(pos, reason) {
+export function bidaskSolReentrySkipReason(pos, reason, opts = {}) {
   if (pos?.mode !== "bidask:sol" || reason !== "oor_kanan") return null;
   const tracked = getTrackedPosition(pos.position);
   const span = Number(tracked?.binSpan ?? pos?.binSpan ?? 0);
@@ -131,16 +149,23 @@ export function bidaskSolReentrySkipReason(pos, reason) {
   if (!Number.isFinite(span) || span <= 0) return "span bin kosong";
   if (span >= cap) return "span bin mencapai batas spot";
   if (count >= cfg.maxReentries) return "max re-entry tercapai";
+  const timeSkip = reentryTimeLimitSkipReason(resolveExitWarmupStartedAt(tracked), {
+    maxHours: cfg.maxHours,
+    now: opts.now,
+  });
+  if (timeSkip) return timeSkip;
   return null;
 }
 
 // Keputusan sebelum close. RSI memakai gerbang yang sama dengan spot
 // (SPOT_REENTRY_MAX_RSI, candle 15m yang sudah tutup). Candle gagal = tetap re-entry.
 export async function planBidaskSolOorKananReentry(pos, reason, opts = {}) {
-  if (!canBidaskSolReenter(pos, reason)) {
+  if (!canBidaskSolReenter(pos, reason, opts)) {
+    const reentrySkipReason = bidaskSolReentrySkipReason(pos, reason, opts);
+    noteReentryTimeSkip(pos, reentrySkipReason, opts);
     return {
       willReenter: false,
-      reentrySkipReason: bidaskSolReentrySkipReason(pos, reason),
+      reentrySkipReason,
     };
   }
   const rsiSkip = await spotReentryOverextendedSkipReason(pos, opts);

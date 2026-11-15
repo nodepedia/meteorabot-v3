@@ -14,8 +14,10 @@ function finiteNonNegInt(value) {
   return Math.floor(n);
 }
 
-// Waktu mulai warmup exit. Re-entry OOR kanan mengisi exitWarmupStartedAt;
-// entry baru (field kosong) tetap memakai firstSeenAt.
+// Awal rantai re-entry OOR kanan, sekaligus waktu mulai warmup exit.
+// Re-entry mengisi exitWarmupStartedAt. Entry baru atau posisi yang baru
+// diadopsi (field kosong) memakai firstSeenAt. Batas SPOT_REENTRY_MAX_HOURS
+// diukur dari waktu ini.
 export function resolveExitWarmupStartedAt(tracked) {
   return finitePositive(tracked?.exitWarmupStartedAt) ?? finitePositive(tracked?.firstSeenAt);
 }
@@ -41,8 +43,8 @@ export function trackPosition(
       pair: pair || "",
       baseMint: baseMint || "",
       firstSeenAt: Date.now(),
-      // Re-entry OOR kanan: waktu mulai warmup posisi yang diganti. Kosong =
-      // entry baru, warmup dihitung dari firstSeenAt. Hanya diisi sekali.
+      // Re-entry OOR kanan: awal rantai (warmup + batas waktu). Kosong = entry
+      // baru atau posisi yang baru diadopsi, dihitung dari firstSeenAt. Hanya diisi sekali.
       exitWarmupStartedAt: finitePositive(extra?.exitWarmupStartedAt),
       // Offset range terhadap bin aktif saat pertama terlihat di dalam range
       // (atau saat re-entry membuka posisi). null + noted = tidak diketahui.

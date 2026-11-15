@@ -34,13 +34,15 @@ export function buildConfig(e = {}) {
   });
 
   // SOL-only yang dibuka manual (classifyMode). Stop loss -40, trailing
-  // trigger 10, warmup 30 menit (trailing saja). OOR kiri, indikator, yield,
-  // dan bounce mati. OOR kanan ber-timer seperti spot, lalu re-entry
-  // bidask:sol (bukan entry pool.txt, bukan rebalance).
+  // trigger 10, warmup 30 menit (menahan trailing dan arm indikator).
+  // Indikator menyala setelah warmup dan meng-arm trailing seperti
+  // bidask:double/token, bukan close langsung seperti spot. OOR kiri,
+  // yield, dan bounce mati. OOR kanan ber-timer seperti spot, lalu re-entry
+  // bidask:sol (bukan entry pool.txt).
   const bidaskSol = modeRules(e, "BIDASK_SOL", {
     enableStopLoss: true,
     stopLossPct: -40,
-    enableIndicators: false,
+    enableIndicators: true,
     exitWarmupMinutes: 30,
     trailingTakeProfit: true,
     oorKananMinutes: 2,
@@ -97,6 +99,9 @@ export function buildConfig(e = {}) {
   const spotReentry = {
     enabled: bool(e.SPOT_REENTRY_ENABLED, true),
     maxReentries: Math.max(0, Math.floor(num(e.SPOT_REENTRY_MAX, 50))),
+    // 0 = tanpa batas waktu. Dipakai spot dan bidask:sol. Umur dihitung dari
+    // entry pertama rantai (waktu warmup yang diwariskan, atau firstSeenAt).
+    maxHours: Math.max(0, num(e.SPOT_REENTRY_MAX_HOURS, 3)),
     cooldownSec: Math.max(0, num(e.SPOT_REENTRY_COOLDOWN_SEC, spot.oorKananMinutes * 60)),
     fastCooldownSec: Math.max(0, num(e.SPOT_REENTRY_FAST_COOLDOWN_SEC, spot.oorKananFastMinutes * 60)),
     highVol5mUsd: Math.max(0, num(e.SPOT_OOR_KANAN_HIGH_VOL_5M_USD, spot.oorKananHighVol5mUsd)),
