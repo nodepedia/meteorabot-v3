@@ -149,7 +149,7 @@ test("keyboard: rebalance disembunyikan untuk bidask:token, konfirmasi hanya men
   const reb = buildStatusKeyboard(positions, { pendingKey: rebKey, pendingAction: "rebalance" });
   assert.deepEqual(
     reb.inline_keyboard[0].map((button) => button.text),
-    ["🪙 Sisi token Macca", "◎ Sisi SOL Macca", "✖️ Batal"]
+    ["Token", "SOL", "Batal"]
   );
   assert.equal(decodeCallbackData(reb.inline_keyboard[0][0].callback_data).side, "token");
   assert.equal(decodeCallbackData(reb.inline_keyboard[0][1].callback_data).side, "sol");
@@ -187,16 +187,15 @@ test("keyboard: nama pair lebih dari 10 karakter satu tombol per baris", () => {
 
   const key = decodeCallbackData(kb.inline_keyboard[0][0].callback_data).key;
   const reb = buildStatusKeyboard(positions, { pendingKey: key, pendingAction: "rebalance" });
-  assert.equal(reb.inline_keyboard[0].length, 1);
-  assert.equal(reb.inline_keyboard[0][0].text, `🪙 Sisi token ${symbol}`);
+  assert.equal(reb.inline_keyboard[0].length, 3);
+  assert.deepEqual(
+    reb.inline_keyboard[0].map((button) => button.text),
+    ["Token", "SOL", "Batal"]
+  );
   assert.equal(decodeCallbackData(reb.inline_keyboard[0][0].callback_data).side, "token");
-  assert.equal(reb.inline_keyboard[1].length, 1);
-  assert.equal(reb.inline_keyboard[1][0].text, `◎ Sisi SOL ${symbol}`);
-  assert.equal(decodeCallbackData(reb.inline_keyboard[1][0].callback_data).side, "sol");
-  assert.equal(reb.inline_keyboard[2].length, 1);
-  assert.equal(reb.inline_keyboard[2][0].text, "✖️ Batal");
-  assert.equal(decodeCallbackData(reb.inline_keyboard[2][0].callback_data).code, "x");
-  assert.deepEqual(reb.inline_keyboard[3], kb.inline_keyboard[2]);
+  assert.equal(decodeCallbackData(reb.inline_keyboard[0][1].callback_data).side, "sol");
+  assert.equal(decodeCallbackData(reb.inline_keyboard[0][2].callback_data).code, "x");
+  assert.deepEqual(reb.inline_keyboard[1], kb.inline_keyboard[2]);
 
   const zap = buildStatusKeyboard(positions, { pendingKey: key, pendingAction: "zap_out" });
   assert.equal(zap.inline_keyboard[0][0].text, `✅ Ya, zap out ${symbol}`);
@@ -230,7 +229,7 @@ test("keyboard: nama pair lebih dari 10 karakter satu tombol per baris", () => {
   assert.equal(tenSides.inline_keyboard.length, 1);
   assert.deepEqual(
     tenSides.inline_keyboard[0].map((button) => button.text),
-    [`🪙 Sisi token ${ten}`, `◎ Sisi SOL ${ten}`, "✖️ Batal"]
+    ["Token", "SOL", "Batal"]
   );
 
   const eleven = "ABCDEFGHIJK";
@@ -423,7 +422,7 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
   );
   assert.deepEqual(
     view.edits[0].markup.inline_keyboard[0].map((button) => button.text),
-    ["🪙 Sisi token Macca", "◎ Sisi SOL Macca", "✖️ Batal"]
+    ["Token", "SOL", "Batal"]
   );
   const rebCancel = view.edits[0].markup.inline_keyboard[0][2].callback_data;
   const sideTokenData = view.edits[0].markup.inline_keyboard[0][0].callback_data;
@@ -490,7 +489,7 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
   );
   assert.equal(oldConfirm.pending, "rebalance");
   assert.equal(oldConfirmEnqueue, 0);
-  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "🪙 Sisi token Macca");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "Token");
   assert.equal(view.answers[0].text, "");
 
   view.edits.length = 0;

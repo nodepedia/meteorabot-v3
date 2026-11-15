@@ -123,19 +123,19 @@ function confirmRows(key, label) {
 }
 
 // Memilih sisi langsung mengantre. Tidak ada langkah "Ya" lagi.
-function sideRows(key, label) {
-  return rowsFor(
+// Label pendek, tanpa emoji dan tanpa simbol: selalu satu baris.
+function sideRows(key) {
+  return [
     [
-      { text: fitButton("🪙 Sisi token ", label), callback_data: encodeCallbackData("t", key) },
-      { text: fitButton("◎ Sisi SOL ", label), callback_data: encodeCallbackData("s", key) },
-      { text: "✖️ Batal", callback_data: encodeCallbackData("x", key) },
+      { text: "Token", callback_data: encodeCallbackData("t", key) },
+      { text: "SOL", callback_data: encodeCallbackData("s", key) },
+      { text: "Batal", callback_data: encodeCallbackData("x", key) },
     ],
-    label
-  );
+  ];
 }
 
 // Satu baris per posisi (dua tombol), atau satu tombol per baris bila simbol panjang.
-// `pendingKey` + zap_out = konfirmasi. rebalance = pilihan sisi (token / SOL / batal).
+// `pendingKey` + zap_out = konfirmasi. rebalance = pilihan sisi Token / SOL / Batal, selalu satu baris.
 export function buildStatusKeyboard(positions, { pendingKey = null, pendingAction = null, catalog = null } = {}) {
   const list = (positions || []).filter((p) => p?.position && p.closed !== true);
   const addresses = list.map((p) => String(p.position));
@@ -148,7 +148,7 @@ export function buildStatusKeyboard(positions, { pendingKey = null, pendingActio
       if (pendingAction === "rebalance" && !allowRebalance) {
         inline_keyboard.push(...normalRows(key, label, false));
       } else if (pendingAction === "rebalance") {
-        inline_keyboard.push(...sideRows(key, label));
+        inline_keyboard.push(...sideRows(key));
       } else {
         inline_keyboard.push(...confirmRows(key, label));
       }
