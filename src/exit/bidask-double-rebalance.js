@@ -86,11 +86,12 @@ export function evaluateBidaskDoubleRebalance({
   entryInProgress = false,
   poolClosing = false,
   dcaConfirmPending = false,
+  force = false,
 }) {
   if (!pos || pos.mode !== "bidask:double") {
     return { action: "none", reason: "not_bidask_double" };
   }
-  if (!cfg?.enabled) return { action: "none", reason: "disabled" };
+  if (!cfg?.enabled && !force) return { action: "none", reason: "disabled" };
   if (dcaConfirmPending) return { action: "none", reason: "dca_confirm_pending" };
   if (entryInProgress) return { action: "none", reason: "entry_in_progress" };
   if (poolClosing) return { action: "none", reason: "pool_closing" };
@@ -120,6 +121,22 @@ export function evaluateBidaskDoubleRebalance({
     Number.isFinite(activeBin) && Number.isFinite(lowerBin) && Number.isFinite(upperBin) && upperBin >= lowerBin;
   const binSpan = haveBins ? upperBin - lowerBin : 0;
   const inCooldown = lastAt > 0 && cooldownMs > 0 && now - lastAt < cooldownMs;
+
+  // Manual: abaikan kelipatan step. Sisi SOL hanya bila harga sudah pulih dan
+  // saklar sisi SOL menyala. Selain itu, bila masih di bawah entry, sisi token.
+  if (force) {
+    const recovered = lastPct > 0 && stepLevel < lastPct;
+    const oor = haveBins && (activeBin < lowerBin || activeBin > upperBin);
+    const aboveRange = haveBins && activeBin >= upperBin;
+    if (recovered && !oor && cfg?.solEnabled !== false) {
+      return { action: "rebalance_sol", reason: "manual", lastPct, stepLevel, priceChangePct: change };
+    }
+    if (change < 0 && !aboveRange) {
+      return { action: "rebalance", reason: "manual", lastPct, stepLevel, priceChangePct: change };
+    }
+    if (oor) return { action: "none", reason: "out_of_range", lastPct, stepLevel, priceChangePct: change };
+    return { action: "none", reason: "nothing_to_rebalance", lastPct, stepLevel, priceChangePct: change };
+  }
 
   // 1. Harga turun satu step lagi dari entry: bentuk ulang token di atas bin aktif.
   if (stepLevel >= lastPct + step && stepLevel >= step) {
@@ -527,6 +544,7 @@ export async function handleBidaskDoubleRebalance(pos, deps = {}) {
     poolClosing: deps.poolClosing !== undefined ? deps.poolClosing : pos?.pool ? isPoolClosing(pos.pool) : false,
     dcaConfirmPending:
       deps.dcaConfirmPending !== undefined ? deps.dcaConfirmPending : poolHasPendingDcaConfirm(poolTracked),
+    force: deps.force === true,
   });
 
   const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";

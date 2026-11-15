@@ -32,5 +32,12 @@ module.exports = {
       error_file: "./logs/wallet-error.log",
       out_file: "./logs/wallet-out.log",
     },
+    {
+      ...baseConfig,
+      name: "meteorabot-telegram",
+      script: "src/worker-telegram.js",
+      error_file: "./logs/telegram-error.log",
+      out_file: "./logs/telegram-out.log",
+    },
   ],
 };

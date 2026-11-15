@@ -82,14 +82,14 @@ Baris CA (`,ca`):
 
 ## Jalankan (PM2)
 ```bash
-pm2 start ecosystem.config.cjs    # meteorabot-entry, meteorabot-exit, meteorabot-wallet
+pm2 start ecosystem.config.cjs    # meteorabot-entry, meteorabot-exit, meteorabot-wallet, meteorabot-telegram
 pm2 save && pm2 startup
 npm run pm2:logrotate             # opsional: rotasi log
 ```
 Log:
 ```bash
-pm2 logs meteorabot-entry         # juga: meteorabot-exit, meteorabot-wallet
-ls logs/                          # entry-out.log, exit-error.log, dst.
+pm2 logs meteorabot-entry         # juga: meteorabot-exit, meteorabot-wallet, meteorabot-telegram
+ls logs/                          # entry-out.log, exit-error.log, telegram-out.log, dst.
 ```
 
 ## Update

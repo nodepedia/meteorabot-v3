@@ -62,6 +62,7 @@ import { handleSpotTokenBidask } from "./spot-token-bidask.js";
 import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
 import { handleBidaskSolRebalance } from "./bidask-sol-rebalance.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
+import { consumeTelegramCommands } from "./telegram-commands.js";
 
 /**
  * Pulihkan entrySizeSol untuk posisi spot yang baru diadopsi dari on-chain
@@ -272,6 +273,17 @@ export async function mainLoop(opts = {}) {
     for (const pool of getEntryInProgressPools()) activePools.add(pool);
     for (const pool of getClosingPools()) activePools.add(pool);
     resetStaleDcaPools(activePools);
+
+    // Klik Telegram (Zap Out / Rebalance) dari worker terpisah. Zap Out
+    // mengeluarkan posisi dari siklus ini supaya tidak ikut re-entry OOR kanan.
+    try {
+      const consumed = await consumeTelegramCommands(positions);
+      if (consumed.closed.size > 0) {
+        positions = positions.filter((p) => p?.position && !consumed.closed.has(p.position));
+      }
+    } catch (err) {
+      log.warn(`Perintah Telegram gagal diproses: ${err.message}`);
+    }
 
     if (positions.length === 0) {
       emitSummary([]);

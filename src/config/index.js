@@ -346,6 +346,9 @@ export function buildConfig(e = {}) {
     telegramBotToken: e.TELEGRAM_BOT_TOKEN || "",
     telegramChatId: e.TELEGRAM_CHAT_ID || "",
     tgStatusInterval: num(e.TG_STATUS_INTERVAL, 5),
+    // true = pesan Position Status membawa tombol Rebalance / Zap Out.
+    // false = teks status persis seperti biasa, tanpa keyboard.
+    telegramButtonsEnabled: bool(e.TELEGRAM_BUTTONS_ENABLED, true),
 
     entry,
     swap,

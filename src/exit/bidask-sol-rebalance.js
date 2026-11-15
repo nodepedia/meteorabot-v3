@@ -35,11 +35,11 @@ const rebalanceInProgress = new Set();
 
 // Porsi bin yang sudah jadi token, sama seperti spot (bin di atas active / span).
 // Step 10, 20, 30, ... Hanya naik. Tidak ada rebalance sisi SOL saat harga pulih.
-export function evaluateBidaskSolRebalance({ pos, tracked, cfg }) {
+export function evaluateBidaskSolRebalance({ pos, tracked, cfg, force = false }) {
   if (!pos || pos.mode !== "bidask:sol") {
     return { action: "none", reason: "not_bidask_sol" };
   }
-  if (!cfg?.enabled) return { action: "none", reason: "disabled" };
+  if (!cfg?.enabled && !force) return { action: "none", reason: "disabled" };
 
   const lowerBin = Number.isFinite(Number(pos.lowerBin)) ? Number(pos.lowerBin) : Number(tracked?.lowerBin);
   const upperBin = Number.isFinite(Number(pos.upperBin)) ? Number(pos.upperBin) : Number(tracked?.upperBin);
@@ -54,6 +54,15 @@ export function evaluateBidaskSolRebalance({ pos, tracked, cfg }) {
 
   if (!metrics.inRange) {
     return { action: "none", reason: "out_of_range", lastPct, ...metrics };
+  }
+
+  // Manual: tetap hanya bin token. Bin SOL (active dan di bawahnya) tidak disentuh,
+  // juga saat harga sudah pulih.
+  if (force) {
+    if (metrics.tokenBins > 0 && metrics.fromBinId != null && metrics.toBinId != null) {
+      return { action: "rebalance", reason: "manual", lastPct, ...metrics };
+    }
+    return { action: "none", reason: "no_token_bins", lastPct, ...metrics };
   }
 
   // Step yang sama atau lebih rendah tidak diulang. Tidak ada jalur pulih sisi SOL.
@@ -90,7 +99,7 @@ export async function handleBidaskSolRebalance(pos, deps = {}) {
   const now = deps.now ? deps.now() : Date.now();
   const tracked = deps.tracked !== undefined ? deps.tracked : getTrackedPosition(pos?.position);
 
-  const decision = evaluateBidaskSolRebalance({ pos, tracked, cfg });
+  const decision = evaluateBidaskSolRebalance({ pos, tracked, cfg, force: deps.force === true });
   const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
 
   if (decision.action !== "rebalance") {

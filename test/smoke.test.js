@@ -39,6 +39,9 @@ const MODULES = [
   "../src/meteora/open-sol-position.js",
   "../src/meteora/spot-position.js",
   "../src/notify/telegram.js",
+  "../src/notify/telegram-buttons.js",
+  "../src/notify/telegram-queue.js",
+  "../src/notify/telegram-callbacks.js",
   "../src/entry/index.js",
   "../src/entry/runtime.js",
   "../src/entry/pool-list.js",
@@ -61,9 +64,11 @@ const MODULES = [
   "../src/exit/spot-token-bidask.js",
   "../src/exit/bidask-double-rebalance.js",
   "../src/exit/bidask-sol-rebalance.js",
+  "../src/exit/telegram-commands.js",
   "../src/worker-entry.js",
   "../src/worker-exit.js",
   "../src/worker-wallet.js",
+  "../src/worker-telegram.js",
 ];
 
 test("every module loads without import errors", async () => {
