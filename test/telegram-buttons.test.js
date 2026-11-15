@@ -120,11 +120,13 @@ test("keyboard: rebalance disembunyikan untuk bidask:token, konfirmasi hanya men
 
   const kb = buildStatusKeyboard(positions);
   assert.equal(kb.inline_keyboard.length, 3);
-  assert.equal(kb.inline_keyboard[0][0].text, "♻️ Rebalance Macca-SOL");
-  assert.equal(kb.inline_keyboard[0][1].text, "⚡ Zap Out Macca-SOL");
+  assert.equal(kb.inline_keyboard[0][0].text, "♻️ Macca-SOL");
+  assert.equal(kb.inline_keyboard[0][1].text, "⚡ Macca-SOL");
+  assert.equal(decodeCallbackData(kb.inline_keyboard[0][0].callback_data).code, "r");
+  assert.equal(decodeCallbackData(kb.inline_keyboard[0][1].callback_data).code, "z");
   assert.equal(kb.inline_keyboard[1].length, 1);
-  assert.equal(kb.inline_keyboard[1][0].text, "⚡ Zap Out Tok-SOL");
-  assert.equal(kb.inline_keyboard[2][0].text, "♻️ Rebalance Sol-SOL");
+  assert.equal(kb.inline_keyboard[1][0].text, "⚡ Tok-SOL");
+  assert.equal(kb.inline_keyboard[2][0].text, "♻️ Sol-SOL");
   for (const row of kb.inline_keyboard) {
     for (const button of row) assert.ok(Buffer.byteLength(button.callback_data) < 64);
   }
@@ -146,6 +148,71 @@ test("keyboard: rebalance disembunyikan untuk bidask:token, konfirmasi hanya men
   assert.equal(scheduledToast("zap_out", "Macca-SOL"), "Zap Out Macca-SOL dijadwalkan");
   assert.equal(scheduledToast("rebalance", "Macca-SOL"), "Rebalance Macca-SOL dijadwalkan");
   assert.equal(humanReason("manual_telegram"), "manual (Telegram)");
+});
+
+test("keyboard: nama pair lebih dari 10 karakter satu tombol per baris", () => {
+  const long = "VeryLongName-SOL";
+  const positions = [
+    { position: SPOT, pair: long, mode: "spot" },
+    { position: TOK, pair: "Tok-SOL", mode: "bidask:token" },
+  ];
+  const kb = buildStatusKeyboard(positions);
+  assert.equal(long.length > 10, true);
+  assert.equal(kb.inline_keyboard.length, 3);
+  assert.deepEqual(
+    kb.inline_keyboard[0].map((button) => button.text),
+    [`♻️ ${long}`]
+  );
+  assert.deepEqual(
+    kb.inline_keyboard[1].map((button) => button.text),
+    [`⚡ ${long}`]
+  );
+  assert.equal(decodeCallbackData(kb.inline_keyboard[0][0].callback_data).code, "r");
+  assert.equal(decodeCallbackData(kb.inline_keyboard[1][0].callback_data).code, "z");
+  assert.equal(kb.inline_keyboard[2][0].text, "⚡ Tok-SOL");
+  assert.equal(kb.inline_keyboard[2].length, 1);
+
+  const key = decodeCallbackData(kb.inline_keyboard[0][0].callback_data).key;
+  const reb = buildStatusKeyboard(positions, { pendingKey: key, pendingAction: "rebalance" });
+  assert.equal(reb.inline_keyboard[0].length, 1);
+  assert.equal(reb.inline_keyboard[0][0].text, `✅ Ya, rebalance ${long}`);
+  assert.equal(decodeCallbackData(reb.inline_keyboard[0][0].callback_data).code, "R");
+  assert.equal(reb.inline_keyboard[1].length, 1);
+  assert.equal(reb.inline_keyboard[1][0].text, "✖️ Batal");
+  assert.equal(decodeCallbackData(reb.inline_keyboard[1][0].callback_data).code, "x");
+  assert.deepEqual(reb.inline_keyboard[2], kb.inline_keyboard[2]);
+
+  const zap = buildStatusKeyboard(positions, { pendingKey: key, pendingAction: "zap_out" });
+  assert.equal(zap.inline_keyboard[0][0].text, `✅ Ya, zap out ${long}`);
+  assert.equal(zap.inline_keyboard[0].length, 1);
+  assert.equal(decodeCallbackData(zap.inline_keyboard[0][0].callback_data).code, "Z");
+  assert.equal(zap.inline_keyboard[1][0].text, "✖️ Batal");
+
+  const ten = "ABCDEFGHIJ";
+  const atTen = buildStatusKeyboard([{ position: SPOT, pair: ten, mode: "spot" }]);
+  assert.equal(ten.length, 10);
+  assert.equal(atTen.inline_keyboard.length, 1);
+  assert.deepEqual(
+    atTen.inline_keyboard[0].map((button) => button.text),
+    [`♻️ ${ten}`, `⚡ ${ten}`]
+  );
+  const tenKey = decodeCallbackData(atTen.inline_keyboard[0][0].callback_data).key;
+  const tenConfirm = buildStatusKeyboard([{ position: SPOT, pair: ten, mode: "spot" }], {
+    pendingKey: tenKey,
+    pendingAction: "zap_out",
+  });
+  assert.equal(tenConfirm.inline_keyboard.length, 1);
+  assert.deepEqual(
+    tenConfirm.inline_keyboard[0].map((button) => button.text),
+    [`✅ Ya, zap out ${ten}`, "✖️ Batal"]
+  );
+
+  const eleven = "ABCDEFGHIJK";
+  const tokenLong = buildStatusKeyboard([{ position: TOK, pair: eleven, mode: "bidask:token" }]);
+  assert.equal(eleven.length, 11);
+  assert.equal(tokenLong.inline_keyboard.length, 1);
+  assert.equal(tokenLong.inline_keyboard[0][0].text, `⚡ ${eleven}`);
+  assert.equal(decodeCallbackData(tokenLong.inline_keyboard[0][0].callback_data).code, "z");
 });
 
 test("tombol mati: teks status sama, tanpa keyboard", () => {
@@ -300,8 +367,8 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
   assert.equal(queued[0].action, "zap_out");
   assert.equal(queued[0].position, SPOT);
   assert.equal(view.answers[0].text, "Zap Out Macca-SOL dijadwalkan");
-  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "♻️ Rebalance Macca-SOL");
-  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Zap Out Macca-SOL");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "♻️ Macca-SOL");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Macca-SOL");
   assert.equal(fs.readFileSync(process.env.STATE_FILE, "utf8"), before);
 
   const again = enqueueTelegramCommand({ action: "zap_out", position: SPOT, requestedAt: Date.now() });
@@ -344,7 +411,7 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
     }
   );
   assert.equal(view.answers[0].text, "Dibatalkan");
-  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Zap Out Macca-SOL");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][1].text, "⚡ Macca-SOL");
 
   view.edits.length = 0;
   view.answers.length = 0;
@@ -367,7 +434,7 @@ test("callback chat lain diabaikan; konfirmasi, batal, tutup, dan antrean idempo
   assert.equal(closed.closed, true);
   assert.equal(view.answers[0].text, "Posisi sudah tutup");
   assert.equal(view.edits[0].markup.inline_keyboard.length, 1);
-  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "⚡ Zap Out Tok-SOL");
+  assert.equal(view.edits[0].markup.inline_keyboard[0][0].text, "⚡ Tok-SOL");
 
   view.edits.length = 0;
   view.answers.length = 0;
