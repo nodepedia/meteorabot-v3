@@ -4,36 +4,90 @@ import log from "../core/logger.js";
 import { getOORState, getTrackedPosition } from "../state/positions.js";
 import { resolveTrailingReference } from "../exit/trailing.js";
 import { trailingDropThreshold } from "../state/trailing.js";
+import { buildStatusKeyboard, publishButtonCatalog } from "./telegram-buttons.js";
 
 const TOKEN = config.telegramBotToken;
 const CHAT_ID = config.telegramChatId;
 const BASE = TOKEN ? `https://api.telegram.org/bot${TOKEN}` : null;
 
-function send(text) {
+export function buildSendPayload(text, extra = {}, chatId = CHAT_ID) {
+  const payload = { chat_id: chatId, text: String(text).slice(0, 4096) };
+  if (extra.reply_markup) payload.reply_markup = extra.reply_markup;
+  return payload;
+}
+
+function telegramRequest(method, payload, { timeout = 15000 } = {}) {
+  if (!BASE) return Promise.resolve(null);
+  const body = payload == null ? null : JSON.stringify(payload);
+  const url = new URL(`${BASE}/${String(method).replace(/^\//, "")}`);
+  return new Promise((resolve) => {
+    const req = https.request(
+      url,
+      {
+        method: body ? "POST" : "GET",
+        headers: body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } : {},
+        family: 4,
+        timeout,
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => {
+          let parsed = null;
+          try {
+            parsed = data ? JSON.parse(data) : null;
+          } catch {
+            parsed = { ok: false, description: data.slice(0, 200) };
+          }
+          if (res.statusCode !== 200 || parsed?.ok === false) {
+            log.warn(`Telegram ${method.split("?")[0]} failed: ${res.statusCode} ${data.slice(0, 200)}`);
+          }
+          resolve(parsed);
+        });
+      }
+    );
+    req.on("error", (err) => {
+      log.warn(`Telegram error: ${err.message}`);
+      resolve(null);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      log.warn(`Telegram ${method.split("?")[0]} timeout`);
+      resolve(null);
+    });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function send(text, extra = {}) {
   if (!BASE || !CHAT_ID) return;
-  const body = JSON.stringify({ chat_id: CHAT_ID, text: String(text).slice(0, 4096) });
-  const url = new URL(`${BASE}/sendMessage`);
-  const req = https.request(
-    url,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      family: 4,
-      timeout: 15000,
-    },
-    (res) => {
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        if (res.statusCode !== 200) {
-          log.warn(`Telegram send failed: ${res.statusCode} ${data.slice(0, 200)}`);
-        }
-      });
-    }
-  );
-  req.on("error", (err) => log.warn(`Telegram error: ${err.message}`));
-  req.write(body);
-  req.end();
+  void telegramRequest("sendMessage", buildSendPayload(text, extra));
+}
+
+export function editMessageReplyMarkup(chatId, messageId, replyMarkup) {
+  if (!BASE || chatId == null || messageId == null) return Promise.resolve(null);
+  return telegramRequest("editMessageReplyMarkup", {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: replyMarkup || { inline_keyboard: [] },
+  });
+}
+
+export function answerCallbackQuery(callbackQueryId, text) {
+  if (!BASE || !callbackQueryId) return Promise.resolve(null);
+  const payload = { callback_query_id: callbackQueryId };
+  if (text) payload.text = String(text).slice(0, 200);
+  return telegramRequest("answerCallbackQuery", payload);
+}
+
+// Long-poll. timeoutSec adalah lama Telegram menahan koneksi, bukan socket timeout.
+export function getUpdates({ offset, timeoutSec = 30 } = {}) {
+  const qs = new URLSearchParams();
+  if (offset != null) qs.set("offset", String(offset));
+  qs.set("timeout", String(timeoutSec));
+  qs.set("allowed_updates", JSON.stringify(["callback_query"]));
+  return telegramRequest(`getUpdates?${qs}`, null, { timeout: (Number(timeoutSec) + 15) * 1000 });
 }
 
 export function notifyStartup(info = {}) {
@@ -351,6 +405,7 @@ export function exitLabel(reason) {
   if (r === "high_yield") return "Yield Tinggi";
   if (r.startsWith("bounce_recovery")) return "Bounce Recovery";
   if (r === "not_detected") return "Tidak Terdeteksi";
+  if (r === "manual_telegram") return "manual (Telegram)";
   return r;
 }
 
@@ -475,7 +530,8 @@ function oorMarker(p) {
   return null;
 }
 
-// Level PnL yang akan memicu exit saat ini (trailing aktif, atau stop loss).
+// Level PnL exit hanya saat trailing TP sedang aktif (ada acuan trailing).
+// Level stop loss tidak pernah ditampilkan di pesan status.
 function computeExitAt(p, tracked) {
   const rules = config.rulesFor(p.mode || "bidask:double");
   if (tracked && p.pnlPct != null) {
@@ -485,8 +541,18 @@ function computeExitAt(p, tracked) {
       return resolved.reference - threshold;
     }
   }
-  if (rules.enableStopLoss) return rules.stopLossPct;
   return null;
+}
+
+// Teks status tidak berubah. Keyboard hanya ikut bila tombol diaktifkan.
+export function buildStatusDelivery(positions, opts = {}) {
+  const text = buildStatusMessage(positions);
+  if (!text) return null;
+  const enabled = opts.enabled != null ? opts.enabled : config.telegramButtonsEnabled;
+  if (!enabled) return { text };
+  const reply_markup = buildStatusKeyboard(positions, { catalog: opts.catalog || null });
+  if (!reply_markup.inline_keyboard.length) return { text };
+  return { text, reply_markup };
 }
 
 export function buildStatusMessage(positions) {
@@ -520,8 +586,10 @@ export function buildStatusMessage(positions) {
 }
 
 export function notifyStatus(positions) {
-  const msg = buildStatusMessage(positions);
-  if (msg) send(msg);
+  const delivery = buildStatusDelivery(positions);
+  if (!delivery) return;
+  if (delivery.reply_markup) publishButtonCatalog(positions);
+  send(delivery.text, delivery.reply_markup ? { reply_markup: delivery.reply_markup } : {});
 }
 
 export function plainTg(value, max = 180) {

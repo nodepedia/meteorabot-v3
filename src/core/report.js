@@ -45,6 +45,7 @@ export function humanReason(reason) {
   if (r === "high_yield") return "24h Fee/TVL posisi di atas ambang (aturan lama)";
   if (r.startsWith("bounce_recovery")) return "pemulihan gagal (turun dari pantulan)";
   if (r === "not_detected") return "posisi tidak terdeteksi (kemungkinan ditutup manual)";
+  if (r === "manual_telegram") return "manual (Telegram)";
   if (r === "dca_close_safeguard") return "safeguard: DCA terakhir profit (trailing TP), posisi asli ikut ditutup";
   if (r.startsWith("indicator_rsi")) return `${humanReason(r.slice(10))} (exit langsung)`;
   if (r === "rsi_macd") return "sinyal indikator RSI+MACD";

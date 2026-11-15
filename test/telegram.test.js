@@ -89,6 +89,7 @@ test("exitLabel menerjemahkan alasan exit ke label pendek", () => {
   assert.equal(exitLabel("high_yield"), "Yield Tinggi");
   assert.equal(exitLabel("bounce_recovery: peak -8 -> -10"), "Bounce Recovery");
   assert.equal(exitLabel("not_detected"), "Tidak Terdeteksi");
+  assert.equal(exitLabel("manual_telegram"), "manual (Telegram)");
 });
 
 // --- Status ---
@@ -131,6 +132,26 @@ test("status out-of-range: menampilkan tanda OOR", () => {
     },
   ]);
   assert.match(msg, /OOR 🟢/);
+});
+
+test("status tanpa trailing tidak menampilkan Exit at walau stop loss aktif", () => {
+  resetState();
+  const msg = buildStatusMessage([
+    {
+      pair: "Macca-SOL",
+      position: "PosNoState",
+      ageMinutes: 5,
+      pnlPct: -12,
+      feePct24h: 3,
+      activeBin: 100,
+      lowerBin: 90,
+      upperBin: 110,
+      mode: "bidask:sol",
+    },
+  ]);
+  assert.match(msg, /PnL: -12\.00%/);
+  assert.doesNotMatch(msg, /Exit at/);
+  assert.doesNotMatch(msg, /-40/);
 });
 
 test("status trailing aktif: menampilkan Trailing, Peak, dan Exit at", () => {

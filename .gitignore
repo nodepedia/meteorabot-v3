@@ -15,6 +15,7 @@ updatelist.txt
 runtime-state.json
 *.tmp
 logs/
+/state/
 gmgn-kline-cache.json
 gmgn-rate-state.json
 gmgn-wallets/

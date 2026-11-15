@@ -23,6 +23,14 @@ export const IMPORTANT_EVENTS_FILE = resolveFile("IMPORTANT_EVENTS_FILE", path.j
 export const STATE_FILE = resolveFile("STATE_FILE", "state.json");
 export const DECISION_LOG_FILE = resolveFile("DECISION_LOG_FILE", "decision-log.json");
 export const PNL_HISTORY_FILE = resolveFile("PNL_HISTORY_FILE", "pnl-history.json");
+// Antrean klik Telegram. Worker telegram menulis; worker exit membaca.
+// Bukan state.json — worker telegram tidak boleh menulis state posisi.
+export const TELEGRAM_COMMANDS_FILE = resolveFile(
+  "TELEGRAM_COMMANDS_FILE",
+  path.join("state", "telegram-commands.json")
+);
+export const TELEGRAM_OFFSET_FILE = resolveFile("TELEGRAM_OFFSET_FILE", path.join("state", "telegram-offset.json"));
+export const TELEGRAM_BUTTONS_FILE = resolveFile("TELEGRAM_BUTTONS_FILE", path.join("state", "telegram-buttons.json"));
 export const RUNTIME_STATE_FILE = resolveFile(
   "RUNTIME_STATE_FILE",
   process.env.STATE_FILE && process.env.STATE_FILE.trim()
