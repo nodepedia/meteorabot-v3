@@ -77,25 +77,38 @@ function fitButton(prefix, label) {
   return `${prefix}${cut}`.slice(0, 64);
 }
 
-function normalRow(key, label, allowRebalance) {
-  const row = [];
-  if (allowRebalance) {
-    row.push({ text: fitButton("♻️ Rebalance ", label), callback_data: encodeCallbackData("r", key) });
-  }
-  row.push({ text: fitButton("⚡ Zap Out ", label), callback_data: encodeCallbackData("z", key) });
-  return row;
+// Di HP, dua tombol sebaris memotong teks. Nama pair > 10 karakter
+// ditaruh satu tombol per baris supaya nama penuh terbaca.
+const PAIR_LABEL_ROW_MAX = 10;
+
+function rowsFor(buttons, label) {
+  if (String(label).length > PAIR_LABEL_ROW_MAX) return buttons.map((button) => [button]);
+  return [buttons];
 }
 
-function confirmRow(key, label, action) {
+function normalRows(key, label, allowRebalance) {
+  const buttons = [];
+  if (allowRebalance) {
+    buttons.push({ text: fitButton("♻️ ", label), callback_data: encodeCallbackData("r", key) });
+  }
+  buttons.push({ text: fitButton("⚡ ", label), callback_data: encodeCallbackData("z", key) });
+  return rowsFor(buttons, label);
+}
+
+function confirmRows(key, label, action) {
   const prefix = action === "rebalance" ? "✅ Ya, rebalance " : "✅ Ya, zap out ";
   const code = action === "rebalance" ? "R" : "Z";
-  return [
-    { text: fitButton(prefix, label), callback_data: encodeCallbackData(code, key) },
-    { text: "✖️ Batal", callback_data: encodeCallbackData("x", key) },
-  ];
+  return rowsFor(
+    [
+      { text: fitButton(prefix, label), callback_data: encodeCallbackData(code, key) },
+      { text: "✖️ Batal", callback_data: encodeCallbackData("x", key) },
+    ],
+    label
+  );
 }
 
-// Satu baris per posisi. `pendingKey` mengganti baris itu jadi konfirmasi.
+// Satu baris per posisi (dua tombol), atau dua baris bila nama pair panjang.
+// `pendingKey` mengganti tombol posisi itu jadi konfirmasi.
 export function buildStatusKeyboard(positions, { pendingKey = null, pendingAction = null, catalog = null } = {}) {
   const list = (positions || []).filter((p) => p?.position && p.closed !== true);
   const addresses = list.map((p) => String(p.position));
@@ -106,13 +119,13 @@ export function buildStatusKeyboard(positions, { pendingKey = null, pendingActio
     const allowRebalance = modeSupportsRebalance(p.mode);
     if (pendingKey && key === pendingKey && (pendingAction === "zap_out" || pendingAction === "rebalance")) {
       if (pendingAction === "rebalance" && !allowRebalance) {
-        inline_keyboard.push(normalRow(key, label, false));
+        inline_keyboard.push(...normalRows(key, label, false));
       } else {
-        inline_keyboard.push(confirmRow(key, label, pendingAction));
+        inline_keyboard.push(...confirmRows(key, label, pendingAction));
       }
       continue;
     }
-    inline_keyboard.push(normalRow(key, label, allowRebalance));
+    inline_keyboard.push(...normalRows(key, label, allowRebalance));
   }
   return { inline_keyboard };
 }
