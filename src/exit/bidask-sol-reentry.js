@@ -159,6 +159,8 @@ export function bidaskSolReentrySkipReason(pos, reason, opts = {}) {
 
 // Keputusan sebelum close. RSI memakai gerbang yang sama dengan spot
 // (SPOT_REENTRY_MAX_RSI, candle 15m yang sudah tutup). Candle gagal = tetap re-entry.
+// Selama BIDASK_SOL_EXIT_WARMUP_MINUTES gerbang RSI dilewati. Warmup 0 = selalu jalan.
+// Batas jumlah, waktu, cooldown, dan sewa non-refundable tetap berlaku.
 export async function planBidaskSolOorKananReentry(pos, reason, opts = {}) {
   if (!canBidaskSolReenter(pos, reason, opts)) {
     const reentrySkipReason = bidaskSolReentrySkipReason(pos, reason, opts);

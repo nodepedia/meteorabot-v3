@@ -84,6 +84,17 @@ function armSpot(address = POS) {
   return { position: address, pool: POOL, pair: "FOOD-SOL", mode: "spot", baseMint: MINT };
 }
 
+function markChainAge(address, ageMs) {
+  const now = Date.now();
+  patchTracked(address, { exitWarmupStartedAt: now - ageMs, firstSeenAt: now - ageMs });
+  return now;
+}
+
+function markPastWarmup(address = POS, mode = "spot") {
+  const minutes = Number(config.rulesFor(mode).exitWarmupMinutes) || 0;
+  return markChainAge(address, minutes * 60_000);
+}
+
 async function openReentry(pos) {
   const wallet = Keypair.generate();
   const mockPool = {
@@ -210,6 +221,7 @@ test("spotReentryRsiSkipReason: >= ambang, di bawah, dan mati", () => {
 test("re-entry dilewati saat RSI >= 90 dan alert menyebut angkanya", async () => {
   resetState();
   const pos = armSpot();
+  markPastWarmup();
   const calls = [];
   const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
     fetchCandles: async (mint, pool, opts) => {
@@ -236,6 +248,7 @@ test("re-entry dilewati saat RSI >= 90 dan alert menyebut angkanya", async () =>
 test("re-entry tetap jalan bila RSI di bawah ambang", async () => {
   resetState();
   const pos = armSpot();
+  markPastWarmup();
   const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
     fetchCandles: async () => fallingCandles(),
   });
@@ -262,6 +275,7 @@ test("re-entry tetap jalan bila SPOT_REENTRY_MAX_RSI mati, tanpa ambil candle", 
 test("candle kosong, gagal, atau kurang data: tetap re-entry dan dicatat", async () => {
   resetState();
   const pos = armSpot();
+  markPastWarmup();
 
   const missing = [];
   const empty = await planSpotOorKananReentry(pos, "oor_kanan", {
@@ -428,6 +442,107 @@ test("SPOT_REENTRY_MAX_HOURS 0 = tanpa batas waktu", async () => {
     assert.equal(plan.reentrySkipReason, null);
   } finally {
     config.spotReentry.maxHours = saved;
+  }
+});
+
+test("selama warmup, RSI di atas ambang tetap re-entry", async () => {
+  resetState();
+  const pos = armSpot();
+  const now = Date.now();
+  const minutes = config.rulesFor("spot").exitWarmupMinutes;
+  assert.ok(minutes > 1);
+  const started = now - 60_000;
+  patchTracked(POS, { exitWarmupStartedAt: started, firstSeenAt: started });
+  assert.equal(isExitWarmup(started, minutes, now), true);
+  assert.ok(latestClosedRsi(risingCandles(), 2) >= 95);
+  const logs = [];
+  let calls = 0;
+  const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => {
+      calls += 1;
+      return risingCandles();
+    },
+    log: { info: (m) => logs.push(m), warn: () => {} },
+  });
+  assert.equal(calls, 0);
+  assert.equal(plan.willReenter, true);
+  assert.equal(plan.reentrySkipReason, null);
+  assert.match(logs[0], /RSI guard dilewati \(warmup\)/);
+});
+
+test("setelah warmup, RSI di atas ambang menutup tanpa re-entry", async () => {
+  resetState();
+  const pos = armSpot();
+  const now = Date.now();
+  const minutes = config.rulesFor("spot").exitWarmupMinutes;
+  const started = now - minutes * 60_000;
+  patchTracked(POS, { exitWarmupStartedAt: started, firstSeenAt: started });
+  assert.equal(isExitWarmup(started, minutes, now), false);
+  assert.ok(latestClosedRsi(risingCandles(), 2) >= 95);
+  const logs = [];
+  const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+    now,
+    fetchCandles: async () => risingCandles(),
+    log: { info: (m) => logs.push(m), warn: () => {} },
+  });
+  assert.equal(plan.willReenter, false);
+  assert.match(plan.reentrySkipReason, /RSI\(2\) 100 >= 90/);
+  assert.equal(
+    logs.some((m) => String(m).includes("RSI guard dilewati")),
+    false
+  );
+});
+
+test("warmup 0 membuat gerbang RSI tetap jalan meski baru dibuka", async () => {
+  resetState();
+  const saved = config.spot.exitWarmupMinutes;
+  config.spot.exitWarmupMinutes = 0;
+  try {
+    const pos = armSpot();
+    const now = Date.now();
+    patchTracked(POS, { exitWarmupStartedAt: now, firstSeenAt: now });
+    assert.equal(isExitWarmup(now, config.rulesFor("spot").exitWarmupMinutes, now), false);
+    const logs = [];
+    const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+      now,
+      fetchCandles: async () => risingCandles(),
+      log: { info: (m) => logs.push(m), warn: () => {} },
+    });
+    assert.equal(plan.willReenter, false);
+    assert.match(plan.reentrySkipReason, /RSI\(2\) 100 >= 90/);
+    assert.equal(
+      logs.some((m) => String(m).includes("RSI guard dilewati")),
+      false
+    );
+  } finally {
+    config.spot.exitWarmupMinutes = saved;
+  }
+});
+
+test("batas waktu tetap menghentikan re-entry meski warmup masih berjalan", async () => {
+  resetState();
+  const saved = config.spot.exitWarmupMinutes;
+  config.spot.exitWarmupMinutes = 240;
+  try {
+    const now = Date.now();
+    const pos = armSpot();
+    const started = now - 3 * HOUR_MS;
+    patchTracked(POS, { exitWarmupStartedAt: started, firstSeenAt: now });
+    assert.equal(isExitWarmup(started, 240, now), true);
+    let calls = 0;
+    const plan = await planSpotOorKananReentry(pos, "oor_kanan", {
+      now,
+      fetchCandles: async () => {
+        calls += 1;
+        return risingCandles();
+      },
+    });
+    assert.equal(calls, 0);
+    assert.equal(plan.willReenter, false);
+    assert.equal(plan.reentrySkipReason, TIME_LIMIT_MSG);
+  } finally {
+    config.spot.exitWarmupMinutes = saved;
   }
 });
 

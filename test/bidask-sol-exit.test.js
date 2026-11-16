@@ -30,7 +30,7 @@ const { evaluateExit, isExitWarmup, indicatorAction } = await import("../src/exi
 const { armIndicatorTrailing } = await import("../src/state/trailing.js");
 const { handleClose } = await import("../src/exit/close.js");
 const { processTrailing } = await import("../src/exit/trailing.js");
-const { shouldReenter } = await import("../src/exit/spot-reentry.js");
+const { shouldReenter, latestClosedRsi } = await import("../src/exit/spot-reentry.js");
 const {
   bidaskSolReentryBinRange,
   shouldBidaskSolReenter,
@@ -309,6 +309,9 @@ test("RSI >= ambang membatalkan re-entry; candle kosong tetap re-entry", async (
   resetState();
   trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
   recordTrackedRange(POS, 100, 140);
+  const now = Date.now();
+  const started = now - config.rulesFor("bidask:sol").exitWarmupMinutes * 60_000;
+  patchTracked({ exitWarmupStartedAt: started, firstSeenAt: started });
   const pos = makePos();
   assert.equal(canBidaskSolReenter(pos, "oor_kanan"), true);
 
@@ -331,6 +334,111 @@ test("RSI >= ambang membatalkan re-entry; candle kosong tetap re-entry", async (
   assert.equal(cold.willReenter, true);
   assert.equal(cold.reentrySkipReason, null);
   assert.match(missing[0], /tidak tersedia/);
+});
+
+test("bidask:sol selama warmup, RSI di atas ambang tetap re-entry", async () => {
+  resetState();
+  trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
+  recordTrackedRange(POS, 100, 140);
+  const now = Date.now();
+  const minutes = config.rulesFor("bidask:sol").exitWarmupMinutes;
+  assert.ok(minutes > 1);
+  const started = now - 60_000;
+  patchTracked({ exitWarmupStartedAt: started, firstSeenAt: started });
+  assert.equal(isExitWarmup(started, minutes, now), true);
+  assert.ok(latestClosedRsi(risingCandles(), 2) >= 95);
+  const logs = [];
+  let calls = 0;
+  const plan = await planBidaskSolOorKananReentry(makePos(), "oor_kanan", {
+    now,
+    fetchCandles: async () => {
+      calls += 1;
+      return risingCandles();
+    },
+    log: { info: (m) => logs.push(m), warn: () => {} },
+  });
+  assert.equal(calls, 0);
+  assert.equal(plan.willReenter, true);
+  assert.equal(plan.reentrySkipReason, null);
+  assert.match(logs[0], /RSI guard dilewati \(warmup\)/);
+});
+
+test("bidask:sol setelah warmup, RSI di atas ambang menutup tanpa re-entry", async () => {
+  resetState();
+  trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
+  recordTrackedRange(POS, 100, 140);
+  const now = Date.now();
+  const minutes = config.rulesFor("bidask:sol").exitWarmupMinutes;
+  const started = now - minutes * 60_000;
+  patchTracked({ exitWarmupStartedAt: started, firstSeenAt: started });
+  assert.equal(isExitWarmup(started, minutes, now), false);
+  assert.ok(latestClosedRsi(risingCandles(), 2) >= 95);
+  const logs = [];
+  const plan = await planBidaskSolOorKananReentry(makePos(), "oor_kanan", {
+    now,
+    fetchCandles: async () => risingCandles(),
+    log: { info: (m) => logs.push(m), warn: () => {} },
+  });
+  assert.equal(plan.willReenter, false);
+  assert.match(plan.reentrySkipReason, /RSI\(2\) 100 >= 90/);
+  assert.equal(
+    logs.some((m) => String(m).includes("RSI guard dilewati")),
+    false
+  );
+});
+
+test("bidask:sol warmup 0 membuat gerbang RSI tetap jalan", async () => {
+  resetState();
+  const saved = config.bidaskSol.exitWarmupMinutes;
+  config.bidaskSol.exitWarmupMinutes = 0;
+  try {
+    trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
+    recordTrackedRange(POS, 100, 140);
+    const now = Date.now();
+    patchTracked({ exitWarmupStartedAt: now, firstSeenAt: now });
+    assert.equal(isExitWarmup(now, config.rulesFor("bidask:sol").exitWarmupMinutes, now), false);
+    const logs = [];
+    const plan = await planBidaskSolOorKananReentry(makePos(), "oor_kanan", {
+      now,
+      fetchCandles: async () => risingCandles(),
+      log: { info: (m) => logs.push(m), warn: () => {} },
+    });
+    assert.equal(plan.willReenter, false);
+    assert.match(plan.reentrySkipReason, /RSI\(2\) 100 >= 90/);
+    assert.equal(
+      logs.some((m) => String(m).includes("RSI guard dilewati")),
+      false
+    );
+  } finally {
+    config.bidaskSol.exitWarmupMinutes = saved;
+  }
+});
+
+test("bidask:sol batas waktu tetap menghentikan re-entry meski warmup masih berjalan", async () => {
+  resetState();
+  const saved = config.bidaskSol.exitWarmupMinutes;
+  config.bidaskSol.exitWarmupMinutes = 240;
+  try {
+    trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
+    recordTrackedRange(POS, 100, 140);
+    const now = Date.now();
+    const started = now - 3 * HOUR_MS;
+    patchTracked({ exitWarmupStartedAt: started, firstSeenAt: now });
+    assert.equal(isExitWarmup(started, 240, now), true);
+    let calls = 0;
+    const plan = await planBidaskSolOorKananReentry(makePos(), "oor_kanan", {
+      now,
+      fetchCandles: async () => {
+        calls += 1;
+        return risingCandles();
+      },
+    });
+    assert.equal(calls, 0);
+    assert.equal(plan.willReenter, false);
+    assert.equal(plan.reentrySkipReason, TIME_LIMIT_MSG);
+  } finally {
+    config.bidaskSol.exitWarmupMinutes = saved;
+  }
 });
 
 test("re-entry membuka bidask:sol SOL-only dengan lebar bin yang sama dan warmup diwariskan", async () => {
