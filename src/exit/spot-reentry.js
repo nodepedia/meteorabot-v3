@@ -24,7 +24,7 @@ import { getPoolInfo } from "../entry/pool-info.js";
 import { replacePoolInList, commentPoolInList, lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
 import { fetchCandles } from "../market/candles.js";
 import { computeRSI } from "../market/indicators.js";
-import { closedCandles } from "./rules.js";
+import { closedCandles, isExitWarmup } from "./rules.js";
 import {
   trackPosition,
   getTrackedPosition,
@@ -245,7 +245,7 @@ export function latestClosedRsi(candles, rsiPeriod) {
 }
 
 // Pure: alasan skip bila RSI mentok. Null bila di bawah ambang, RSI tidak
-// valid, atau ambang 0 (fitur mati).
+// valid, atau ambang 0 (fitur mati). Warmup exit tidak dicek di sini.
 export function spotReentryRsiSkipReason(rsiLatest, { maxRsi = 90, rsiPeriod = 2 } = {}) {
   const max = Number(maxRsi);
   if (!Number.isFinite(max) || max <= 0) return null;
@@ -255,11 +255,31 @@ export function spotReentryRsiSkipReason(rsiLatest, { maxRsi = 90, rsiPeriod = 2
   return `re-entry dilewati karena RSI(${period}) ${formatRsiValue(rsi)} >= ${formatRsiValue(max)}`;
 }
 
+// Masih di dalam warmup exit mode ini? spot memakai SPOT_EXIT_WARMUP_MINUTES,
+// bidask:sol memakai BIDASK_SOL_EXIT_WARMUP_MINUTES. Awal jendela = awal rantai.
+// 0 menit = warmup mati, gerbang RSI tetap jalan.
+function reentryRsiGuardInWarmup(pos, opts = {}) {
+  const minutes = config.rulesFor(pos?.mode).exitWarmupMinutes;
+  const startedAt = resolveExitWarmupStartedAt(getTrackedPosition(pos?.position));
+  const now = Number(opts.now);
+  return isExitWarmup(startedAt, minutes, Number.isFinite(now) ? now : Date.now());
+}
+
 // Ambil RSI exit sebelum close. Candle kosong/gagal → null (tetap re-entry) + log.
+// Selama warmup exit, gerbang RSI dilewati tanpa ambil candle, meski RSI mentok.
+// Warmup 0 = mati. Batas jumlah dan batas waktu dicek sebelum fungsi ini.
 export async function spotReentryOverextendedSkipReason(pos, opts = {}) {
   const cfg = opts.cfg || config.spotReentry;
   const maxRsi = Number(cfg?.maxRsi ?? 0);
   if (!Number.isFinite(maxRsi) || maxRsi <= 0) return null;
+
+  if (reentryRsiGuardInWarmup(pos, opts)) {
+    const pair = pos?.pair || pos?.position?.slice(0, 8) || "?";
+    const logInfo = opts.log?.info || ((msg) => log.info(msg));
+    const tag = pos?.mode === "bidask:sol" ? "bidask:sol SOL-only " : "";
+    logInfo(`${pair}: ${tag}RSI guard dilewati (warmup)`);
+    return null;
+  }
 
   const rules = opts.rules || config.rulesFor("spot");
   const fetchCandlesFn = opts.fetchCandles || fetchCandles;
@@ -327,6 +347,9 @@ export async function planSpotOorKananReentry(pos, reason, opts = {}) {
  * - Cooldown antar loop per pool dijaga sesuai SPOT_REENTRY_COOLDOWN_SEC (120s normal / 60s saat vol 5m > $100k).
  * - Gerbang RSI (SPOT_REENTRY_MAX_RSI) dan batas waktu rantai diputuskan di
  *   planSpotOorKananReentry, sebelum close. Lewat batas = tutup biasa + swap ke SOL.
+ *   Selama warmup exit (SPOT_EXIT_WARMUP_MINUTES) gerbang RSI dilewati.
+ *   Warmup 0 = gerbang RSI selalu jalan. Batas jumlah, waktu, cooldown, dan
+ *   sewa non-refundable tetap berlaku selama warmup.
  */
 export async function handleSpotOorKananReentry(pos, opts = {}) {
   const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;

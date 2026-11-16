@@ -109,6 +109,8 @@ export function buildConfig(e = {}) {
     skipNonRefundable: bool(e.SPOT_REENTRY_SKIP_NONREFUNDABLE, true),
     maxNonRefundableSol: Math.max(0, num(e.SPOT_REENTRY_MAX_NONREFUNDABLE_SOL, 0)),
     // Lewati re-entry bila RSI candle yang sudah tutup >= ambang. 0 = nonaktif.
+    // Selama warmup exit mode (spot / bidask:sol) gerbang ini dilewati.
+    // Warmup 0 = gerbang selalu jalan.
     maxRsi: Math.max(0, num(e.SPOT_REENTRY_MAX_RSI, 90)),
   };
 

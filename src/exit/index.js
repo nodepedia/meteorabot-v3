@@ -426,8 +426,9 @@ export async function mainLoop(opts = {}) {
         }
         // OOR kanan spot atau bidask:sol: putuskan re-entry sebelum close
         // (termasuk ambil candle RSI di sini, bukan setelah handleClose).
-        // Pool tidak ditandai '#' bila kita mau langsung buka lagi. RSI mentok,
-        // atau alasan lain, tidak lolos: close biasa, klaim + swap.
+        // Pool tidak ditandai '#' bila kita mau langsung buka lagi. RSI mentok
+        // setelah warmup exit, atau alasan lain, tidak lolos: close biasa, klaim + swap.
+        // Selama warmup, gerbang RSI dilewati. Cooldown OOR kanan tetap menahan.
         let willReenter = false;
         let reentrySkipReason = null;
         if (!handled && exit.reason === "oor_kanan" && (pos.mode === "spot" || pos.mode === "bidask:sol")) {
