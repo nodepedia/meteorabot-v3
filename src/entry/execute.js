@@ -529,7 +529,7 @@ export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
   const dryRun = opts.dryRun ?? config.dryRun;
   const skipNonRefundable = opts.skipNonRefundable ?? config.spotReentry?.skipNonRefundable ?? true;
   const maxNonRefundableSol = opts.maxNonRefundableSol ?? config.spotReentry?.maxNonRefundableSol ?? 0;
-  const maxBins = Math.max(1, Math.floor(Number(opts.maxBins ?? config.entry.bidaskSolMaxBins) || 105));
+  const maxBins = Math.max(1, Math.floor(Number(opts.maxBins ?? config.entry.bidaskSolMaxBins) || 169));
   const lowerPct = opts.lowerPct ?? config.entry.bidaskSolLowerPct;
   const upperPct = opts.upperPct ?? config.entry.bidaskSolUpperPct;
 
@@ -596,6 +596,18 @@ export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
       };
     }
 
+    // SDK quoteCreatePosition (dlmm 1.9.x) menghitung bin array di seluruh
+    // [minBinId..maxBinId], termasuk posisi lebih lebar dari 70 bin.
+    // Tanpa fungsi itu, dan cek sewa nyala, jangan lanjut diam-diam.
+    if (skipNonRefundable && typeof pool.quoteCreatePosition !== "function") {
+      return {
+        success: false,
+        skipped: true,
+        tryNext: true,
+        reason: "quote non-refundable tidak tersedia",
+        pair,
+      };
+    }
     if (typeof pool.quoteCreatePosition === "function") {
       try {
         const quote = await pool.quoteCreatePosition({
