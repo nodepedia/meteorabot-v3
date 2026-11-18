@@ -2,7 +2,7 @@
 # Blok ini ditulis ulang oleh bot bila teksnya berubah. Jangan diedit.
 # Baris di luar blok ini tidak disentuh.
 #
-# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry_usd
+# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry
 # Kolom ke-3 (max entry lama) diabaikan.
 # Size: angka SOL (contoh 0.5), kelipatan 1x / 1.25x / 1.5x, atau tier1 / tier2 / tier3.
 # Kosong = ENTRY_DEFAULT_SIZE_SOL. Kelipatan dan tier dikali default itu.
@@ -15,7 +15,11 @@
 #   POOL_ADDRESS,0.5,,bidask:double
 # bidask:double, CA token:
 #   TOKEN_CA,1.25x,,bidask:double,ca
-# bidask:sol (hanya CA + harga entry USD per token, tanpa Supertrend):
+# bidask:sol (hanya CA + harga entry per token, tanpa Supertrend):
 #   TOKEN_CA,1x,,bidask:sol,ca,0.00123
-#   Masuk saat harga Jupiter <= 0.00123. Kolom pertama adalah mint, bukan pool.
+#   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd
+#   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol
+#   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).
+#   Akhiran lain, nol, atau negatif = baris dilewati.
+#   Masuk saat harga Jupiter <= target. Kolom pertama adalah mint, bukan pool.
 # === END FORMAT ===

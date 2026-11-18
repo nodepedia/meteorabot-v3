@@ -42,6 +42,47 @@ test("bidask:sol yang menunggu harga tampil di ringkasan", () => {
     price: 0.002,
   });
   assert.match(ready, /siap entry/);
+  assert.match(waiting, /\$0\.002/);
+  assert.match(ready, /\$0\.003/);
+});
+
+test("bidask:sol ringkasan menampilkan satuan SOL dan USD", () => {
+  const sol = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPrice: 0.0000123,
+    entryPriceUnit: "sol",
+    price: 0.00002,
+  });
+  assert.match(sol, /0\.0000123 SOL/);
+  assert.match(sol, /0\.00002 SOL/);
+  assert.match(sol, /DI ATAS harga entry/);
+  assert.doesNotMatch(sol, /\$/);
+
+  const usd = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPrice: 0.0012,
+    entryPriceUnit: "usd",
+    price: 0.001,
+  });
+  assert.match(usd, /\$0\.0012/);
+  assert.match(usd, /\$0\.001/);
+  assert.match(usd, /siap entry/);
+
+  const noSol = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPrice: 0.0000123,
+    entryPriceUnit: "sol",
+    price: null,
+  });
+  assert.match(noSol, /0\.0000123 SOL/);
+  assert.match(noSol, /harga belum tersedia/);
+  assert.doesNotMatch(noSol, /siap entry/);
 });
 
 test("clock menampilkan WIB (UTC+7)", () => {

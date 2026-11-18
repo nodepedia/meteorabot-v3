@@ -1,4 +1,4 @@
-// Entry manual bidask:sol dari pool.txt (CA + harga USD).
+// Entry manual bidask:sol dari pool.txt (CA + harga USD atau SOL per token).
 // Posisi standar SDK menyimpan 70 bin (DEFAULT_BIN_PER_POSITION). Lebih lebar
 // dari itu, dan juga bila ada bin atas yang dikosongkan, pembukaan memakai
 // createExtendedEmptyPosition. SDK mengizinkan satu posisi sampai
@@ -6,6 +6,7 @@
 // batas itu. Setoran likuiditas tetap dipecah per 70 bin.
 import config from "../config/index.js";
 import { WSOL_MINT } from "../core/constants.js";
+import log from "../core/logger.js";
 import { getPrices } from "../market/jupiter-price.js";
 import { getLastPrices } from "./price-watch.js";
 import { addrOf, isDlmmPool, isCaPoolInvalid } from "./ca-resolve.js";
@@ -180,7 +181,58 @@ export function pickBidaskSolEntryPool(pools, mint, opts = {}) {
   return { pool: ranked[0].pool, reason: null, ranked, lowTvl, tooWide, badStep, ...ranked[0] };
 }
 
-// Harga Jupiter <= harga entry → pemicu. Tidak memakai Supertrend.
+// Harga yang dibandingkan dengan target.
+// usd = harga Jupiter token. sol = tokenUsd / solUsd (SOL per token).
+// Harga SOL hilang atau tidak valid → price null, reason "sol" (jangan dipicu).
+export function bidaskSolQuotePrice({ tokenUsd, solUsd, entryPriceUnit } = {}) {
+  const unit = entryPriceUnit === "sol" ? "sol" : "usd";
+  if (unit === "sol") {
+    const sol = Number(solUsd);
+    if (!Number.isFinite(sol) || !(sol > 0)) return { unit, price: null, reason: "sol" };
+    const token = Number(tokenUsd);
+    if (!Number.isFinite(token)) return { unit, price: null, reason: "token" };
+    return { unit, price: token / sol };
+  }
+  const token = Number(tokenUsd);
+  if (!Number.isFinite(token)) return { unit, price: null, reason: "token" };
+  return { unit, price: token };
+}
+
+// Rentang bin posisi, dalam satuan yang sama dengan target entry.
+export function coveredEntryPrices({
+  entryPriceUnit,
+  solPerToken,
+  solUsd,
+  triggerPrice,
+  priceUsd,
+  binStep,
+  binsBelow,
+  binsAbove,
+} = {}) {
+  const unit = entryPriceUnit === "sol" ? "sol" : "usd";
+  const pool = Number(solPerToken);
+  let active;
+  if (unit === "sol") {
+    active = pool > 0 ? pool : Number(triggerPrice);
+  } else {
+    const marketUsd = Number(priceUsd ?? triggerPrice);
+    const sol = Number(solUsd);
+    active = pool > 0 && sol > 0 ? pool * sol : marketUsd;
+  }
+  const covered = coveredPriceUsd(active, binStep, binsBelow, binsAbove);
+  return { unit, priceFrom: covered?.lowerUsd ?? null, priceTo: covered?.upperUsd ?? null };
+}
+
+let missingSolLogAt = 0;
+
+function noteMissingSolPrice(count, now = Date.now()) {
+  if (now - missingSolLogAt < 60_000) return;
+  missingSolLogAt = now;
+  log.warn(`bidask:sol: harga SOL tidak tersedia atau tidak valid — ${count} baris satuan SOL tidak dipicu`);
+}
+
+// Harga <= target → pemicu. Tidak memakai Supertrend.
+// Satuan sol memakai tokenUsd / harga WSOL dari batch Jupiter yang sama.
 // Harga terakhir disimpan supaya ringkasan log menampilkan harga yang dipantau.
 export async function pollBidaskSolPrices(watches = [], deps = {}) {
   const fetchPrices = deps.getPrices || getPrices;
@@ -190,20 +242,36 @@ export async function pollBidaskSolPrices(watches = [], deps = {}) {
   const prices = await fetchPrices([...list.map((w) => w.mint), WSOL_MINT]);
   const last = getLastPrices();
   for (const [mint, value] of prices) {
+    if (mint === WSOL_MINT) continue;
     if (Number.isFinite(value)) last.set(mint, value);
   }
+  const solUsd = prices.get(WSOL_MINT);
+  const solNum = Number(solUsd);
+  if (Number.isFinite(solNum) && solNum > 0) last.set(WSOL_MINT, solNum);
+  else last.delete(WSOL_MINT);
 
   const triggered = [];
+  let missingSol = 0;
   for (const w of list) {
-    const price = prices.get(w.mint);
-    if (!Number.isFinite(price)) continue;
-    if (price <= Number(w.entryPrice)) {
+    const cmp = bidaskSolQuotePrice({
+      tokenUsd: prices.get(w.mint),
+      solUsd,
+      entryPriceUnit: w.entryPriceUnit,
+    });
+    if (cmp.price == null) {
+      if (cmp.reason === "sol") missingSol += 1;
+      continue;
+    }
+    if (cmp.price <= Number(w.entryPrice)) {
       triggered.push({
         ...w,
-        price,
-        solPrice: prices.get(WSOL_MINT),
+        price: cmp.price,
+        priceUsd: Number(prices.get(w.mint)),
+        solPrice: solUsd,
+        entryPriceUnit: cmp.unit,
       });
     }
   }
+  if (missingSol > 0) noteMissingSolPrice(missingSol, deps.now);
   return { triggered };
 }

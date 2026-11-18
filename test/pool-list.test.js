@@ -91,11 +91,11 @@ test("kolom ke-4 bidask / bidask:double valid, nilai lain di-skip", () => {
 test("bidask:sol hanya sah bersama ca dan harga entry USD positif", () => {
   withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
     assert.deepEqual(parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,0.00125\n`), [
-      { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:sol", ca: true, entryPrice: 0.00125 },
+      { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:sol", ca: true, entryPrice: 0.00125, entryPriceUnit: "usd" },
     ]);
     assert.deepEqual(parsePoolList(`${ADDR_B},0.5,,bidask:sol,ca,2\n${ADDR_A},tier2,,bidask:sol,ca,0.5\n`), [
-      { pool: ADDR_B, sizeSol: 0.5, mode: "bidask:sol", ca: true, entryPrice: 2 },
-      { pool: ADDR_A, sizeSol: 0.25, mode: "bidask:sol", ca: true, entryPrice: 0.5 },
+      { pool: ADDR_B, sizeSol: 0.5, mode: "bidask:sol", ca: true, entryPrice: 2, entryPriceUnit: "usd" },
+      { pool: ADDR_A, sizeSol: 0.25, mode: "bidask:sol", ca: true, entryPrice: 0.5, entryPriceUnit: "usd" },
     ]);
     assert.deepEqual(
       parsePoolList(
@@ -108,6 +108,47 @@ test("bidask:sol hanya sah bersama ca dan harga entry USD positif", () => {
       { pool: ADDR_B, sizeSol: 0.2, mode: "spot", ca: true },
       { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:double" },
     ]);
+  });
+});
+
+test("bidask:sol membaca satuan sol, usd, angka polos, dan menolak akhiran lain", () => {
+  withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
+    assert.deepEqual(parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,0.0000123sol\n`), [
+      {
+        pool: ADDR_A,
+        sizeSol: 0.2,
+        mode: "bidask:sol",
+        ca: true,
+        entryPrice: 0.0000123,
+        entryPriceUnit: "sol",
+      },
+    ]);
+    assert.deepEqual(parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,0.0000123SOL\n`), [
+      {
+        pool: ADDR_A,
+        sizeSol: 0.2,
+        mode: "bidask:sol",
+        ca: true,
+        entryPrice: 0.0000123,
+        entryPriceUnit: "sol",
+      },
+    ]);
+    assert.deepEqual(
+      parsePoolList(
+        `${ADDR_B},1x,,bidask:sol,ca,0.0012usd\n${ADDR_A},1x,,bidask:sol,ca,0.0012USD\n${ADDR_A},0.5,,bidask:sol,ca,0.5\n`
+      ),
+      [
+        { pool: ADDR_B, sizeSol: 0.2, mode: "bidask:sol", ca: true, entryPrice: 0.0012, entryPriceUnit: "usd" },
+        { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:sol", ca: true, entryPrice: 0.0012, entryPriceUnit: "usd" },
+        { pool: ADDR_A, sizeSol: 0.5, mode: "bidask:sol", ca: true, entryPrice: 0.5, entryPriceUnit: "usd" },
+      ]
+    );
+    assert.deepEqual(
+      parsePoolList(
+        `${ADDR_A},1x,,bidask:sol,ca,0.0012eur\n${ADDR_A},1x,,bidask:sol,ca,1btc\n${ADDR_A},1x,,bidask:sol,ca,-0.2sol\n${ADDR_A},1x,,bidask:sol,ca,0sol\n${ADDR_A},1x,,bidask:sol,ca,-1\n`
+      ),
+      []
+    );
   });
 });
 
@@ -135,6 +176,12 @@ test("header pool.txt idempoten dan tidak mengubah baris pengguna", () => {
   const example = fs.readFileSync(path.resolve("pool.txt.example"), "utf8");
   assert.equal(example, applyPoolListHeader("").next);
   assert.deepEqual(example.replace(/\n$/, "").split("\n"), poolListHeaderLines());
+  const header = poolListHeaderLines().join("\n");
+  assert.match(header, /TOKEN_CA,1x,,bidask:sol,ca,0\.00123\n/);
+  assert.match(header, /0\.00123usd/);
+  assert.match(header, /0\.0000123sol/);
+  assert.match(header, /USD per token/);
+  assert.match(header, /SOL per token/);
 });
 
 test("ensurePoolListHeader menulis atomik dan tidak menulis ulang bila sama", () => {

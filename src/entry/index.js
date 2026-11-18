@@ -1,5 +1,7 @@
 import config from "../config/index.js";
 import log from "../core/logger.js";
+import { fmtQuote } from "../core/report.js";
+import { WSOL_MINT } from "../core/constants.js";
 import * as tg from "../notify/telegram.js";
 import { getOpenTrackedPositions } from "../state/positions.js";
 import { loadPoolList, commentPoolInList, ensurePoolListHeader } from "./pool-list.js";
@@ -22,7 +24,7 @@ import {
   poolKeysToReset,
 } from "./candidates.js";
 import { resolveCaPool, chooseBidaskDoublePool, shouldLogCaSkip, markCaPoolInvalid } from "./ca-resolve.js";
-import { pollBidaskSolPrices, pickBidaskSolEntryPool } from "./bidask-sol-entry.js";
+import { pollBidaskSolPrices, pickBidaskSolEntryPool, bidaskSolQuotePrice } from "./bidask-sol-entry.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -62,7 +64,11 @@ function buildLocalWatchSnapshot() {
     };
   });
   for (const c of bidaskSolCache) {
-    const price = prices.get(c.mint);
+    const cmp = bidaskSolQuotePrice({
+      tokenUsd: prices.get(c.mint),
+      solUsd: prices.get(WSOL_MINT),
+      entryPriceUnit: c.entryPriceUnit,
+    });
     rows.push({
       pool: c.mint,
       pairName: c.pairName || `CA ${c.mint.slice(0, 8)}`,
@@ -70,7 +76,8 @@ function buildLocalWatchSnapshot() {
       sizeSol: c.sizeSol,
       mode: "bidask:sol",
       entryPrice: c.entryPrice,
-      price: Number.isFinite(price) ? price : null,
+      entryPriceUnit: cmp.unit,
+      price: cmp.price,
       pendingBidaskSol: true,
     });
   }
@@ -234,7 +241,14 @@ export async function refreshCandidates() {
     const solWatches = [];
     const stillOpen = new Set();
 
-    for (const { pool: lineKey, sizeSol, mode = ENTRY_MODE, ca = false, entryPrice = null } of pools) {
+    for (const {
+      pool: lineKey,
+      sizeSol,
+      mode = ENTRY_MODE,
+      ca = false,
+      entryPrice = null,
+      entryPriceUnit = null,
+    } of pools) {
       // lineKey = kolom pertama baris pool.txt (alamat pool, atau CA untuk baris `,ca`).
       let poolAddress = lineKey;
       const strategy = strategyOfMode(mode);
@@ -273,6 +287,7 @@ export async function refreshCandidates() {
           mint: lineKey,
           sizeSol,
           entryPrice: Number(entryPrice),
+          entryPriceUnit: entryPriceUnit === "sol" ? "sol" : "usd",
           mode,
           strategy,
           pairName: `CA ${lineKey.slice(0, 8)}`,
@@ -1004,8 +1019,14 @@ function bidaskSolWaitMs() {
 }
 
 // Harga sudah <= target. Pilih pool sekarang; kalau tidak ada yang lolos, tunggu.
+function bidaskSolHarga(price, entryPrice, unit) {
+  const u = unit === "sol" ? "sol" : "usd";
+  return `${fmtQuote(price, u)} <= ${fmtQuote(entryPrice, u)}`;
+}
+
 async function runBidaskSolEntry(watch) {
-  const { mint, sizeSol, entryPrice, price, solPrice } = watch;
+  const { mint, sizeSol, entryPrice, price, solPrice, priceUsd, entryPriceUnit } = watch;
+  const unit = entryPriceUnit === "sol" ? "sol" : "usd";
   const pairHint = `CA ${mint.slice(0, 8)}`;
   addEntryInProgressMint(mint);
   let poolLocked = null;
@@ -1015,7 +1036,7 @@ async function runBidaskSolEntry(watch) {
       bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
       if (shouldLogCaSkip(`bidasksol:${mint}`)) {
         log.info(
-          `${pairHint} bidask:sol menunggu: ${resolved?.reason || "gagal ambil daftar pool"} (harga ${price} <= ${entryPrice}) — baris tidak dimatikan`
+          `${pairHint} bidask:sol menunggu: ${resolved?.reason || "gagal ambil daftar pool"} (harga ${bidaskSolHarga(price, entryPrice, unit)}) — baris tidak dimatikan`
         );
       }
       return;
@@ -1025,7 +1046,7 @@ async function runBidaskSolEntry(watch) {
       bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
       if (shouldLogCaSkip(`bidasksol:${mint}`)) {
         log.info(
-          `${pairHint} bidask:sol menunggu: ${picked.reason || resolved?.reason || "tidak ada pool"} (harga ${price} <= ${entryPrice}) — baris tidak dimatikan`
+          `${pairHint} bidask:sol menunggu: ${picked.reason || resolved?.reason || "tidak ada pool"} (harga ${bidaskSolHarga(price, entryPrice, unit)}) — baris tidak dimatikan`
         );
       }
       return;
@@ -1036,7 +1057,7 @@ async function runBidaskSolEntry(watch) {
         dryRunNoted.add(mint);
         const top = picked.ranked[0];
         log.info(
-          `[DRY RUN] Would enter bidask:sol ${pairHint} — ${sizeSol} SOL saat harga ${price} <= ${entryPrice} | pool ${top.pool.slice(0, 8)} step ${top.binStep} TVL ${Math.round(top.tvl)} ${top.binCount} bin`
+          `[DRY RUN] Would enter bidask:sol ${pairHint} — ${sizeSol} SOL saat harga ${bidaskSolHarga(price, entryPrice, unit)} | pool ${top.pool.slice(0, 8)} step ${top.binStep} TVL ${Math.round(top.tvl)} ${top.binCount} bin`
         );
       }
       return;
@@ -1073,7 +1094,9 @@ async function runBidaskSolEntry(watch) {
       const result = await executeBidaskSolEntry(pool, sizeSol, {
         tvlUsd: row.tvl,
         entryPrice,
+        entryPriceUnit: unit,
         triggerPrice: price,
+        priceUsd: priceUsd ?? (unit === "usd" ? price : null),
         solPrice,
         binStepHint: row.binStep,
       });
@@ -1107,7 +1130,7 @@ async function runBidaskSolEntry(watch) {
     bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
     if (shouldLogCaSkip(`bidasksol:${mint}`)) {
       log.info(
-        `${pairHint} bidask:sol menunggu: ${lastReason || "tidak ada pool yang bisa dibuka"} (harga ${price} <= ${entryPrice}) — baris tidak dimatikan`
+        `${pairHint} bidask:sol menunggu: ${lastReason || "tidak ada pool yang bisa dibuka"} (harga ${bidaskSolHarga(price, entryPrice, unit)}) — baris tidak dimatikan`
       );
     }
   } catch (err) {
@@ -1125,7 +1148,7 @@ function startBidaskSolEntry(watch) {
   if (config.dryRun && dryRunNoted.has(mint)) return;
   if (isEntryInProgressMint(mint) || isMintClosing(mint) || isMintSwapPending(mint)) return;
   log.info(
-    `CA ${mint.slice(0, 8)} bidask:sol: harga ${watch.price} <= ${watch.entryPrice} — cari pool (${watch.sizeSol} SOL)`
+    `CA ${mint.slice(0, 8)} bidask:sol: harga ${bidaskSolHarga(watch.price, watch.entryPrice, watch.entryPriceUnit)} — cari pool (${watch.sizeSol} SOL)`
   );
   return runBidaskSolEntry(watch);
 }

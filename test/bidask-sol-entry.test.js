@@ -11,8 +11,14 @@ process.env.PNL_HISTORY_FILE = path.join(TMP, "pnl-history.json");
 process.env.RUNTIME_STATE_FILE = path.join(TMP, "runtime-state.json");
 
 const { Keypair } = await import("@solana/web3.js");
-const { ceilBinsForPricePct, bidaskSolEntryBinPlan, pickBidaskSolEntryPool } =
-  await import("../src/entry/bidask-sol-entry.js");
+const {
+  ceilBinsForPricePct,
+  bidaskSolEntryBinPlan,
+  pickBidaskSolEntryPool,
+  pollBidaskSolPrices,
+  bidaskSolQuotePrice,
+  coveredEntryPrices,
+} = await import("../src/entry/bidask-sol-entry.js");
 const { executeBidaskSolEntry } = await import("../src/entry/execute.js");
 const config = (await import("../src/config/index.js")).default;
 const { getTrackedPosition, getInitialCapitalSol, getEntrySizeSol } = await import("../src/state/positions.js");
@@ -187,6 +193,7 @@ test("executeBidaskSolEntry mencatat mode bidask:sol, modal awal, dan bin atas k
   assert.equal(alerts[0].binStep, 100);
   assert.equal(alerts[0].tvlUsd, 24653.2);
   assert.equal(alerts[0].binCount, 86);
+  assert.equal(alerts[0].priceUnit, "usd");
   assert.ok(alerts[0].priceFrom > 0 && alerts[0].priceFrom < 1);
   assert.ok(alerts[0].priceTo > 1);
 
@@ -312,4 +319,170 @@ test("quote non-refundable memakai seluruh rentang, juga posisi lebih lebar dari
   assert.equal(quoted.maxBinId - quoted.minBinId + 1, 169);
   assert.equal(quoted.minBinId, res.minBinId);
   assert.equal(quoted.maxBinId, res.maxBinId);
+});
+
+test("pemicu satuan SOL = tokenUsd / solUsd, dan harga SOL hilang tidak memicu", async () => {
+  assert.deepEqual(bidaskSolQuotePrice({ tokenUsd: 1, solUsd: 4, entryPriceUnit: "sol" }), {
+    unit: "sol",
+    price: 0.25,
+  });
+  assert.equal(bidaskSolQuotePrice({ tokenUsd: 1, solUsd: 0, entryPriceUnit: "sol" }).price, null);
+  assert.equal(bidaskSolQuotePrice({ tokenUsd: 1, solUsd: -5, entryPriceUnit: "sol" }).reason, "sol");
+  assert.equal(bidaskSolQuotePrice({ tokenUsd: 1, entryPriceUnit: "sol" }).reason, "sol");
+  assert.deepEqual(bidaskSolQuotePrice({ tokenUsd: 0.0012, entryPriceUnit: "usd" }), {
+    unit: "usd",
+    price: 0.0012,
+  });
+
+  const other = "MintOther11111111111111111111111111111111";
+  let asked = [];
+  const hit = await pollBidaskSolPrices(
+    [
+      { mint: CA, entryPrice: 0.25, entryPriceUnit: "sol", sizeSol: 1 },
+      { mint: other, entryPrice: 0.002, entryPriceUnit: "usd", sizeSol: 1 },
+    ],
+    {
+      getPrices: async (ids) => {
+        asked = ids;
+        return new Map([
+          [CA, 1],
+          [other, 0.001],
+          [SOL, 4],
+        ]);
+      },
+    }
+  );
+  assert.ok(asked.includes(CA));
+  assert.ok(asked.includes(other));
+  assert.ok(asked.includes(SOL));
+  assert.equal(hit.triggered.length, 2);
+  const solHit = hit.triggered.find((row) => row.mint === CA);
+  assert.equal(solHit.price, 0.25);
+  assert.equal(solHit.priceUsd, 1);
+  assert.equal(solHit.solPrice, 4);
+  assert.equal(solHit.entryPriceUnit, "sol");
+  const usdHit = hit.triggered.find((row) => row.mint === other);
+  assert.equal(usdHit.price, 0.001);
+  assert.equal(usdHit.entryPriceUnit, "usd");
+
+  const above = await pollBidaskSolPrices([{ mint: CA, entryPrice: 0.2, entryPriceUnit: "sol" }], {
+    getPrices: async () =>
+      new Map([
+        [CA, 1],
+        [SOL, 4],
+      ]),
+  });
+  assert.equal(above.triggered.length, 0);
+
+  const missing = await pollBidaskSolPrices([{ mint: CA, entryPrice: 1, entryPriceUnit: "sol" }], {
+    now: 1e15,
+    getPrices: async () => new Map([[CA, 1]]),
+  });
+  assert.equal(missing.triggered.length, 0);
+
+  const invalid = await pollBidaskSolPrices([{ mint: CA, entryPrice: 1, entryPriceUnit: "sol" }], {
+    getPrices: async () =>
+      new Map([
+        [CA, 1],
+        [SOL, 0],
+      ]),
+  });
+  assert.equal(invalid.triggered.length, 0);
+
+  const negative = await pollBidaskSolPrices([{ mint: CA, entryPrice: 1, entryPriceUnit: "sol" }], {
+    getPrices: async () =>
+      new Map([
+        [CA, 1],
+        [SOL, -3],
+      ]),
+  });
+  assert.equal(negative.triggered.length, 0);
+
+  const usdWithoutSol = await pollBidaskSolPrices([{ mint: other, entryPrice: 0.002 }], {
+    getPrices: async () => new Map([[other, 0.001]]),
+  });
+  assert.equal(usdWithoutSol.triggered.length, 1);
+  assert.equal(usdWithoutSol.triggered[0].price, 0.001);
+  assert.equal(usdWithoutSol.triggered[0].entryPriceUnit, "usd");
+});
+
+test("rentang posisi mengikuti satuan target", () => {
+  const usd = coveredEntryPrices({
+    entryPriceUnit: "usd",
+    solPerToken: 0.01,
+    solUsd: 100,
+    triggerPrice: 1,
+    binStep: 100,
+    binsBelow: 70,
+    binsAbove: 15,
+  });
+  assert.equal(usd.unit, "usd");
+  assert.ok(usd.priceFrom > 0 && usd.priceFrom < 1);
+  assert.ok(usd.priceTo > 1);
+
+  const sol = coveredEntryPrices({
+    entryPriceUnit: "sol",
+    solPerToken: 0.01,
+    solUsd: 100,
+    triggerPrice: 0.0000123,
+    binStep: 100,
+    binsBelow: 70,
+    binsAbove: 15,
+  });
+  assert.equal(sol.unit, "sol");
+  assert.ok(sol.priceFrom > 0 && sol.priceFrom < 0.01);
+  assert.ok(sol.priceTo > 0.01 && sol.priceTo < 0.02);
+  assert.ok(Math.abs(usd.priceFrom / sol.priceFrom - 100) < 1e-6);
+});
+
+test("executeBidaskSolEntry satuan sol mengirim range SOL ke alert", async () => {
+  const wallet = Keypair.generate();
+  const alerts = [];
+  const mockPool = {
+    lbPair: { binStep: 100 },
+    async getActiveBin() {
+      return { binId: 1000, pricePerToken: "0.01" };
+    },
+    async quoteCreatePosition() {
+      return { binArrayCost: 0, bitmapExtensionCost: 0 };
+    },
+    async createExtendedEmptyPosition() {
+      return { tx: "init" };
+    },
+    async addLiquidityByStrategy() {
+      return { tx: "add" };
+    },
+  };
+  const res = await executeBidaskSolEntry(POOL, 0.4, {
+    dryRun: false,
+    allowDuplicateMint: true,
+    tvlUsd: 20000,
+    entryPriceUnit: "sol",
+    triggerPrice: 0.0000123,
+    priceUsd: 0.00123,
+    solPrice: 100,
+    getPoolInfo: async () => ({
+      pool: mockPool,
+      baseMint: CA,
+      baseIsX: true,
+      quoteMint: SOL,
+      unsupported: false,
+      collectFeeMode: 0,
+      pairName: "TOK-SOL",
+    }),
+    getDlmmSdk: async () => ({ StrategyType: { BidAsk: 2, Spot: 0 } }),
+    getConnection: () => ({}),
+    getWallet: () => wallet,
+    getSolBalance: async () => 5,
+    buildFeePlan: () => ({ mode: "none" }),
+    checkFeeCap: () => ({ ok: true, totalSol: 0 }),
+    sendAndConfirmRobust: async () => "tx_sol_unit",
+    notifyEntry: (payload) => alerts.push(payload),
+  });
+  assert.equal(res.success, true);
+  assert.equal(res.priceUnit, "sol");
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].priceUnit, "sol");
+  assert.ok(alerts[0].priceFrom > 0 && alerts[0].priceFrom < 0.01);
+  assert.ok(alerts[0].priceTo > 0.01 && alerts[0].priceTo < 0.02);
 });

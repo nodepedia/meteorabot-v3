@@ -34,16 +34,23 @@ function resolveSizeSol(sizeRaw, defaultSize) {
   return Number(sizeRaw);
 }
 
-function parsePositivePrice(raw) {
-  if (raw == null || raw === "") return null;
-  const token = String(raw).split(/[\s#]/)[0];
-  if (!token) return null;
-  const n = Number(token);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return n;
+// Harga entry bidask:sol. Kosong / usd = USD per token. Akhiran sol = SOL per token.
+// null = kolom kosong. { ok:false } = angka tidak valid atau akhiran tidak dikenal.
+function parseEntryPrice(raw) {
+  if (raw == null) return null;
+  const body = String(raw).split("#")[0].trim();
+  if (!body) return null;
+  const m = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?:\s*([A-Za-z]+))?$/.exec(body);
+  if (!m) return { ok: false, reason: "invalid" };
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: "invalid" };
+  const suffix = (m[2] || "").toLowerCase();
+  if (suffix === "" || suffix === "usd") return { ok: true, entryPrice: n, entryPriceUnit: "usd" };
+  if (suffix === "sol") return { ok: true, entryPrice: n, entryPriceUnit: "sol" };
+  return { ok: false, reason: "suffix", suffix };
 }
 
-// bidask:sol hanya sah bersama kolom `ca` dan harga entry USD yang positif.
+// bidask:sol hanya sah bersama kolom `ca` dan harga entry positif (usd atau sol).
 // Tanpa itu kembalikan null supaya pemanggil memperingatkan dan melewati baris.
 function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null } = {}) {
   if (!modeRaw) return "bidask:double";
@@ -60,7 +67,7 @@ function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null } = {}) {
 // Baris `alamat` saja memakai ENTRY_DEFAULT_SIZE_SOL.
 // Format lama `alamat,size,max[,mode[,ca]]` tetap terbaca: kolom ke-3 (max
 // entry seumur hidup) diabaikan. Mode tetap kolom ke-4.
-// bidask:sol: `CA,size,,bidask:sol,ca,HARGA_USD` (kolom ke-6 = harga entry).
+// bidask:sol: `CA,size,,bidask:sol,ca,HARGA` (kolom ke-6 = harga entry, usd atau sol).
 export function parsePoolList(raw) {
   const defaultSize = Number(config.entry.defaultSizeSol);
   const entries = [];
@@ -74,7 +81,9 @@ export function parsePoolList(raw) {
     const sizeRaw = parts[1];
     const modeRaw = parts[3];
     const kindRaw = parts[4];
-    const entryPrice = parsePositivePrice(parts[5]);
+    const parsedPrice = parseEntryPrice(parts[5]);
+    const entryPrice = parsedPrice?.ok ? parsedPrice.entryPrice : null;
+    const entryPriceUnit = parsedPrice?.ok ? parsedPrice.entryPriceUnit : null;
     if (!address) continue;
     // Kolom ke-5 `ca`: kolom pertama adalah CA token (mint), pool dipilih saat entry.
     const isCa = Boolean(kindRaw && kindRaw.split(/[\s#]/)[0].toLowerCase() === "ca");
@@ -90,9 +99,15 @@ export function parsePoolList(raw) {
     const mode = secondIsSpot ? "spot" : resolveEntryMode(modeRaw, { isCa, entryPrice });
     if (!mode) {
       if (modeKey === "bidask:sol") {
-        log.warn(
-          `Pool ${address.slice(0, 8)} skipped: bidask:sol butuh kolom ca dan harga entry USD positif (CA,size,,bidask:sol,ca,HARGA)`
-        );
+        if (parsedPrice?.reason === "suffix") {
+          log.warn(
+            `Pool ${address.slice(0, 8)} skipped: bidask:sol satuan harga "${parsedPrice.suffix}" tidak dikenal (pakai angka, usd, atau sol)`
+          );
+        } else {
+          log.warn(
+            `Pool ${address.slice(0, 8)} skipped: bidask:sol butuh kolom ca dan harga entry positif (CA,size,,bidask:sol,ca,0.0012 atau 0.0000123sol)`
+          );
+        }
       } else {
         log.warn(
           `Pool ${address.slice(0, 8)} skipped: entry_mode invalid "${modeRaw ?? ""}" (gunakan spot atau bidask:double)`
@@ -110,7 +125,7 @@ export function parsePoolList(raw) {
     }
 
     if (mode === "bidask:sol") {
-      entries.push({ pool: address, sizeSol, mode, ca: true, entryPrice });
+      entries.push({ pool: address, sizeSol, mode, ca: true, entryPrice, entryPriceUnit });
     } else if (isCa) {
       entries.push({ pool: address, sizeSol, mode, ca: true });
     } else {
@@ -239,7 +254,7 @@ export function poolListHeaderLines() {
     "# Blok ini ditulis ulang oleh bot bila teksnya berubah. Jangan diedit.",
     "# Baris di luar blok ini tidak disentuh.",
     "#",
-    "# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry_usd",
+    "# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry",
     "# Kolom ke-3 (max entry lama) diabaikan.",
     "# Size: angka SOL (contoh 0.5), kelipatan 1x / 1.25x / 1.5x, atau tier1 / tier2 / tier3.",
     "# Kosong = ENTRY_DEFAULT_SIZE_SOL. Kelipatan dan tier dikali default itu.",
@@ -252,9 +267,13 @@ export function poolListHeaderLines() {
     "#   POOL_ADDRESS,0.5,,bidask:double",
     "# bidask:double, CA token:",
     "#   TOKEN_CA,1.25x,,bidask:double,ca",
-    "# bidask:sol (hanya CA + harga entry USD per token, tanpa Supertrend):",
+    "# bidask:sol (hanya CA + harga entry per token, tanpa Supertrend):",
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123",
-    "#   Masuk saat harga Jupiter <= 0.00123. Kolom pertama adalah mint, bukan pool.",
+    "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd",
+    "#   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol",
+    "#   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).",
+    "#   Akhiran lain, nol, atau negatif = baris dilewati.",
+    "#   Masuk saat harga Jupiter <= target. Kolom pertama adalah mint, bukan pool.",
     POOL_LIST_HEADER_END,
   ];
 }
