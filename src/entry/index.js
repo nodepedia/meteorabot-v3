@@ -2,7 +2,7 @@ import config from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
 import { getOpenTrackedPositions } from "../state/positions.js";
-import { loadPoolList, commentPoolInList } from "./pool-list.js";
+import { loadPoolList, commentPoolInList, ensurePoolListHeader } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
@@ -12,7 +12,7 @@ import {
   summarizeSpotRentCheck,
   minSpotNonRefundableSol,
 } from "../meteora/spot-position.js";
-import { executeEntry, executeSpotEntry } from "./execute.js";
+import { executeEntry, executeSpotEntry, executeBidaskSolEntry } from "./execute.js";
 import {
   selectWatchCandidates,
   strategyOfMode,
@@ -22,6 +22,7 @@ import {
   poolKeysToReset,
 } from "./candidates.js";
 import { resolveCaPool, chooseBidaskDoublePool, shouldLogCaSkip, markCaPoolInvalid } from "./ca-resolve.js";
+import { pollBidaskSolPrices, pickBidaskSolEntryPool } from "./bidask-sol-entry.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -47,7 +48,7 @@ export { selectWatchCandidates } from "./candidates.js";
 // Ringkasan pool yang sedang dipantau untuk log naratif (tanpa I/O).
 function buildLocalWatchSnapshot() {
   const prices = getLastPrices();
-  return candidateCache.map((c) => {
+  const rows = candidateCache.map((c) => {
     const st = getSupertrend(c.mint) || getSupertrendFallback(c.mint);
     const price = prices.get(c.mint);
     return {
@@ -60,10 +61,24 @@ function buildLocalWatchSnapshot() {
       price: Number.isFinite(price) ? price : null,
     };
   });
+  for (const c of bidaskSolCache) {
+    const price = prices.get(c.mint);
+    rows.push({
+      pool: c.mint,
+      pairName: c.pairName || `CA ${c.mint.slice(0, 8)}`,
+      mint: c.mint,
+      sizeSol: c.sizeSol,
+      mode: "bidask:sol",
+      entryPrice: c.entryPrice,
+      price: Number.isFinite(price) ? price : null,
+      pendingBidaskSol: true,
+    });
+  }
+  return rows;
 }
 
 export function getWatchSnapshot() {
-  if (candidateCache.length > 0) return buildLocalWatchSnapshot();
+  if (candidateCache.length > 0 || bidaskSolCache.length > 0) return buildLocalWatchSnapshot();
   return getSharedWatchSnapshot();
 }
 
@@ -89,6 +104,10 @@ const heldThisRefresh = new Set();
 
 // Kandidat dari refresh lambat; dibaca oleh poll harga cepat.
 let candidateCache = [];
+// Baris bidask:sol (CA + harga). Pool dipilih saat harga Jupiter menyentuh target.
+let bidaskSolCache = [];
+// Jeda singkat setelah pencarian pool gagal, supaya tidak menembak RPC tiap poll.
+const bidaskSolWaitUntil = new Map();
 let _refreshBusy = false;
 let _watchBusy = false;
 
@@ -110,6 +129,7 @@ function clearInMemoryGate(pool) {
     enteredPools.delete(key);
     enteredPools.delete(quotaKey(key, "spot"));
     enteredPools.delete(quotaKey(key, "bidask"));
+    bidaskSolWaitUntil.delete(key);
   }
 }
 
@@ -157,6 +177,7 @@ export function deactivatePool(pool, reason) {
   failureCooldownUntil.delete(pool);
   dryRunNoted.delete(pool);
   const alias = getPoolAlias(pool);
+  bidaskSolCache = bidaskSolCache.filter((c) => c.mint !== pool && c.mint !== alias);
   heldThisRefresh.add(pool);
   if (alias) heldThisRefresh.add(alias);
   if (commentPoolInList(pool, alias)) {
@@ -182,6 +203,13 @@ export async function refreshCandidates() {
 
   try {
     heldThisRefresh.clear();
+    try {
+      if (ensurePoolListHeader()) {
+        log.info(`Header format ${config.entry.poolListFile} diperbarui`);
+      }
+    } catch (err) {
+      log.warn(`Gagal menulis header ${config.entry.poolListFile}: ${err.message}`);
+    }
     const pools = loadPoolList();
     const reactivated = poolKeysToReset(activeLineIds, pools);
     activeLineIds = reactivated.ids;
@@ -191,6 +219,7 @@ export async function refreshCandidates() {
 
     if (pools.length === 0) {
       candidateCache = [];
+      bidaskSolCache = [];
       setWatchSnapshot([]);
       return null;
     }
@@ -202,9 +231,10 @@ export async function refreshCandidates() {
     const seenMintPool = new Map();
     const now = Date.now();
     const candidates = [];
+    const solWatches = [];
     const stillOpen = new Set();
 
-    for (const { pool: lineKey, sizeSol, mode = ENTRY_MODE, ca = false } of pools) {
+    for (const { pool: lineKey, sizeSol, mode = ENTRY_MODE, ca = false, entryPrice = null } of pools) {
       // lineKey = kolom pertama baris pool.txt (alamat pool, atau CA untuk baris `,ca`).
       let poolAddress = lineKey;
       const strategy = strategyOfMode(mode);
@@ -226,6 +256,27 @@ export async function refreshCandidates() {
           expiryHours: config.entry.expiryHours,
         });
         deactivatePool(poolAddress, "expired tanpa entry");
+        continue;
+      }
+
+      // bidask:sol: pantau harga Jupiter saja. Pool dipilih nanti, saat harga menyentuh target.
+      if (mode === "bidask:sol") {
+        if (!(Number(entryPrice) > 0)) continue;
+        if (isEntryInProgressMint(lineKey) || isMintClosing(lineKey)) continue;
+        const sameStrategyOpen = openPositions.some(
+          (p) =>
+            p && p.closed !== true && p.baseMint === lineKey && p.isDca !== true && strategyOfMode(p.mode) === strategy
+        );
+        if (sameStrategyOpen) continue;
+        if (solWatches.some((w) => w.mint === lineKey)) continue;
+        solWatches.push({
+          mint: lineKey,
+          sizeSol,
+          entryPrice: Number(entryPrice),
+          mode,
+          strategy,
+          pairName: `CA ${lineKey.slice(0, 8)}`,
+        });
         continue;
       }
 
@@ -448,6 +499,7 @@ export async function refreshCandidates() {
     }
 
     candidateCache = candidates;
+    bidaskSolCache = solWatches;
     setWatchSnapshot(buildLocalWatchSnapshot());
     return candidates;
   } catch (err) {
@@ -460,31 +512,56 @@ export async function refreshCandidates() {
 
 // Poll harga cepat: hanya baca kandidat + state Supertrend, lalu satu request
 // batch Jupiter. Tidak ada RPC di jalur ini.
+function bidaskSolWatchable(now = Date.now()) {
+  const openPositions = getOpenTrackedPositions();
+  return bidaskSolCache.filter((w) => {
+    if (!w?.mint || !(Number(w.entryPrice) > 0)) return false;
+    if (now < (bidaskSolWaitUntil.get(w.mint) || 0)) return false;
+    if (now < (failureCooldownUntil.get(w.mint) || 0)) return false;
+    if (isEntryInProgressMint(w.mint) || isMintClosing(w.mint) || isMintSwapPending(w.mint)) return false;
+    const sameOpen = openPositions.some(
+      (p) => p && p.closed !== true && p.baseMint === w.mint && p.isDca !== true && strategyOfMode(p.mode) === "bidask"
+    );
+    return !sameOpen;
+  });
+}
+
 export async function watchAndEnter() {
   if (!config.entry.enabled) return null;
   if (_watchBusy) return null;
-  if (candidateCache.length === 0) return null;
+  if (candidateCache.length === 0 && bidaskSolCache.length === 0) return null;
   _watchBusy = true;
 
   try {
+    const solWatchable = bidaskSolWatchable();
+    let solTriggered = [];
+    if (solWatchable.length > 0) {
+      const polled = await pollBidaskSolPrices(solWatchable);
+      solTriggered = polled.triggered || [];
+    }
+
     const watchable = selectWatchCandidates(candidateCache, {
       inFlight: inFlightPools,
       entered: enteredPools,
       cooldowns: failureCooldownUntil,
       now: Date.now(),
     });
-    if (watchable.length === 0) return null;
-
-    const byPool = new Map(watchable.map((c) => [c.pool, c]));
-    const { triggered } = await watchPrices(watchable.map((c) => ({ pool: c.pool, mint: c.mint })));
-    setWatchSnapshot(buildLocalWatchSnapshot());
-
-    for (const t of triggered) {
-      const c = byPool.get(t.pool);
-      if (c) startEntry(t, c);
+    let triggered = [];
+    if (watchable.length > 0) {
+      const byPool = new Map(watchable.map((c) => [c.pool, c]));
+      const watched = await watchPrices(watchable.map((c) => ({ pool: c.pool, mint: c.mint })));
+      triggered = watched.triggered || [];
+      for (const t of triggered) {
+        const c = byPool.get(t.pool);
+        if (c) startEntry(t, c);
+      }
     }
 
-    return triggered.length > 0 ? triggered : null;
+    setWatchSnapshot(buildLocalWatchSnapshot());
+    for (const w of solTriggered) startBidaskSolEntry(w);
+
+    const any = triggered.length + solTriggered.length;
+    return any > 0 ? [...triggered, ...solTriggered] : null;
   } catch (err) {
     log.error(`watchAndEnter failed: ${err.message}`);
     return null;
@@ -893,6 +970,164 @@ export function startSpotEntry(candidate, executeSpotEntryFn = executeSpotEntry,
       if (fallbackSlotKey && fallbackSlotKey !== slotKey) removeEntryInProgressPool(fallbackSlotKey);
       removeEntryInProgressMint(mint);
     });
+}
+
+function noteBidaskSolFailure(mint, pool, error) {
+  log.warn(`bidask:sol entry gagal untuk ${mint.slice(0, 8)}: ${error}`);
+  const failures = (failureCounts.get(mint) || 0) + 1;
+  failureCounts.set(mint, failures);
+  const pair = `CA ${mint.slice(0, 8)}`;
+  if (failures >= config.entry.maxFailures) {
+    deactivatePool(mint, `gagal bidask:sol entry ${failures}x`);
+    tg.notifyEntryAborted({ pool: pool || mint, pair, attempts: failures, error });
+    return;
+  }
+  const cooldownSec = Math.max(0, Number(config.entry.failureCooldownSec) || 0);
+  if (cooldownSec > 0) {
+    failureCooldownUntil.set(mint, Date.now() + cooldownSec * 1000);
+    log.info(
+      `CA ${mint.slice(0, 8)} cooldown ${cooldownSec}s after failed bidask:sol entry (${failures}/${config.entry.maxFailures})`
+    );
+  }
+  tg.notifyEntryFailed({
+    pool: pool || mint,
+    pair,
+    error,
+    attempts: failures,
+    maxFailures: config.entry.maxFailures,
+    cooldownSec,
+  });
+}
+
+function bidaskSolWaitMs() {
+  return Math.max(15_000, (Number(config.entry.caCacheSec) || 60) * 1000);
+}
+
+// Harga sudah <= target. Pilih pool sekarang; kalau tidak ada yang lolos, tunggu.
+async function runBidaskSolEntry(watch) {
+  const { mint, sizeSol, entryPrice, price, solPrice } = watch;
+  const pairHint = `CA ${mint.slice(0, 8)}`;
+  addEntryInProgressMint(mint);
+  let poolLocked = null;
+  try {
+    const resolved = await resolveCaPool(mint);
+    if (!Array.isArray(resolved?.pools)) {
+      bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
+      if (shouldLogCaSkip(`bidasksol:${mint}`)) {
+        log.info(
+          `${pairHint} bidask:sol menunggu: ${resolved?.reason || "gagal ambil daftar pool"} (harga ${price} <= ${entryPrice}) — baris tidak dimatikan`
+        );
+      }
+      return;
+    }
+    const picked = pickBidaskSolEntryPool(resolved.pools, mint);
+    if (!picked.ranked.length) {
+      bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
+      if (shouldLogCaSkip(`bidasksol:${mint}`)) {
+        log.info(
+          `${pairHint} bidask:sol menunggu: ${picked.reason || resolved?.reason || "tidak ada pool"} (harga ${price} <= ${entryPrice}) — baris tidak dimatikan`
+        );
+      }
+      return;
+    }
+
+    if (config.dryRun) {
+      if (!dryRunNoted.has(mint)) {
+        dryRunNoted.add(mint);
+        const top = picked.ranked[0];
+        log.info(
+          `[DRY RUN] Would enter bidask:sol ${pairHint} — ${sizeSol} SOL saat harga ${price} <= ${entryPrice} | pool ${top.pool.slice(0, 8)} step ${top.binStep} TVL ${Math.round(top.tvl)} ${top.binCount} bin`
+        );
+      }
+      return;
+    }
+
+    const openPositions = getOpenTrackedPositions();
+    let lastReason = null;
+    for (const row of picked.ranked) {
+      const pool = row.pool;
+      if (skipped.has(pool) || heldThisRefresh.has(pool)) continue;
+      if (Date.now() < (failureCooldownUntil.get(pool) || 0)) continue;
+      const block = mintBlocksEntry(openPositions, { pool, mint, strategy: "bidask" });
+      if (block.otherPool || block.sameStrategy) {
+        bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
+        if (shouldLogCaSkip(`bidasksol-block:${mint}`)) {
+          log.info(
+            `${pairHint} bidask:sol menunggu: token sudah punya posisi ${block.otherPool ? "di pool lain" : "bidask di pool ini"} — baris tidak dimatikan`
+          );
+        }
+        return;
+      }
+      const slotKey = quotaKey(pool, "bidask");
+      if (inFlightPools.has(slotKey) || inFlightPools.has(pool) || isPoolClosing(pool) || isPoolSwapPending(pool)) {
+        return;
+      }
+      if (isQuotaFull(openPositions, pool, "bidask")) return;
+
+      addEntryInProgressPool(slotKey);
+      poolLocked = slotKey;
+      if (getPoolAlias(pool) !== mint) setPoolAlias(pool, mint);
+      log.info(
+        `${pairHint} → pool ${pool.slice(0, 8)} bidask:sol (bin step ${row.binStep}, TVL ${Math.round(row.tvl)}, ${row.binCount} bin, fee/active TVL ${row.feeRatio})`
+      );
+      const result = await executeBidaskSolEntry(pool, sizeSol, {
+        tvlUsd: row.tvl,
+        entryPrice,
+        triggerPrice: price,
+        solPrice,
+        binStepHint: row.binStep,
+      });
+      removeEntryInProgressPool(slotKey);
+      poolLocked = null;
+
+      if (result?.success) {
+        enteredPools.set(slotKey, Date.now());
+        firstSeenAt.delete(mint);
+        firstSeenAt.delete(pool);
+        failureCooldownUntil.delete(mint);
+        failureCounts.delete(mint);
+        bidaskSolWaitUntil.delete(mint);
+        bidaskSolCache = bidaskSolCache.filter((c) => c.mint !== mint);
+        return;
+      }
+      if (result?.duplicateMint) {
+        bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
+        log.info(`${pairHint} bidask:sol dilewati: ${result.reason || "posisi sudah ada"} — baris tidak dimatikan`);
+        return;
+      }
+      if (result?.tryNext) {
+        lastReason = result.reason || result.error;
+        if (result.invalidPool) markCaPoolInvalid(pool, lastReason);
+        continue;
+      }
+      noteBidaskSolFailure(mint, pool, result?.error || result?.reason || "entry gagal");
+      return;
+    }
+
+    bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
+    if (shouldLogCaSkip(`bidasksol:${mint}`)) {
+      log.info(
+        `${pairHint} bidask:sol menunggu: ${lastReason || "tidak ada pool yang bisa dibuka"} (harga ${price} <= ${entryPrice}) — baris tidak dimatikan`
+      );
+    }
+  } catch (err) {
+    log.error(`bidask:sol entry error for ${mint.slice(0, 8)}: ${err.message}`);
+    noteBidaskSolFailure(mint, null, err.message);
+  } finally {
+    if (poolLocked) removeEntryInProgressPool(poolLocked);
+    removeEntryInProgressMint(mint);
+  }
+}
+
+function startBidaskSolEntry(watch) {
+  const mint = watch?.mint;
+  if (!mint) return;
+  if (config.dryRun && dryRunNoted.has(mint)) return;
+  if (isEntryInProgressMint(mint) || isMintClosing(mint) || isMintSwapPending(mint)) return;
+  log.info(
+    `CA ${mint.slice(0, 8)} bidask:sol: harga ${watch.price} <= ${watch.entryPrice} — cari pool (${watch.sizeSol} SOL)`
+  );
+  return runBidaskSolEntry(watch);
 }
 
 export function startEntryScanner() {

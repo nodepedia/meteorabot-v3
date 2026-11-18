@@ -48,25 +48,32 @@ Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kal
 - `BIDASK_DOUBLE_REBALANCE_ENABLED=true`: saat harga pool turun kelipatan 10% dari harga entry tiap posisi `bidask:double` (utama dan tiap DCA), token di atas bin aktif dibentuk ulang jadi BidAsk di posisi yang sama. `false` mematikan sisi token dan sisi SOL.
 - `BIDASK_DOUBLE_SOL_REBALANCE_ENABLED=true`: saat harga pulih minimal satu step dari rebalance terakhir, SOL di bawah bin aktif dibentuk ulang jadi BidAsk. `false` hanya mematikan sisi SOL.
 - `BIDASK_SOL_REBALANCE_ENABLED=true`: posisi `bidask:sol` (SOL-only) tiap kelipatan 10% porsi bin token dibentuk ulang sisi tokennya saja jadi BidAsk. Bin yang masih SOL tidak disentuh, dan tidak ada rebalance sisi SOL saat harga pulih.
+- `BIDASK_SOL_ENTRY_MIN_TVL_USD=20000`, `BIDASK_SOL_ENTRY_MAX_BINS=105`, `BIDASK_SOL_ENTRY_LOWER_PCT=-50`, `BIDASK_SOL_ENTRY_UPPER_PCT=15`: entry manual `bidask:sol` dari `pool.txt`. Saat harga Jupiter USD menyentuh target, bot memilih pool DLMM token/SOL (TVL dan lebar bin lolos) lalu membuka posisi SOL-only.
 - `REBALANCE_MODE=inplace`: semua rebalance (spot token, spot SOL, bidask token, bidask SOL) memakai instruksi di tempat, jadi saldo yang sudah ada di wallet tidak ikut masuk. `withdraw` kembali ke tarik-lalu-setor, hanya sejumlah yang keluar dari posisi.
 - Swap ke SOL saat close: token base **dan** reward di-swap ke SOL, kecuali mint yang dilindungi (posisi aktif, entry/rebalance/reentry OOR kanan/fallback OOR kiri yang sedang berjalan, USDC). Swap gagal → "swap tertunda", dicoba ulang tiap `SWAP_PENDING_RETRY_SEC` (90s); pool baru ditandai `#` setelah swap tuntas atau dihentikan (alert Telegram). Safety sweep juga memindai token Token-2022.
 
 ## `pool.txt`
-Satu pool per baris, formatnya `address,size[,max],mode[,ca]`. Hanya `address` yang wajib. Kolom `max` (jumlah entry seumur hidup) **diabaikan** — baris lama `address,size,max,mode` tetap valid.
+Satu pool per baris, formatnya `address,size[,max],mode[,ca[,harga]]`. Hanya `address` yang wajib. Kolom `max` (jumlah entry seumur hidup) **diabaikan** — baris lama `address,size,max,mode` tetap valid.
+
+File ini gitignored. Contoh yang ikut commit: `pool.txt.example`. Saat entry worker jalan, bot menulis blok komentar yang sama di antara `# === FORMAT (dikelola bot) ===` dan `# === END FORMAT ===` di puncak `pool.txt` (atau menggantinya bila teks berubah). Baris di luar blok itu tidak diubah.
 
 | Kolom | Nilai | Default |
 |---|---|---|
 | `size` | angka SOL, `1x`, `1.25x`, `1.5x`, `tier1`/`tier2`/`tier3` (kali `ENTRY_DEFAULT_SIZE_SOL`) | `1x` (0.1 SOL) |
 | `max` | kolom lama, tidak dipakai | — |
-| `mode` | `bidask:double` (atau `bidask`), `spot` | `bidask:double` |
+| `mode` | `bidask:double` (atau `bidask`), `spot`, `bidask:sol` | `bidask:double` |
 | kolom ke-5 | `ca` = kolom pertama adalah **CA token (mint)**, bukan pool | kosong (alamat pool) |
+| kolom ke-6 | harga entry USD per token, hanya untuk `bidask:sol` | — |
 
 ```
 PoolAddr1                       # bidask:double, 0.1 SOL
 PoolAddr2,0.5                   # 0.5 SOL, bidask:double
 PoolAddr3,1.25x,1,spot          # spot, 0.125 SOL (angka max diabaikan)
 TokenMint,1.5x,1,spot,ca        # baris CA: pool dipilih bot saat entry
+TokenMint,1x,,bidask:sol,ca,0.00123   # bidask:sol: masuk saat harga Jupiter <= 0.00123
 ```
+
+`bidask:sol` hanya valid bersama `ca` dan harga positif. Tanpa itu baris dilewati. Tidak ada gerbang Supertrend. Saat harga menyentuh target, bot memilih pool DLMM token/SOL (bukan blacklist, TVL >= `BIDASK_SOL_ENTRY_MIN_TVL_USD`, lebar bin <= `BIDASK_SOL_ENTRY_MAX_BINS`) berdasarkan fee/active TVL, lalu volume/TVL, lalu jumlah bin lebih sedikit. Tidak ada yang lolos = tetap menunggu, baris tidak diberi `#`. Posisi SOL-only BidAsk: bin bawah `BIDASK_SOL_ENTRY_LOWER_PCT` (default −50%) sampai atas `BIDASK_SOL_ENTRY_UPPER_PCT` (default +15%), setoran hanya sampai bin aktif. Setelah terbuka, exit / rebalance / re-entry sama seperti `bidask:sol` yang sudah ada.
 
 Gerbang masuk hanya tanda `#`. Selama baris tidak dikomentari, bot boleh masuk lagi setelah posisi sebelumnya tutup. Kuota yang tersisa: paling banyak **1 posisi non-DCA per strategi per pool**. `spot` dan `bidask` (`bidask:double`, `bidask:token`, `bidask:sol`) masing-masing punya slot, jadi satu spot dan satu bidask boleh terbuka di pool yang sama. Dua spot atau dua bidask tidak. Posisi DCA tidak memakan slot bidask.
 

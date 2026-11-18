@@ -61,7 +61,17 @@ function trendLabel(trend) {
 }
 
 function watchLine(w) {
-  const name = w.pairName || `${w.pool.slice(0, 8)}…`;
+  const name = w.pairName || `${(w.pool || "").slice(0, 8)}…`;
+  if (w.pendingBidaskSol) {
+    const target = fmtNum(w.entryPrice);
+    if (w.price == null) {
+      return `${name} | bidask:sol menunggu harga <= ${target} | harga belum tersedia`;
+    }
+    const ready = w.price <= w.entryPrice;
+    return `${name} | bidask:sol menunggu harga <= ${target} | harga ${fmtNum(w.price)} → ${
+      ready ? "sudah menyentuh harga entry (siap entry)" : "masih DI ATAS harga entry"
+    }`;
+  }
   if (w.line == null || w.price == null) {
     return `${name} | ${trendLabel(w.trend)} | harga belum tersedia untuk dibandingkan`;
   }

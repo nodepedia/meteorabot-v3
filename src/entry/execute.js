@@ -20,7 +20,13 @@ import {
   setInitialCapitalSol,
   getOpenPositionsForMint,
 } from "../state/positions.js";
-import { resolveSpotRangeWithRentCheck, openSpotSolPosition } from "../meteora/spot-position.js";
+import {
+  resolveSpotRangeWithRentCheck,
+  openSpotSolPosition,
+  nonRefundableCost,
+  exceedsNonRefundable,
+} from "../meteora/spot-position.js";
+import { bidaskSolEntryBinPlan, coveredPriceUsd } from "./bidask-sol-entry.js";
 import { recordAction, recordSpotEntryAttempt, consumeSpotEntryAttempt } from "./runtime.js";
 import { mintBlocksEntry } from "./candidates.js";
 
@@ -503,6 +509,258 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
     };
   } catch (err) {
     log.error(`Spot entry execution failed on ${poolAddress}: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+}
+
+// Entry bidask:sol dari harga Jupiter. Satu posisi [min..max], SOL BidAsk hanya
+// di [min..bin aktif], bin di atasnya kosong. Lebar >70 bin atau bin atas kosong
+// memakai createExtendedEmptyPosition (lihat openSpotSolPosition).
+export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
+  const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;
+  const getDlmmSdkFn = opts.getDlmmSdk || getDlmmSdk;
+  const getConnectionFn = opts.getConnection || getConnection;
+  const getWalletFn = opts.getWallet || getWallet;
+  const getSolBalanceFn = opts.getSolBalance || (() => getTokenBalance("SOL"));
+  const buildFeePlanFn = opts.buildFeePlan || buildFeePlan;
+  const checkFeeCapFn = opts.checkFeeCap || checkFeeCap;
+  const sendAndConfirmFn = opts.sendAndConfirmRobust || sendAndConfirmRobust;
+  const notifyFn = opts.notifyEntry || tg.notifyEntry;
+  const dryRun = opts.dryRun ?? config.dryRun;
+  const skipNonRefundable = opts.skipNonRefundable ?? config.spotReentry?.skipNonRefundable ?? true;
+  const maxNonRefundableSol = opts.maxNonRefundableSol ?? config.spotReentry?.maxNonRefundableSol ?? 0;
+  const maxBins = Math.max(1, Math.floor(Number(opts.maxBins ?? config.entry.bidaskSolMaxBins) || 105));
+  const lowerPct = opts.lowerPct ?? config.entry.bidaskSolLowerPct;
+  const upperPct = opts.upperPct ?? config.entry.bidaskSolUpperPct;
+
+  try {
+    if (!(sizeSol > 0)) {
+      return { success: false, error: `bidask:sol entry size invalid: size=${sizeSol}` };
+    }
+
+    let info;
+    try {
+      info = opts.poolInfo || (await getPoolInfoFn(poolAddress));
+    } catch (err) {
+      return { success: false, skipped: true, tryNext: true, invalidPool: true, reason: err.message };
+    }
+    const { pool, baseMint, baseIsX, quoteMint, unsupported, collectFeeMode, pairName } = info;
+    if (unsupported || !baseMint || !pool) {
+      return {
+        success: false,
+        skipped: true,
+        tryNext: true,
+        invalidPool: true,
+        reason: `pair bukan SOL (quote ${quoteMint || "?"})`,
+        baseMint,
+      };
+    }
+
+    if (!opts.allowDuplicateMint) {
+      const block = mintBlocksEntry(getOpenPositionsForMint(baseMint), {
+        pool: poolAddress,
+        mint: baseMint,
+        strategy: "bidask",
+      });
+      if (block.block) {
+        const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
+        return {
+          success: false,
+          skipped: true,
+          duplicateMint: true,
+          reason: block.otherPool
+            ? `token ${pair} (${baseMint.slice(0, 8)}) sudah memiliki posisi aktif di pool lain`
+            : `token ${pair} (${baseMint.slice(0, 8)}) sudah memiliki posisi bidask aktif di pool ini`,
+          baseMint,
+          pair,
+        };
+      }
+    }
+
+    const activeBin = await pool.getActiveBin();
+    const activeBinId = Number(activeBin.binId);
+    const binStep = Number(pool.lbPair?.binStep) || Number(opts.binStepHint) || 0;
+    const plan = bidaskSolEntryBinPlan({ binStep, activeBinId, lowerPct, upperPct });
+    const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
+    if (!plan) {
+      return { success: false, skipped: true, tryNext: true, reason: `bin step tidak valid (${binStep})`, pair };
+    }
+    if (plan.binCount > maxBins) {
+      return {
+        success: false,
+        skipped: true,
+        tryNext: true,
+        reason: `butuh ${plan.binCount} bin > ${maxBins} (step ${binStep})`,
+        pair,
+        binCount: plan.binCount,
+      };
+    }
+
+    if (typeof pool.quoteCreatePosition === "function") {
+      try {
+        const quote = await pool.quoteCreatePosition({
+          strategy: { minBinId: plan.minBinId, maxBinId: plan.maxBinId },
+        });
+        const nonRef = nonRefundableCost(quote);
+        if (skipNonRefundable && exceedsNonRefundable(nonRef, maxNonRefundableSol)) {
+          return {
+            success: false,
+            skipped: true,
+            tryNext: true,
+            reason: `sewa non-refundable ${nonRef.toFixed(6)} SOL > batas ${maxNonRefundableSol} (step ${binStep})`,
+            pair,
+          };
+        }
+      } catch (err) {
+        return { success: false, skipped: true, tryNext: true, reason: `quote gagal: ${err.message}`, pair };
+      }
+    }
+
+    const needsExtended = plan.binCount > 70 || plan.maxBinId > plan.depositMaxBinId;
+    if (needsExtended && typeof pool.createExtendedEmptyPosition !== "function") {
+      return {
+        success: false,
+        error: "SDK tidak mendukung createExtendedEmptyPosition untuk posisi lebar / bin atas kosong",
+        pair,
+      };
+    }
+
+    log.info(
+      `Executing bidask:sol entry on pool ${poolAddress.slice(0, 8)}... | size=${sizeSol} SOL | step=${binStep} | ${plan.binCount} bin [${plan.minBinId}..${plan.maxBinId}], deposit SOL [${plan.depositMinBinId}..${plan.depositMaxBinId}]`
+    );
+
+    if (dryRun) {
+      return { success: true, dryRun: true, mode: "bidask:sol", pair, ...plan };
+    }
+
+    const solBalance = await getSolBalanceFn();
+    const required = sizeSol + config.entry.gasReserve;
+    if (solBalance < required) {
+      return {
+        success: false,
+        error: `insufficient SOL: have ${solBalance.toFixed(4)}, need ${required.toFixed(4)}`,
+        pair,
+      };
+    }
+
+    const feePlan = buildFeePlanFn();
+    const feeCheck = checkFeeCapFn(feePlan);
+    if (!feeCheck.ok) {
+      const est = Number(feeCheck.totalSol ?? feeCheck.estimatedSol);
+      const cap = feeCheck.cap ?? feeCheck.maxSol;
+      return {
+        success: false,
+        error: `entry fee cap exceeded: est ${Number.isFinite(est) ? est.toFixed(6) : "?"} SOL > max ${cap} SOL (mode=${feePlan.mode})`,
+        pair,
+      };
+    }
+
+    const { StrategyType } = await getDlmmSdkFn();
+    const strategyType = StrategyType?.BidAsk;
+    if (strategyType === undefined) {
+      return { success: false, error: "strategi BidAsk tidak tersedia", pair };
+    }
+
+    const solLamports = new BN(Math.floor(sizeSol * LAMPORTS_PER_SOL));
+    const connection = getConnectionFn();
+    const wallet = getWalletFn();
+    const newPosition = Keypair.generate();
+
+    let openRes;
+    let recovered = false;
+    try {
+      openRes = await openSpotSolPosition({
+        pool,
+        connection,
+        wallet,
+        feePlan,
+        baseIsX,
+        solLamports,
+        minBinId: plan.minBinId,
+        maxBinId: plan.maxBinId,
+        depositMinBinId: plan.depositMinBinId,
+        depositMaxBinId: plan.depositMaxBinId,
+        strategyType,
+        slippage: config.entry.activeBinSlippagePct,
+        sendAndConfirmFn,
+        newPositionKeypair: newPosition,
+      });
+    } catch (txErr) {
+      let landed = false;
+      try {
+        const infoOnChain = await connection.getAccountInfo(newPosition.publicKey, "confirmed");
+        landed = Boolean(infoOnChain);
+      } catch {
+        landed = false;
+      }
+      if (!landed) throw txErr;
+      recovered = true;
+      openRes = {
+        positionPubkey: newPosition.publicKey.toString(),
+        txSigs: [],
+        lastSig: txErr.signature || "",
+      };
+      log.warn(
+        `bidask:sol ${pair}: konfirmasi/tx gagal (${txErr.message}) tapi posisi ${openRes.positionPubkey.slice(0, 8)} ada on-chain — anggap sukses`
+      );
+    }
+
+    const positionAddress = openRes.positionPubkey;
+    const lastSig = openRes.lastSig;
+    log.info(
+      `bidask:sol position opened: ${positionAddress} (tx: ${lastSig || "?"})${recovered ? " [recovered]" : ""} | bins [${plan.minBinId}..${plan.maxBinId}], SOL [${plan.depositMinBinId}..${plan.depositMaxBinId}]`
+    );
+
+    trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode ?? null, "bidask:sol", false, {
+      initialCapitalSol: sizeSol,
+      openBinsBelow: plan.binsBelow,
+      openBinsAbove: plan.binsAbove,
+    });
+    recordTrackedRange(positionAddress, plan.minBinId, plan.maxBinId);
+    setEntrySizeSol(positionAddress, sizeSol);
+    setInitialCapitalSol(positionAddress, sizeSol);
+    const entryPoolPrice = poolPriceSolPerToken(activeBin, baseIsX);
+    if (entryPoolPrice != null) setEntryPoolPrice(positionAddress, entryPoolPrice);
+
+    const solPerToken = poolPriceSolPerToken(activeBin, baseIsX);
+    const solUsd = Number(opts.solPrice);
+    const triggerUsd = Number(opts.triggerPrice);
+    const activeUsd = solPerToken && solUsd > 0 ? solPerToken * solUsd : triggerUsd;
+    const covered = coveredPriceUsd(activeUsd, binStep, plan.binsBelow, plan.binsAbove);
+
+    recordAction(
+      `ENTRY ${pair} — bidask:sol ${sizeSol} SOL (step ${binStep}, ${plan.binCount} bin, ${plan.minBinId}..${plan.maxBinId})`
+    );
+    await notifyFn({
+      pool: poolAddress,
+      pair,
+      position: positionAddress,
+      sizeSol,
+      feeMode: feePlan.mode,
+      feeSol: feeCheck.totalSol,
+      modeLabel: "bidask:sol",
+      binStep,
+      tvlUsd: opts.tvlUsd,
+      binCount: plan.binCount,
+      priceFrom: covered?.lowerUsd,
+      priceTo: covered?.upperUsd,
+      priceRangeLabel: `${lowerPct}%..+${upperPct}%`,
+    });
+
+    return {
+      success: true,
+      mode: "bidask:sol",
+      position: positionAddress,
+      pair,
+      txSig: lastSig,
+      recovered,
+      tvlUsd: opts.tvlUsd,
+      ...plan,
+      priceFrom: covered?.lowerUsd ?? null,
+      priceTo: covered?.upperUsd ?? null,
+    };
+  } catch (err) {
+    log.error(`bidask:sol entry execution failed on ${poolAddress}: ${err.message}`);
     return { success: false, error: err.message };
   }
 }

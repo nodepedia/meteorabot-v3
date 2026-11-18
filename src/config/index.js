@@ -33,7 +33,8 @@ export function buildConfig(e = {}) {
     trailingTakeProfit: false,
   });
 
-  // SOL-only yang dibuka manual (classifyMode). Stop loss -40, trailing
+  // SOL-only. Bisa dibuka dari pool.txt (CA + harga entry) atau diadopsi
+  // lewat classifyMode. Stop loss -40, trailing
   // trigger 10, warmup 30 menit (menahan trailing dan arm indikator).
   // Indikator mengikuti BIDASK_SOL_ENABLE_INDICATORS (default mati). Bila
   // dinyalakan, setelah warmup meng-arm trailing seperti bidask:double/token,
@@ -172,6 +173,11 @@ export function buildConfig(e = {}) {
     // Entry bidask:double hanya ke pool bin step >= nilai ini. 0 = mati.
     // Spot dan mode lain tidak memakai angka ini. DCA tidak pindah pool.
     bidaskDoubleMinBinStep: Math.max(0, Math.floor(num(e.BIDASK_DOUBLE_MIN_BIN_STEP, 100))),
+    // Entry manual bidask:sol (CA + harga). Pool dipilih saat harga tersentuh.
+    bidaskSolMinTvlUsd: Math.max(0, num(e.BIDASK_SOL_ENTRY_MIN_TVL_USD, 20000)),
+    bidaskSolMaxBins: Math.max(1, Math.floor(num(e.BIDASK_SOL_ENTRY_MAX_BINS, 105))),
+    bidaskSolLowerPct: num(e.BIDASK_SOL_ENTRY_LOWER_PCT, -50),
+    bidaskSolUpperPct: num(e.BIDASK_SOL_ENTRY_UPPER_PCT, 15),
     // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
     scanIntervalSec: num(e.ENTRY_SCAN_INTERVAL_SEC, 15),
     timeframe: e.ENTRY_TIMEFRAME || "15m",

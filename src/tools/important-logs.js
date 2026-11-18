@@ -353,6 +353,9 @@ export function buildImportantLogsReport({
   } else {
     const poolSummaries = watched.map((w) => {
       const name = w.pairName || `${w.pool?.slice(0, 8)}…`;
+      if (w.pendingBidaskSol) {
+        return `${name} (bidask:sol ${w.sizeSol} SOL, harga ${fmtNum(w.price)} vs target ${fmtNum(w.entryPrice)})`;
+      }
       const trend = w.trend === "bullish" ? "NAIK" : w.trend === "bearish" ? "TURUN" : "?";
       return `${name} (${w.sizeSol} SOL, tren ${trend}, harga ${fmtNum(w.price)} vs garis ${fmtNum(w.line)})`;
     });
