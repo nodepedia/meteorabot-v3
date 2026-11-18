@@ -14,6 +14,7 @@ const { Keypair } = await import("@solana/web3.js");
 const { ceilBinsForPricePct, bidaskSolEntryBinPlan, pickBidaskSolEntryPool } =
   await import("../src/entry/bidask-sol-entry.js");
 const { executeBidaskSolEntry } = await import("../src/entry/execute.js");
+const config = (await import("../src/config/index.js")).default;
 const { getTrackedPosition, getInitialCapitalSol, getEntrySizeSol } = await import("../src/state/positions.js");
 
 const CA = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
@@ -47,24 +48,28 @@ test("bin math: binStep 100 sekitar 70 bawah dan 15 atas", () => {
   assert.equal(plan.depositMaxBinId, 1000);
 });
 
-test("bin math: binStep 80 dan binStep 50 yang melewati 105 bin", () => {
+test("bin math: binStep 80 (106) dan binStep 50 (169) lolos ambang 169", () => {
+  assert.equal(config.entry.bidaskSolMaxBins, 169);
+
   const step80 = bidaskSolEntryBinPlan({ binStep: 80, lowerPct: -50, upperPct: 15 });
   assert.equal(step80.binsBelow, 87);
   assert.equal(step80.binsAbove, 18);
   assert.equal(step80.binCount, 106);
-  assert.ok(step80.binCount > 105);
+  assert.ok(step80.binCount <= 169);
 
   const step50 = bidaskSolEntryBinPlan({ binStep: 50, lowerPct: -50, upperPct: 15 });
   assert.equal(step50.binsBelow, 139);
   assert.equal(step50.binsAbove, 29);
-  assert.ok(step50.binCount > 105);
+  assert.equal(step50.binCount, 169);
+  assert.ok(step50.binCount <= 169);
 });
 
 test("pilih pool: saring TVL dan lebar bin, urut fee lalu volume/TVL lalu bin lebih sedikit", () => {
-  const opts = { minTvlUsd: 20000, maxBins: 105, lowerPct: -50, upperPct: 15 };
+  const opts = { minTvlUsd: 20000, maxBins: 169, lowerPct: -50, upperPct: 15 };
   const picked = pickBidaskSolEntryPool(
     [
       pool("LOW", { tvl: 1000, fee_active_tvl_ratio: 99 }),
+      pool("STEP40", { tvl: 90000, fee_active_tvl_ratio: 90, dlmm_params: { bin_step: 40 } }),
       pool("STEP50", { tvl: 90000, fee_active_tvl_ratio: 80, dlmm_params: { bin_step: 50 } }),
       pool("STEP80", { tvl: 90000, fee_active_tvl_ratio: 40, dlmm_params: { bin_step: 80 } }),
       pool("BLACK", { fee_active_tvl_ratio: 100, is_blacklisted: true }),
@@ -78,20 +83,22 @@ test("pilih pool: saring TVL dan lebar bin, urut fee lalu volume/TVL lalu bin le
     CA,
     opts
   );
-  assert.equal(picked.pool, "BEST_FEE");
-  assert.equal(picked.binCount, 86);
+  assert.equal(picked.pool, "STEP50");
+  assert.equal(picked.binCount, 169);
   assert.equal(picked.lowTvl, 1);
-  assert.equal(picked.tooWide, 2);
-  assert.ok(picked.ranked.every((row) => row.tvl >= 20000 && row.binCount <= 105));
+  assert.equal(picked.tooWide, 1);
+  assert.ok(picked.ranked.every((row) => row.tvl >= 20000 && row.binCount <= 169));
+  assert.ok(picked.ranked.some((row) => row.pool === "STEP50" && row.binCount === 169));
+  assert.ok(picked.ranked.some((row) => row.pool === "STEP80" && row.binCount === 106));
   const names = picked.ranked.map((row) => row.pool);
-  assert.deepEqual(names, ["BEST_FEE", "FEWER_BINS", "FEE_LOW_VOL_HI", "FEE_LOW_VOL"]);
+  assert.deepEqual(names, ["STEP50", "STEP80", "BEST_FEE", "FEWER_BINS", "FEE_LOW_VOL_HI", "FEE_LOW_VOL"]);
 });
 
 test("pilih pool: tidak ada yang lolos → alasan, tanpa pool", () => {
   const r = pickBidaskSolEntryPool(
-    [pool("TINY", { tvl: 10, fee_active_tvl_ratio: 9 }), pool("WIDE", { dlmm_params: { bin_step: 50 } })],
+    [pool("TINY", { tvl: 10, fee_active_tvl_ratio: 9 }), pool("WIDE", { dlmm_params: { bin_step: 40 } })],
     CA,
-    { minTvlUsd: 20000, maxBins: 105, lowerPct: -50, upperPct: 15 }
+    { minTvlUsd: 20000, maxBins: 169, lowerPct: -50, upperPct: 15 }
   );
   assert.equal(r.pool, null);
   assert.equal(r.ranked.length, 0);
@@ -100,14 +107,15 @@ test("pilih pool: tidak ada yang lolos → alasan, tanpa pool", () => {
 
 test("executeBidaskSolEntry mencatat mode bidask:sol, modal awal, dan bin atas kosong", async () => {
   const wallet = Keypair.generate();
-  const calls = { init: null, chunks: [] };
+  const calls = { init: null, chunks: [], quote: null };
   const alerts = [];
   const mockPool = {
     lbPair: { binStep: 100 },
     async getActiveBin() {
       return { binId: 1000, pricePerToken: "0.01" };
     },
-    async quoteCreatePosition() {
+    async quoteCreatePosition({ strategy }) {
+      calls.quote = strategy;
       return { binArrayCost: 0, bitmapExtensionCost: 0 };
     },
     async createExtendedEmptyPosition(min, max) {
@@ -154,6 +162,9 @@ test("executeBidaskSolEntry mencatat mode bidask:sol, modal awal, dan bin atas k
   assert.equal(res.mode, "bidask:sol");
   assert.equal(res.minBinId, 930);
   assert.equal(res.maxBinId, 1015);
+  assert.equal(res.binCount, 86);
+  assert.ok(res.binCount > 70);
+  assert.deepEqual(calls.quote, { minBinId: 930, maxBinId: 1015 });
   assert.equal(res.depositMaxBinId, 1000);
   assert.equal(calls.init.min, 930);
   assert.equal(calls.init.max, 1015);
@@ -210,4 +221,95 @@ test("executeBidaskSolEntry mencatat mode bidask:sol, modal awal, dan bin atas k
   assert.equal(skipped.success, false);
   assert.equal(skipped.tryNext, true);
   assert.match(skipped.reason, /non-refundable/);
+});
+
+test("executeBidaskSolEntry gagal tertutup bila quoteCreatePosition tidak ada", async () => {
+  const wallet = Keypair.generate();
+  const noQuote = {
+    lbPair: { binStep: 100 },
+    async getActiveBin() {
+      return { binId: 1000, pricePerToken: "0.01" };
+    },
+    async createExtendedEmptyPosition() {
+      throw new Error("tidak boleh dipanggil");
+    },
+  };
+  const skipped = await executeBidaskSolEntry(POOL, 0.4, {
+    dryRun: false,
+    allowDuplicateMint: true,
+    skipNonRefundable: true,
+    getPoolInfo: async () => ({
+      pool: noQuote,
+      baseMint: CA,
+      baseIsX: true,
+      quoteMint: SOL,
+      unsupported: false,
+      pairName: "TOK-SOL",
+    }),
+    getWallet: () => wallet,
+    getSolBalance: async () => 5,
+    buildFeePlan: () => ({ mode: "none" }),
+    checkFeeCap: () => ({ ok: true, totalSol: 0 }),
+    notifyEntry: () => {
+      throw new Error("tidak boleh alert");
+    },
+  });
+  assert.equal(skipped.success, false);
+  assert.equal(skipped.skipped, true);
+  assert.equal(skipped.tryNext, true);
+  assert.equal(skipped.reason, "quote non-refundable tidak tersedia");
+
+  const allowed = await executeBidaskSolEntry(POOL, 0.4, {
+    dryRun: true,
+    allowDuplicateMint: true,
+    skipNonRefundable: false,
+    getPoolInfo: async () => ({
+      pool: noQuote,
+      baseMint: CA,
+      baseIsX: true,
+      quoteMint: SOL,
+      unsupported: false,
+      pairName: "TOK-SOL",
+    }),
+  });
+  assert.equal(allowed.success, true);
+  assert.equal(allowed.dryRun, true);
+  assert.equal(allowed.binCount, 86);
+});
+
+test("quote non-refundable memakai seluruh rentang, juga posisi lebih lebar dari 70 bin", async () => {
+  let quoted = null;
+  const wide = {
+    lbPair: { binStep: 50 },
+    async getActiveBin() {
+      return { binId: 2000, pricePerToken: "1" };
+    },
+    async quoteCreatePosition({ strategy }) {
+      quoted = strategy;
+      return { binArrayCost: 0, bitmapExtensionCost: 0 };
+    },
+    createExtendedEmptyPosition() {
+      throw new Error("tidak boleh dipanggil");
+    },
+  };
+  const res = await executeBidaskSolEntry(POOL, 0.4, {
+    dryRun: true,
+    allowDuplicateMint: true,
+    skipNonRefundable: true,
+    getPoolInfo: async () => ({
+      pool: wide,
+      baseMint: CA,
+      baseIsX: true,
+      quoteMint: SOL,
+      unsupported: false,
+      pairName: "TOK-SOL",
+    }),
+  });
+  assert.equal(res.success, true);
+  assert.equal(res.dryRun, true);
+  assert.equal(res.binCount, 169);
+  assert.ok(res.binCount > 70);
+  assert.equal(quoted.maxBinId - quoted.minBinId + 1, 169);
+  assert.equal(quoted.minBinId, res.minBinId);
+  assert.equal(quoted.maxBinId, res.maxBinId);
 });

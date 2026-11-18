@@ -2,7 +2,7 @@
 // Posisi standar SDK menyimpan 70 bin (DEFAULT_BIN_PER_POSITION). Lebih lebar
 // dari itu, dan juga bila ada bin atas yang dikosongkan, pembukaan memakai
 // createExtendedEmptyPosition. SDK mengizinkan satu posisi sampai
-// POSITION_MAX_LENGTH (1400 bin). Ambang strategi (default 105) ada di dalam
+// POSITION_MAX_LENGTH (1400 bin). Ambang strategi (default 169) ada di dalam
 // batas itu. Setoran likuiditas tetap dipecah per 70 bin.
 import config from "../config/index.js";
 import { WSOL_MINT } from "../core/constants.js";
@@ -104,7 +104,7 @@ export function coveredPriceUsd(activeUsd, binStep, binsBelow, binsAbove) {
 // Urutan: fee/active TVL tertinggi, lalu volume/TVL, lalu bin lebih sedikit.
 export function pickBidaskSolEntryPool(pools, mint, opts = {}) {
   const minTvl = Math.max(0, Number(opts.minTvlUsd ?? config.entry.bidaskSolMinTvlUsd) || 0);
-  const maxBins = Math.max(1, Math.floor(Number(opts.maxBins ?? config.entry.bidaskSolMaxBins) || 105));
+  const maxBins = Math.max(1, Math.floor(Number(opts.maxBins ?? config.entry.bidaskSolMaxBins) || 169));
   const lowerPct = opts.lowerPct ?? config.entry.bidaskSolLowerPct;
   const upperPct = opts.upperPct ?? config.entry.bidaskSolUpperPct;
   const excluded = new Set([...(opts.exclude || [])].filter(Boolean));

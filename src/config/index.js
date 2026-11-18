@@ -175,7 +175,7 @@ export function buildConfig(e = {}) {
     bidaskDoubleMinBinStep: Math.max(0, Math.floor(num(e.BIDASK_DOUBLE_MIN_BIN_STEP, 100))),
     // Entry manual bidask:sol (CA + harga). Pool dipilih saat harga tersentuh.
     bidaskSolMinTvlUsd: Math.max(0, num(e.BIDASK_SOL_ENTRY_MIN_TVL_USD, 20000)),
-    bidaskSolMaxBins: Math.max(1, Math.floor(num(e.BIDASK_SOL_ENTRY_MAX_BINS, 105))),
+    bidaskSolMaxBins: Math.max(1, Math.floor(num(e.BIDASK_SOL_ENTRY_MAX_BINS, 169))),
     bidaskSolLowerPct: num(e.BIDASK_SOL_ENTRY_LOWER_PCT, -50),
     bidaskSolUpperPct: num(e.BIDASK_SOL_ENTRY_UPPER_PCT, 15),
     // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
