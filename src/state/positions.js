@@ -63,6 +63,10 @@ export function trackPosition(
       // Harga pool (SOL per token base) saat posisi dibuka; dipakai untuk
       // cross-check DCA (pastikan penurunan harga nyata, bukan glitch PnL).
       entryPoolPrice: null,
+      // Modal awal dalam SOL (nilai setoran pertama). Tidak ditimpa rebalance
+      // in-place. Rantai re-entry OOR kanan mewarisi nilai ini, sama seperti
+      // exitWarmupStartedAt. Kosong = belum diketahui (posisi lama / belum diadopsi).
+      initialCapitalSol: finitePositive(extra?.initialCapitalSol),
       isDca: isDca === true,
       lastPnlPeak: null,
       lastPnlLowest: null,
@@ -539,4 +543,25 @@ export function setEntrySizeSol(positionAddress, sizeSol) {
     p.entrySizeSol = num;
     writeState(state);
   }
+}
+
+// Modal awal SOL. Field kosong pada state lama → null, tidak melempar.
+export function getInitialCapitalSol(positionAddress) {
+  if (!positionAddress) return null;
+  const state = readState();
+  return finitePositive(state.positions?.[positionAddress]?.initialCapitalSol);
+}
+
+// Isi sekali. Nilai yang sudah ada tidak ditimpa (rebalance, deteksi ulang).
+export function setInitialCapitalSol(positionAddress, sol) {
+  const value = finitePositive(sol);
+  if (!positionAddress || value == null) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return null;
+  const existing = finitePositive(p.initialCapitalSol);
+  if (existing != null) return existing;
+  p.initialCapitalSol = value;
+  writeState(state);
+  return value;
 }

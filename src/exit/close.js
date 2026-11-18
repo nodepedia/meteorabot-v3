@@ -77,9 +77,11 @@ export async function handleClose(pos, reason, opts = {}) {
     if (result?.success) {
       // PnL final dari endpoint closed Meteora (agar alert sama dengan dashboard).
       // Dijalankan paralel dengan swap; fallback ke PnL live bila belum ter-index.
-      const realizedPnlPromise = result.dryRun ? Promise.resolve(null) : waitPnlFn(pos.pool, pos.position);
       // Ambil tracked sebelum clearTrailingState agar referensi trailing masih tersedia.
       const trackedClose = getTrackedPosition(pos.position);
+      const realizedPnlPromise = result.dryRun
+        ? Promise.resolve(null)
+        : waitPnlFn(pos.pool, pos.position, { initialCapitalSol: trackedClose?.initialCapitalSol });
       const wasDca = trackedClose?.isDca === true;
       const peakPnl = trackedClose?.lastPnlPeak ?? null;
       const lowestPnl = trackedClose?.lastPnlLowest ?? null;

@@ -24,6 +24,8 @@ import {
   getSpotReentryCount,
   setSpotReentryCount,
   setEntrySizeSol,
+  setInitialCapitalSol,
+  getInitialCapitalSol,
   setExitWarmupStartedAt,
   resolveExitWarmupStartedAt,
   setBidaskSolOpenOffset,
@@ -183,7 +185,7 @@ export async function planBidaskSolOorKananReentry(pos, reason, opts = {}) {
 /**
  * Setelah close OOR kanan: buka posisi BidAsk SOL-only baru di pool yang sama.
  * Lebar bin sama, bentuk BidAsk, dilacak sebagai bidask:sol. Tidak pindah pool
- * dan tidak menulis pool.txt. Warmup dan penghitung re-entry diwariskan.
+ * dan tidak menulis pool.txt. Warmup, penghitung re-entry, dan modal awal diwariskan.
  */
 export async function handleBidaskSolOorKananReentry(pos, opts = {}) {
   const getPoolInfoFn = opts.getPoolInfo || getPoolInfo;
@@ -206,6 +208,7 @@ export async function handleBidaskSolOorKananReentry(pos, opts = {}) {
   const span = Number(tracked?.binSpan ?? pos.binSpan ?? 0);
   const offset = readBidaskSolOpenOffset(tracked);
   const warmupStart = resolveExitWarmupStartedAt(tracked);
+  const carriedCapital = getInitialCapitalSol(pos.position);
   const prevCount = getSpotReentryCount(pos.position);
   const nextCount = prevCount + 1;
   const sizeSol = resolveBidaskSolReentrySizeSol(pos);
@@ -397,11 +400,13 @@ export async function handleBidaskSolOorKananReentry(pos, opts = {}) {
       false,
       {
         exitWarmupStartedAt: warmupStart,
+        initialCapitalSol: carriedCapital ?? sizeSol,
         openBinsBelow: range.binsBelow,
         openBinsAbove: range.binsAbove,
       }
     );
     setExitWarmupStartedAt(newAddr, warmupStart);
+    setInitialCapitalSol(newAddr, carriedCapital ?? sizeSol);
     setBidaskSolOpenOffset(newAddr, range.binsBelow, range.binsAbove);
     recordTrackedRange(newAddr, minBinId, maxBinId);
     setEntrySizeSol(newAddr, sizeSol);

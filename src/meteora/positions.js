@@ -3,6 +3,7 @@ import log from "../core/logger.js";
 import { WSOL_MINT } from "../core/constants.js";
 import { getConnection } from "../solana/connection.js";
 import { getWallet } from "../solana/wallet.js";
+import { getInitialCapitalSol } from "../state/positions.js";
 import { getDlmmSdk } from "./sdk.js";
 
 const poolMetaCache = new Map();
@@ -249,27 +250,27 @@ async function enrichMarketCap(positions) {
 // request ke Meteora.
 const poolPnlCache = new Map(); // pool -> { at, map: Map(position -> entry) }
 
-// Persen PnL terhadap modal bersih, bukan terhadap setoran seumur hidup.
+// Persen PnL. Urutan penyebut (mode SOL):
+// 1. modal awal (`initialCapitalSol`) bila diketahui (> 0): pnlSol / modal × 100.
+//    Rebalance in-place tercatat tarik + setor ulang, jadi setoran seumur hidup
+//    membengkak dan modal bersih (setor − tarik) bisa ≤ 0. Modal awal tidak ikut.
+// 2. modal bersih = allTimeDeposits − allTimeWithdrawals, bila aman.
+// 3. field persen Meteora (pnlSolPctChange), yang terencer oleh setoran seumur hidup.
 //
-// Meteora menghitung pnlSolPctChange = pnlSol / allTimeDeposits.total.sol
-// (dan pnlPctChange = pnlUsd / allTimeDeposits.total.usd). Rebalance in-place
-// tercatat sebagai tarik lalu setor ulang, jadi penyebut itu membengkak dan
-// persennya mengecil — rugi ~25% bisa terbaca ~3%. Modal bersih = setor
-// seumur hidup − tarik seumur hidup: modal yang masih tertanam, dan tidak
-// ikut membengkak saat rebalance. Dihitung dari respons datapi yang sama;
-// tidak ada request tambahan.
+// Mode USD tidak punya modal awal tersimpan: pnlUsd / modal bersih usd × 100,
+// lalu pnlPctChange. Tarikan yang tidak ada dihitung 0.
 //
-// Mode SOL (config.solMode): pnlSol / (total.sol setor − total.sol tarik) × 100.
-// Mode USD: pnlUsd / (total.usd setor − total.usd tarik) × 100.
-//
-// Kembali ke field persen Meteora bila angka itu tidak aman dipakai:
-// - pnl absolut atau total setoran tidak ada / bukan angka (tarikan yang
-//   tidak ada dihitung 0, supaya posisi tanpa rebalance tetap terhitung)
+// Kembali ke field persen Meteora bila modal bersih tidak aman:
+// - pnl absolut atau total setoran tidak ada / bukan angka
 // - modal bersih bukan angka, ≤ 1e-6, atau ≤ 1% dari total setoran
-//   (pembagi ~0, termasuk modal negatif, yang akan meledakkan persen)
+//   (pembagi ~0, termasuk modal negatif)
 // Field persen Meteora yang kosong dihitung 0, sama seperti sebelumnya.
 const NET_CAPITAL_ABS_EPSILON = 1e-6;
 const NET_CAPITAL_MIN_DEPOSIT_RATIO = 0.01;
+
+// Entri PnL terbuka dari fetch terakhir, supaya adopsi bisa baca deposit
+// tanpa request kedua. Tidak ditulis ke state.
+const livePnlEntries = new Map();
 
 function finiteAmount(value) {
   if (value == null || value === "") return null;
@@ -283,11 +284,127 @@ function meteoraPctChange(entry, solMode) {
   return Number.isFinite(pnl) ? pnl : null;
 }
 
-export function pnlFromEntry(entry, { solMode = config.solMode } = {}) {
+// Nilai SOL satu setoran. Bentuk yang dikenali:
+// - total.sol / amountSol / totalSol (sudah dalam SOL)
+// - amountXSol + amountYSol
+// - event historis datapi (amountX/amountY + mint). Sisi WSOL dipakai apa
+//   adanya (UI, sama seperti allTimeDeposits.amount). Sisi token diubah ke
+//   SOL lewat harga setoran (usd sisi SOL / jumlah SOL).
+export function depositSolAmount(deposit) {
+  if (!deposit || typeof deposit !== "object" || Array.isArray(deposit)) return null;
+  const explicit = finiteAmount(deposit.total?.sol ?? deposit.totalSol ?? deposit.amountSol ?? deposit.sol);
+  if (explicit != null && explicit > 0) return explicit;
+
+  const xSol = finiteAmount(deposit.amountXSol ?? deposit.tokenX?.amountSol);
+  const ySol = finiteAmount(deposit.amountYSol ?? deposit.tokenY?.amountSol);
+  if ((xSol != null && xSol > 0) || (ySol != null && ySol > 0)) {
+    return (xSol > 0 ? xSol : 0) + (ySol > 0 ? ySol : 0);
+  }
+
+  const xMint = deposit.tokenXMint || (typeof deposit.tokenX === "string" ? deposit.tokenX : null);
+  const yMint = deposit.tokenYMint || (typeof deposit.tokenY === "string" ? deposit.tokenY : null);
+  const xIsSol = xMint === WSOL_MINT;
+  const yIsSol = yMint === WSOL_MINT;
+  if (!xIsSol && !yIsSol) return null;
+
+  const solAmt = finiteAmount(
+    xIsSol ? (deposit.amountX ?? deposit.tokenX?.amount) : (deposit.amountY ?? deposit.tokenY?.amount)
+  );
+  const solUsd = finiteAmount(
+    xIsSol ? (deposit.amountXUsd ?? deposit.tokenX?.usd) : (deposit.amountYUsd ?? deposit.tokenY?.usd)
+  );
+  const otherUsd = finiteAmount(
+    xIsSol ? (deposit.amountYUsd ?? deposit.tokenY?.usd) : (deposit.amountXUsd ?? deposit.tokenX?.usd)
+  );
+  if (solAmt == null || solAmt <= 0) return null;
+  let otherSol = 0;
+  if (otherUsd != null && otherUsd > 0 && solUsd != null && solUsd > 0) {
+    otherSol = otherUsd / (solUsd / solAmt);
+  }
+  const total = solAmt + (Number.isFinite(otherSol) ? otherSol : 0);
+  return total > 0 ? total : null;
+}
+
+function eventKind(event) {
+  const raw = event?.eventType || event?.type;
+  return raw ? String(raw) : "add";
+}
+
+// SOL setoran pembuka. Satu objek = satu setoran. Daftar event dijumlahkan
+// sampai tarikan pertama (remove), supaya setoran ulang rebalance tidak ikut.
+// Chunk pembuka (beberapa add sebelum remove) dijumlahkan.
+export function initialDepositSol(source) {
+  if (source == null) return null;
+  const list = (Array.isArray(source) ? source : [source]).filter((e) => e && typeof e === "object");
+  if (!list.length) return null;
+  const single = list.length === 1 && !list[0].eventType && !list[0].type;
+  if (single) return depositSolAmount(list[0]);
+
+  const sorted = [...list].sort((a, b) => (Number(a.blockTime) || 0) - (Number(b.blockTime) || 0));
+  let sol = 0;
+  let saw = false;
+  for (const event of sorted) {
+    const kind = eventKind(event);
+    if (kind === "remove") break;
+    if (kind !== "add" && kind !== "deposit") continue;
+    const part = depositSolAmount(event);
+    if (part != null && part > 0) {
+      sol += part;
+      saw = true;
+    }
+  }
+  return saw && sol > 0 ? sol : null;
+}
+
+function inlineInitialDepositSol(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return (
+    initialDepositSol(entry.firstDeposit) ??
+    initialDepositSol(entry.deposits) ??
+    initialDepositSol(entry.depositHistory) ??
+    initialDepositSol(entry.events)
+  );
+}
+
+// Setoran seumur hidup sudah membengkak (ada tarikan). allTimeDeposits.total.sol
+// bukan modal awal lagi.
+function allTimeDepositsInflated(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const withdrawn = finiteAmount(entry.allTimeWithdrawals?.total?.sol) ?? 0;
+  return withdrawn > NET_CAPITAL_ABS_EPSILON;
+}
+
+// Modal awal dari data yang sudah ada. `firstDeposit` = event historis (objek
+// atau daftar). Bila tidak ada: posisi yang baru diadopsi memakai
+// allTimeDeposits saat itu; posisi lama yang setorannya sudah membengkak
+// dibiarkan kosong supaya rumus cadangan (modal bersih) tetap dipakai.
+export function initialCapitalForPosition(entry, { firstDeposit = null, adopted = false } = {}) {
+  const fromFirst = initialDepositSol(firstDeposit) ?? inlineInitialDepositSol(entry);
+  if (fromFirst != null && fromFirst > 0) return fromFirst;
+  if (!adopted && allTimeDepositsInflated(entry)) return null;
+  const all = finiteAmount(entry?.allTimeDeposits?.total?.sol);
+  return all != null && all > 0 ? all : null;
+}
+
+// Perlu baca riwayat datapi: setoran seumur hidup sudah membengkak dan entri
+// PnL tidak memuat deposit pertama.
+export function needsHistoricalFirstDeposit(entry) {
+  if (inlineInitialDepositSol(entry) != null) return false;
+  return allTimeDepositsInflated(entry);
+}
+
+export function pnlFromEntry(entry, { solMode = config.solMode, initialCapitalSol = null } = {}) {
   if (!entry || typeof entry !== "object") return null;
   const useSol = Boolean(solMode);
   const fallback = meteoraPctChange(entry, useSol);
   const pnlAbs = finiteAmount(useSol ? entry.pnlSol : entry.pnlUsd);
+  if (useSol) {
+    const capital = finiteAmount(initialCapitalSol);
+    if (capital != null && capital > 0 && pnlAbs != null) {
+      const pct = (pnlAbs / capital) * 100;
+      if (Number.isFinite(pct)) return pct;
+    }
+  }
   const deposits = finiteAmount(useSol ? entry.allTimeDeposits?.total?.sol : entry.allTimeDeposits?.total?.usd);
   if (pnlAbs == null || deposits == null) return fallback;
   const withdrawals =
@@ -297,6 +414,11 @@ export function pnlFromEntry(entry, { solMode = config.solMode } = {}) {
   if (deposits > 0 && net <= deposits * NET_CAPITAL_MIN_DEPOSIT_RATIO) return fallback;
   const pct = (pnlAbs / net) * 100;
   return Number.isFinite(pct) ? pct : fallback;
+}
+
+export function livePnlEntryFor(positionAddress) {
+  if (!positionAddress) return null;
+  return livePnlEntries.get(positionAddress) || null;
 }
 
 // "24h Fee/TVL" satu posisi. Field atas `feePerTvl24h`, di fixture historis
@@ -372,12 +494,31 @@ async function fetchClosedEntry(poolAddress, positionAddress, wallet) {
   }
 }
 
+// Riwayat aksi posisi (add/remove/claim). Dipakai sekali saat adopsi bila
+// setoran seumur hidup sudah membengkak, untuk mengambil SOL setoran pembuka.
+export async function fetchInitialDepositEvents(positionAddress) {
+  if (!positionAddress) return null;
+  try {
+    const url = `https://dlmm.datapi.meteora.ag/positions/${positionAddress}/historical?order_direction=asc`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (Array.isArray(data?.events)) return data.events;
+    if (Array.isArray(data)) return data;
+    return null;
+  } catch (err) {
+    log.warn(`fetchInitialDepositEvents failed: ${err.message}`);
+    return null;
+  }
+}
+
 // PnL final posisi dari Meteora (endpoint closed) agar alert close sama dengan
 // dashboard. Poll sampai entri muncul/ter-index; `null` bila timeout.
+// `initialCapitalSol` memakai penyebut yang sama dengan PnL live.
 export async function waitClosedPositionPnl(
   poolAddress,
   positionAddress,
-  { timeoutMs = 20000, intervalMs = 1500, wallet = null } = {}
+  { timeoutMs = 20000, intervalMs = 1500, wallet = null, initialCapitalSol = null } = {}
 ) {
   if (!poolAddress || !positionAddress) return null;
 
@@ -393,7 +534,7 @@ export async function waitClosedPositionPnl(
 
   const deadline = Date.now() + Math.max(0, timeoutMs);
   for (;;) {
-    const pnl = pnlFromEntry(await fetchClosedEntry(poolAddress, positionAddress, walletStr));
+    const pnl = pnlFromEntry(await fetchClosedEntry(poolAddress, positionAddress, walletStr), { initialCapitalSol });
     if (pnl != null) return pnl;
     if (Date.now() >= deadline) return null;
     await new Promise((r) => setTimeout(r, Math.max(0, intervalMs)));
@@ -451,8 +592,10 @@ async function enrichPnl(positions) {
       const entry = pnlMap.get(p.position);
       if (!isOpenPositionPnlEntry(entry)) continue;
 
-      const pnl = pnlFromEntry(entry);
+      const initialCapitalSol = getInitialCapitalSol(p.position);
+      const pnl = pnlFromEntry(entry, { initialCapitalSol });
       p.pnlPct = pnl == null ? 0 : pnl;
+      if (p.position) livePnlEntries.set(p.position, entry);
       // null = data yield tidak tersedia (dibedakan dari 0%).
       // feePct24hAt = waktu cache sukses; kosong bila angka yield tidak ada.
       applyPositionFeeTvl(p, entry, observedAt);

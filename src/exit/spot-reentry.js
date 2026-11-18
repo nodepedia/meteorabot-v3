@@ -32,6 +32,8 @@ import {
   getSpotReentryCount,
   setSpotReentryCount,
   setEntrySizeSol,
+  setInitialCapitalSol,
+  getInitialCapitalSol,
   setExitWarmupStartedAt,
   resolveExitWarmupStartedAt,
   getOpenPositionsForMint,
@@ -344,6 +346,7 @@ export async function planSpotOorKananReentry(pos, reason, opts = {}) {
  * - Counter `spotReentryCount` dan `entrySizeSol` diteruskan ke posisi baru (maks SPOT_REENTRY_MAX).
  * - Waktu mulai warmup exit diwariskan dari posisi yang diganti (rantai dari entry pertama).
  *   Umur batas SPOT_REENTRY_MAX_HOURS diukur dari waktu yang sama.
+ * - Modal awal (`initialCapitalSol`) ikut diwariskan: rantai ini satu perdagangan.
  * - Cooldown antar loop per pool dijaga sesuai SPOT_REENTRY_COOLDOWN_SEC (120s normal / 60s saat vol 5m > $100k).
  * - Gerbang RSI (SPOT_REENTRY_MAX_RSI) dan batas waktu rantai diputuskan di
  *   planSpotOorKananReentry, sebelum close. Lewat batas = tutup biasa + swap ke SOL.
@@ -372,6 +375,7 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
   const tracked = getTrackedPosition(pos.position);
   const span = tracked?.binSpan || pos.binSpan || 0;
   const warmupStart = resolveExitWarmupStartedAt(tracked);
+  const carriedCapital = getInitialCapitalSol(pos.position);
   const prevCount = getSpotReentryCount(pos.position);
   const nextCount = prevCount + 1;
   const sizeSol = resolveSpotReentrySizeSol(tracked, pos.pool);
@@ -732,11 +736,12 @@ export async function handleSpotOorKananReentry(pos, opts = {}) {
       collectFeeMode ?? pos.collectFeeMode ?? null,
       "spot",
       false,
-      { exitWarmupStartedAt: warmupStart }
+      { exitWarmupStartedAt: warmupStart, initialCapitalSol: carriedCapital ?? sizeSol }
     );
     // Bila deteksi on-chain sudah membuat baris lebih dulu, isi field yang masih kosong.
     // Nilai yang sudah ada tidak ditimpa.
     setExitWarmupStartedAt(newAddr, warmupStart);
+    setInitialCapitalSol(newAddr, carriedCapital ?? sizeSol);
     recordTrackedRange(newAddr, minBinId, maxBinId);
     setEntrySizeSol(newAddr, sizeSol);
     setSpotReentryCount(newAddr, nextCount);

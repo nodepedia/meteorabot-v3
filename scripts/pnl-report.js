@@ -298,7 +298,7 @@ function toRow(pos, meta, fromMs, toMs) {
     pnlSol,
     pnlUsd,
     pnl: pairCell(pos.pnlSol, pos.pnlUsd),
-    // Sama dengan bot: pnl / modal bersih, bukan pnlSolPctChange yang terencer rebalance.
+    // Tanpa modal awal tersimpan: pnl / modal bersih, bukan pnlSolPctChange yang terencer rebalance.
     pnlPct: fmtPct(pnlFromEntry(pos)),
     reason: isOpen ? "masih terbuka" : humanReason(meta.reason.get(pos.positionAddress) || ""),
     note: "",

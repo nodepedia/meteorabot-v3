@@ -1,7 +1,14 @@
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import { sleep, minutes } from "../core/utils.js";
-import { getOpenPositions } from "../meteora/positions.js";
+import {
+  getOpenPositions,
+  pnlFromEntry,
+  fetchInitialDepositEvents,
+  initialCapitalForPosition,
+  needsHistoricalFirstDeposit,
+  livePnlEntryFor,
+} from "../meteora/positions.js";
 import { fetchCandles, fetchVolume } from "../market/candles.js";
 import * as tg from "../notify/telegram.js";
 import {
@@ -18,6 +25,8 @@ import {
   markClosedNotDetected,
   setEntrySizeSol,
   getEntrySizeSol,
+  getInitialCapitalSol,
+  setInitialCapitalSol,
   getSpotReentryCount,
   resolveExitWarmupStartedAt,
 } from "../state/positions.js";
@@ -63,6 +72,43 @@ import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
 import { handleBidaskSolRebalance } from "./bidask-sol-rebalance.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
 import { consumeTelegramCommands } from "./telegram-commands.js";
+
+// Posisi yang setorannya sudah membengkak: riwayat deposit pertama hanya
+// dicoba sekali per proses. Gagal = tetap pakai rumus cadangan.
+const capitalLookupAttempted = new Set();
+
+// Isi initialCapitalSol bila masih kosong. Entry worker dan re-entry sudah
+// mengisinya; jalur ini untuk posisi manual/lama dan yang baru diadopsi.
+async function ensureTrackedInitialCapital(pos, { adopted }) {
+  const existing = getInitialCapitalSol(pos.position);
+  if (existing != null) return existing;
+
+  const entry = livePnlEntryFor(pos.position);
+  let firstDeposit = null;
+  let triedHistory = false;
+  if (needsHistoricalFirstDeposit(entry) && !capitalLookupAttempted.has(pos.position)) {
+    capitalLookupAttempted.add(pos.position);
+    triedHistory = true;
+    firstDeposit = await fetchInitialDepositEvents(pos.position);
+  }
+
+  const capital = initialCapitalForPosition(entry, { firstDeposit, adopted });
+  const pair = pos.pair || pos.position.slice(0, 8);
+  if (!(capital > 0)) {
+    if (triedHistory && !adopted) {
+      log.info(`${pair}: modal awal tidak dicatat — deposit pertama tidak ada, PnL pakai cadangan`);
+    }
+    return null;
+  }
+
+  const saved = setInitialCapitalSol(pos.position, capital);
+  if (saved != null) {
+    const pnl = pnlFromEntry(entry, { initialCapitalSol: saved });
+    if (pnl != null) pos.pnlPct = pnl;
+    log.info(`${pair}: modal awal ${saved} SOL`);
+  }
+  return saved;
+}
 
 /**
  * Pulihkan entrySizeSol untuk posisi spot yang baru diadopsi dari on-chain
@@ -311,6 +357,7 @@ export async function mainLoop(opts = {}) {
 
       // Track position on first seen
       let tracked = getTrackedPosition(pos.position);
+      const adopted = !tracked;
       if (!tracked) {
         const mode = classifyMode(pos);
         trackPosition(pos.position, pos.pool, pos.pair, pos.baseMint, pos.collectFeeMode, mode);
@@ -366,6 +413,8 @@ export async function mainLoop(opts = {}) {
       if (pos.mode === "bidask:sol") {
         noteBidaskSolOpenOffset(pos.position, pos.activeBin, pos.lowerBin, pos.upperBin);
       }
+
+      await ensureTrackedInitialCapital(pos, { adopted });
 
       // Track PnL peaks
       if (pos.pnlPct != null) updatePnlPeaks(pos.position, pos.pnlPct);

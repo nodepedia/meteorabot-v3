@@ -17,6 +17,7 @@ import {
   setEntryPoolPrice,
   recordTrackedRange,
   setEntrySizeSol,
+  setInitialCapitalSol,
   getOpenPositionsForMint,
 } from "../state/positions.js";
 import { resolveSpotRangeWithRentCheck, openSpotSolPosition } from "../meteora/spot-position.js";
@@ -229,6 +230,7 @@ export async function executeEntry(poolAddress, signal, sizeSol, opts = {}) {
   const pair = pairName || `${baseMint.slice(0, 4)}-SOL`;
 
   trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode, "bidask:double", isDca);
+  setInitialCapitalSol(positionAddress, sizeSol);
   setEntryPoolPrice(positionAddress, poolPriceSolPerToken(activeBin, baseIsX));
 
   if (isDca) {
@@ -455,6 +457,7 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
     trackPosition(positionAddress, poolAddress, pair, baseMint, collectFeeMode ?? null, "spot", false);
     recordTrackedRange(positionAddress, minBinId, maxBinId);
     setEntrySizeSol(positionAddress, sizeSol);
+    setInitialCapitalSol(positionAddress, sizeSol);
     consumeSpotEntryAttempt({
       positionPubkey: positionAddress,
       pool: poolAddress,

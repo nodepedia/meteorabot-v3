@@ -49,6 +49,32 @@ test("waitClosedPositionPnl: rebalance memakai modal bersih, bukan pnlSolPctChan
   assert.ok(Math.abs(pnl - -25.4) < 0.05);
 });
 
+test("waitClosedPositionPnl: modal awal mengalahkan tarikan > setoran (CLAUDIA ~11.34%)", async () => {
+  mockFetch(async () => ({
+    ok: true,
+    json: async () => ({
+      positions: [
+        {
+          positionAddress: POS,
+          isClosed: true,
+          pnlSol: "0.1134",
+          pnlSolPctChange: "3.22",
+          allTimeDeposits: { total: { sol: "3.5217" } },
+          allTimeWithdrawals: { total: { sol: "3.5733" } },
+        },
+      ],
+      hasNext: false,
+    }),
+  }));
+  const pnl = await waitClosedPositionPnl(POOL, POS, {
+    timeoutMs: 50,
+    intervalMs: 1,
+    wallet: WALLET,
+    initialCapitalSol: 1,
+  });
+  assert.ok(Math.abs(pnl - 11.34) < 1e-9, `pnl ${pnl}`);
+});
+
 test("waitClosedPositionPnl: ketemu langsung (pakai pnlSolPctChange)", async () => {
   mockFetch(async () => ({
     ok: true,
