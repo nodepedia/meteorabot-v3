@@ -2,7 +2,12 @@ import config from "../config/index.js";
 import { LEGACY_MODE } from "../config/rules.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
-import { getTrackedPosition, getOpenTrackedPositions, getPoolTrackedPositions } from "../state/positions.js";
+import {
+  getTrackedPosition,
+  getOpenTrackedPositions,
+  getPoolTrackedPositions,
+  getInitialCapitalSol,
+} from "../state/positions.js";
 import { fetchPoolPnl, pnlFromEntry } from "../meteora/positions.js";
 import { loadPoolList } from "./pool-list.js";
 import { getPoolInfo } from "./pool-info.js";
@@ -105,7 +110,7 @@ export async function tickDca() {
 
     for (let tracked of list) {
       const entry = pnlMap ? pnlMap.get(tracked.position) : null;
-      const pnlPct = entry ? pnlFromEntry(entry) : null;
+      const pnlPct = entry ? pnlFromEntry(entry, { initialCapitalSol: getInitialCapitalSol(tracked.position) }) : null;
       const pairLabel = tracked.pair || tracked.position.slice(0, 8);
       const metric = usingPrice ? poolPriceChangePct(ref.entryPoolPrice, nowPrice) : pnlPct;
 

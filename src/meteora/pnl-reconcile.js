@@ -129,7 +129,7 @@ export async function collectWalletFlows(wallet, fromMs, toMs, { rpcUrl, concurr
 // PnL = (nilai sekarang − modal). Nilai sekarang = pnlSol + depositSol (berlaku
 // untuk posisi closed maupun open).
 // Persen dari field datapi tidak dihitung di sini. Itu tugas pnlFromEntry:
-// pnl / (setor − tarik), supaya rebalance tidak mengencerkan penyebut.
+// pnlSol / modal awal bila tersimpan, kalau tidak pnl / (setor − tarik).
 export function reconcilePosition(pos, flows, { thresholdPct = 25 } = {}) {
   const deposits = pos.allTimeDeposits || {};
   const apiDepSol = num(deposits.total?.sol);
