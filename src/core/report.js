@@ -47,6 +47,35 @@ export function fmtQuote(v, unit = "usd") {
   return unit === "sol" ? `${text} SOL` : `$${text}`;
 }
 
+function quoteNumber(v, unit) {
+  const full = fmtQuote(v, unit);
+  if (full === "?") return "?";
+  if (unit === "sol") return full.replace(/ SOL$/, "");
+  if (full.startsWith("$")) return full.slice(1);
+  return full;
+}
+
+// Kalimat arah sentuh bidask:sol, misalnya
+// `menunggu naik ke 0.0000379 SOL (sekarang 0.00002953)`.
+export function bidaskSolTouchPhrase({ entryPrice, entryPriceUnit, price, touchDirection, direction } = {}) {
+  const unit = entryPriceUnit === "sol" ? "sol" : "usd";
+  const dir = touchDirection || direction;
+  const target = fmtQuote(entryPrice, unit);
+  const hasPrice = price != null && price !== "" && Number.isFinite(Number(price));
+  const now = hasPrice ? quoteNumber(price, unit) : null;
+  const reached =
+    hasPrice &&
+    ((dir === "up" && Number(price) >= Number(entryPrice)) || (dir === "down" && Number(price) <= Number(entryPrice)));
+  if (dir === "up" || dir === "down") {
+    const verb = dir === "up" ? "naik" : "turun";
+    if (now == null) return `menunggu ${verb} ke ${target} | harga belum tersedia`;
+    const base = `menunggu ${verb} ke ${target} (sekarang ${now})`;
+    return reached ? `${base} — siap entry` : base;
+  }
+  if (!hasPrice) return `menunggu harga ${target} | harga belum tersedia`;
+  return `menunggu arah harga ${target} (sekarang ${now})`;
+}
+
 export function fmtPct(v) {
   if (v == null || !Number.isFinite(Number(v))) return "?";
   const n = Number(v);
@@ -84,15 +113,7 @@ function trendLabel(trend) {
 function watchLine(w) {
   const name = w.pairName || `${(w.pool || "").slice(0, 8)}…`;
   if (w.pendingBidaskSol) {
-    const unit = w.entryPriceUnit === "sol" ? "sol" : "usd";
-    const target = fmtQuote(w.entryPrice, unit);
-    if (w.price == null || !Number.isFinite(Number(w.price))) {
-      return `${name} | bidask:sol menunggu harga <= ${target} | harga belum tersedia`;
-    }
-    const ready = Number(w.price) <= Number(w.entryPrice);
-    return `${name} | bidask:sol menunggu harga <= ${target} | harga ${fmtQuote(w.price, unit)} → ${
-      ready ? "sudah menyentuh harga entry (siap entry)" : "masih DI ATAS harga entry"
-    }`;
+    return `${name} | bidask:sol ${bidaskSolTouchPhrase(w)}`;
   }
   if (w.line == null || w.price == null) {
     return `${name} | ${trendLabel(w.trend)} | harga belum tersedia untuk dibandingkan`;

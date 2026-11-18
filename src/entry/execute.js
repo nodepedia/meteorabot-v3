@@ -513,6 +513,17 @@ export async function executeSpotEntry(poolAddress, sizeSol, opts = {}) {
   }
 }
 
+// sendAndConfirmRobust mengembalikan { signature, mode, feePlan, attempts }.
+// Log harus memakai string signature, bukan "[object Object]".
+export function formatTxSignature(sig) {
+  if (typeof sig === "string") return sig;
+  if (sig && typeof sig === "object") {
+    const inner = sig.signature ?? sig.txSig ?? null;
+    if (typeof inner === "string") return inner;
+  }
+  return "";
+}
+
 // Entry bidask:sol dari harga Jupiter. Satu posisi [min..max], SOL BidAsk hanya
 // di [min..bin aktif], bin di atasnya kosong. Lebar >70 bin atau bin atas kosong
 // memakai createExtendedEmptyPosition (lihat openSpotSolPosition).
@@ -718,7 +729,7 @@ export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
     }
 
     const positionAddress = openRes.positionPubkey;
-    const lastSig = openRes.lastSig;
+    const lastSig = formatTxSignature(openRes.lastSig);
     log.info(
       `bidask:sol position opened: ${positionAddress} (tx: ${lastSig || "?"})${recovered ? " [recovered]" : ""} | bins [${plan.minBinId}..${plan.maxBinId}], SOL [${plan.depositMinBinId}..${plan.depositMaxBinId}]`
     );

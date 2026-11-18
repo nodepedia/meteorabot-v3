@@ -147,11 +147,12 @@ export function loadPoolList() {
 // Beri `#` di depan semua baris aktif milik pool ini agar tidak dipantau lagi
 // (menu manual: hapus `#` untuk mengaktifkan kembali). Return false hanya bila
 // penulisan gagal, supaya pemanggil bisa fallback ke skip runtime.
-export function commentPoolInList(poolAddress, alias = getPoolAlias(poolAddress)) {
+export function commentPoolInList(poolAddress, alias = getPoolAlias(poolAddress), file = poolListPath()) {
   if (!poolAddress) return false;
-  // Pool hasil resolve baris CA: '#' baris CA-nya.
+  // Pool hasil resolve baris CA: '#' baris CA-nya. Kolom pertama yang cocok,
+  // termasuk baris CA 6 kolom dengan akhiran sol/usd.
   const targets = new Set([poolAddress, alias].filter(Boolean));
-  const file = poolListPath();
+  if (!file) file = poolListPath();
   try {
     if (!fs.existsSync(file)) return false;
     const lines = fs.readFileSync(file, "utf8").split("\n");
@@ -273,7 +274,11 @@ export function poolListHeaderLines() {
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol",
     "#   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).",
     "#   Akhiran lain, nol, atau negatif = baris dilewati.",
-    "#   Masuk saat harga Jupiter <= target. Kolom pertama adalah mint, bukan pool.",
+    "#   Sentuh: harga pertama di bawah target menunggu naik sampai target.",
+    "#   Harga pertama di atas target menunggu turun sampai target.",
+    "#   Harga pertama tepat di target masuk sekarang. Harga belum terbaca belum masuk.",
+    "#   Arah itu disimpan dan tahan restart. Ubah harga atau hapus baris menghapus arah.",
+    "#   Setelah entry berhasil baris ini diberi #. Kolom pertama adalah mint, bukan pool.",
     POOL_LIST_HEADER_END,
   ];
 }

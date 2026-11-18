@@ -7,7 +7,13 @@
 import config from "../config/index.js";
 import { WSOL_MINT } from "../core/constants.js";
 import log from "../core/logger.js";
+import { bidaskSolTouchPhrase } from "../core/report.js";
 import { getPrices } from "../market/jupiter-price.js";
+import {
+  bidaskSolTouchKey,
+  getBidaskSolTouchDirection,
+  setBidaskSolTouchDirection,
+} from "../state/bidask-sol-touch.js";
 import { getLastPrices } from "./price-watch.js";
 import { addrOf, isDlmmPool, isCaPoolInvalid } from "./ca-resolve.js";
 
@@ -231,7 +237,25 @@ function noteMissingSolPrice(count, now = Date.now()) {
   log.warn(`bidask:sol: harga SOL tidak tersedia atau tidak valid — ${count} baris satuan SOL tidak dipicu`);
 }
 
-// Harga <= target → pemicu. Tidak memakai Supertrend.
+// Arah sentuh dari harga valid pertama untuk kunci mint+target+satuan.
+// Di bawah target → naik (masuk saat harga >= target).
+// Di atas target → turun (masuk saat harga <= target).
+// Tepat di target → masuk sekarang, arah tidak disimpan.
+// Harga tidak ada → tidak mencatat arah dan tidak masuk.
+export function decideBidaskSolTouch(price, target, direction) {
+  const p = Number(price);
+  const t = Number(target);
+  if (!Number.isFinite(p) || !(t > 0)) return { direction: null, triggered: false, record: false };
+  if (direction !== "up" && direction !== "down") {
+    if (p < t) return { direction: "up", triggered: false, record: true };
+    if (p > t) return { direction: "down", triggered: false, record: true };
+    return { direction: null, triggered: true, record: false };
+  }
+  if (direction === "up") return { direction: "up", triggered: p >= t, record: false };
+  return { direction: "down", triggered: p <= t, record: false };
+}
+
+// Tidak memakai Supertrend.
 // Satuan sol memakai tokenUsd / harga WSOL dari batch Jupiter yang sama.
 // Harga terakhir disimpan supaya ringkasan log menampilkan harga yang dipantau.
 export async function pollBidaskSolPrices(watches = [], deps = {}) {
@@ -262,13 +286,29 @@ export async function pollBidaskSolPrices(watches = [], deps = {}) {
       if (cmp.reason === "sol") missingSol += 1;
       continue;
     }
-    if (cmp.price <= Number(w.entryPrice)) {
+    const key = bidaskSolTouchKey(w.mint, w.entryPrice, cmp.unit);
+    const stored = getBidaskSolTouchDirection(key);
+    const decision = decideBidaskSolTouch(cmp.price, w.entryPrice, stored);
+    if (decision.record && decision.direction) {
+      setBidaskSolTouchDirection(key, decision.direction);
+      log.info(
+        `CA ${String(w.mint).slice(0, 8)} bidask:sol ${bidaskSolTouchPhrase({
+          entryPrice: w.entryPrice,
+          entryPriceUnit: cmp.unit,
+          price: cmp.price,
+          touchDirection: decision.direction,
+        })}`
+      );
+    }
+    if (decision.direction) w.touchDirection = decision.direction;
+    if (decision.triggered) {
       triggered.push({
         ...w,
         price: cmp.price,
         priceUsd: Number(prices.get(w.mint)),
         solPrice: solUsd,
         entryPriceUnit: cmp.unit,
+        touchDirection: decision.direction,
       });
     }
   }

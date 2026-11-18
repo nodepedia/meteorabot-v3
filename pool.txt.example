@@ -21,5 +21,9 @@
 #   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol
 #   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).
 #   Akhiran lain, nol, atau negatif = baris dilewati.
-#   Masuk saat harga Jupiter <= target. Kolom pertama adalah mint, bukan pool.
+#   Sentuh: harga pertama di bawah target menunggu naik sampai target.
+#   Harga pertama di atas target menunggu turun sampai target.
+#   Harga pertama tepat di target masuk sekarang. Harga belum terbaca belum masuk.
+#   Arah itu disimpan dan tahan restart. Ubah harga atau hapus baris menghapus arah.
+#   Setelah entry berhasil baris ini diberi #. Kolom pertama adalah mint, bukan pool.
 # === END FORMAT ===
