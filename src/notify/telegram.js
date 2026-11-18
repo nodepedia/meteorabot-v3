@@ -1,6 +1,7 @@
 import https from "https";
 import config from "../config/index.js";
 import log from "../core/logger.js";
+import { fmtQuote } from "../core/report.js";
 import { getOORState, getTrackedPosition } from "../state/positions.js";
 import { resolveTrailingReference } from "../exit/trailing.js";
 import { trailingDropThreshold } from "../state/trailing.js";
@@ -115,13 +116,6 @@ export function notifyStartup(info = {}) {
   send(lines.join("\n"));
 }
 
-function fmtEntryUsd(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "?";
-  if (n >= 1) return n.toFixed(4);
-  return n.toPrecision(4);
-}
-
 function fmtEntryTvl(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return "?";
@@ -130,7 +124,7 @@ function fmtEntryTvl(v) {
     .replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
 }
 
-export function notifyEntry({
+export function buildEntryAlert({
   pair,
   pool,
   feeMode,
@@ -142,6 +136,7 @@ export function notifyEntry({
   priceFrom,
   priceTo,
   priceRangeLabel,
+  priceUnit,
 }) {
   const mode = feeMode || config.entry.fees.mode;
   const lines = [`🚀 ENTRY ${pair || pool?.slice(0, 8) || ""}`, `Pool: ${pool || "?"}`];
@@ -152,12 +147,17 @@ export function notifyEntry({
     lines.push(`Bin: ${binCount}${priceRangeLabel ? ` (${priceRangeLabel})` : ""}`);
   }
   if (priceFrom != null && priceTo != null) {
-    lines.push(`Range harga: ${fmtEntryUsd(priceFrom)} – ${fmtEntryUsd(priceTo)} USD`);
+    const unit = priceUnit === "sol" ? "sol" : "usd";
+    lines.push(`Range harga: ${fmtQuote(priceFrom, unit)} – ${fmtQuote(priceTo, unit)}`);
   }
   if (mode && mode !== "none") {
     lines.push(`Fee: ${mode}${feeSol > 0 ? ` (~${feeSol.toFixed(6)} SOL)` : ""}`);
   }
-  send(lines.join("\n"));
+  return lines.join("\n");
+}
+
+export function notifyEntry(info) {
+  send(buildEntryAlert(info));
 }
 
 export function notifyDca({ pair, pool, pnlPct, sizeSol, trigger = "PnL" }) {

@@ -26,7 +26,7 @@ import {
   nonRefundableCost,
   exceedsNonRefundable,
 } from "../meteora/spot-position.js";
-import { bidaskSolEntryBinPlan, coveredPriceUsd } from "./bidask-sol-entry.js";
+import { bidaskSolEntryBinPlan, coveredEntryPrices } from "./bidask-sol-entry.js";
 import { recordAction, recordSpotEntryAttempt, consumeSpotEntryAttempt } from "./runtime.js";
 import { mintBlocksEntry } from "./candidates.js";
 
@@ -734,11 +734,16 @@ export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
     const entryPoolPrice = poolPriceSolPerToken(activeBin, baseIsX);
     if (entryPoolPrice != null) setEntryPoolPrice(positionAddress, entryPoolPrice);
 
-    const solPerToken = poolPriceSolPerToken(activeBin, baseIsX);
-    const solUsd = Number(opts.solPrice);
-    const triggerUsd = Number(opts.triggerPrice);
-    const activeUsd = solPerToken && solUsd > 0 ? solPerToken * solUsd : triggerUsd;
-    const covered = coveredPriceUsd(activeUsd, binStep, plan.binsBelow, plan.binsAbove);
+    const covered = coveredEntryPrices({
+      entryPriceUnit: opts.entryPriceUnit,
+      solPerToken: poolPriceSolPerToken(activeBin, baseIsX),
+      solUsd: opts.solPrice,
+      triggerPrice: opts.triggerPrice,
+      priceUsd: opts.priceUsd,
+      binStep,
+      binsBelow: plan.binsBelow,
+      binsAbove: plan.binsAbove,
+    });
 
     recordAction(
       `ENTRY ${pair} — bidask:sol ${sizeSol} SOL (step ${binStep}, ${plan.binCount} bin, ${plan.minBinId}..${plan.maxBinId})`
@@ -754,8 +759,9 @@ export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
       binStep,
       tvlUsd: opts.tvlUsd,
       binCount: plan.binCount,
-      priceFrom: covered?.lowerUsd,
-      priceTo: covered?.upperUsd,
+      priceFrom: covered.priceFrom,
+      priceTo: covered.priceTo,
+      priceUnit: covered.unit,
       priceRangeLabel: `${lowerPct}%..+${upperPct}%`,
     });
 
@@ -768,8 +774,9 @@ export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
       recovered,
       tvlUsd: opts.tvlUsd,
       ...plan,
-      priceFrom: covered?.lowerUsd ?? null,
-      priceTo: covered?.upperUsd ?? null,
+      priceFrom: covered.priceFrom,
+      priceTo: covered.priceTo,
+      priceUnit: covered.unit,
     };
   } catch (err) {
     log.error(`bidask:sol entry execution failed on ${poolAddress}: ${err.message}`);

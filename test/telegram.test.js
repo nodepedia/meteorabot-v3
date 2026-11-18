@@ -11,8 +11,14 @@ process.env.STATE_FILE = path.join(TMP, "state.json");
 process.env.DECISION_LOG_FILE = path.join(TMP, "decision-log.json");
 process.env.PNL_HISTORY_FILE = path.join(TMP, "pnl-history.json");
 
-const { buildCloseMessage, buildStatusMessage, exitLabel, buildSpotReentryAlert, buildSpotReentryFailedMessage } =
-  await import("../src/notify/telegram.js");
+const {
+  buildCloseMessage,
+  buildStatusMessage,
+  exitLabel,
+  buildSpotReentryAlert,
+  buildSpotReentryFailedMessage,
+  buildEntryAlert,
+} = await import("../src/notify/telegram.js");
 const { trackPosition, updatePnlPeaks } = await import("../src/state/positions.js");
 const { armIndicatorTrailing } = await import("../src/state/trailing.js");
 
@@ -194,6 +200,30 @@ const SUCCESS_PAYLOAD = {
   switchedPool: true,
   previousPool: "OldPool111111111111111111111111111111111111",
 };
+
+test("alert entry menampilkan range harga sesuai satuan target", () => {
+  const usd = buildEntryAlert({
+    pair: "TOK-SOL",
+    pool: "pool",
+    modeLabel: "bidask:sol",
+    priceFrom: 0.0008,
+    priceTo: 0.0014,
+    priceUnit: "usd",
+  });
+  assert.match(usd, /Range harga: \$0\.0008 – \$0\.0014/);
+  assert.doesNotMatch(usd, /Range harga:.*\bSOL\b/);
+
+  const sol = buildEntryAlert({
+    pair: "TOK-SOL",
+    pool: "pool",
+    modeLabel: "bidask:sol",
+    priceFrom: 0.000008,
+    priceTo: 0.000014,
+    priceUnit: "sol",
+  });
+  assert.match(sol, /Range harga: 0\.000008 SOL – 0\.000014 SOL/);
+  assert.doesNotMatch(sol, /\$/);
+});
 
 test("re-entry sukses tidak lagi menulis TIDAK dibuka", () => {
   const msg = buildSpotReentryAlert(SUCCESS_PAYLOAD);

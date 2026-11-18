@@ -26,6 +26,27 @@ export function fmtNum(v) {
   return n.toFixed(n < 1 ? 4 : 2);
 }
 
+function trimFixed(text) {
+  if (!text.includes(".")) return text;
+  return text.replace(/0+$/, "").replace(/\.$/, "");
+}
+
+// Harga bidask:sol: `$0.0012` untuk USD, `0.0000123 SOL` untuk SOL per token.
+export function fmtQuote(v, unit = "usd") {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "?";
+  const abs = Math.abs(n);
+  let text;
+  if (abs === 0) text = "0";
+  else if (abs >= 1) text = trimFixed(n.toFixed(4));
+  else {
+    const digits = Math.min(16, Math.max(4, Math.ceil(-Math.log10(abs)) + 3));
+    text = trimFixed(n.toFixed(digits));
+    if (text === "0" || text === "-0") text = n.toPrecision(4);
+  }
+  return unit === "sol" ? `${text} SOL` : `$${text}`;
+}
+
 export function fmtPct(v) {
   if (v == null || !Number.isFinite(Number(v))) return "?";
   const n = Number(v);
@@ -63,12 +84,13 @@ function trendLabel(trend) {
 function watchLine(w) {
   const name = w.pairName || `${(w.pool || "").slice(0, 8)}…`;
   if (w.pendingBidaskSol) {
-    const target = fmtNum(w.entryPrice);
-    if (w.price == null) {
+    const unit = w.entryPriceUnit === "sol" ? "sol" : "usd";
+    const target = fmtQuote(w.entryPrice, unit);
+    if (w.price == null || !Number.isFinite(Number(w.price))) {
       return `${name} | bidask:sol menunggu harga <= ${target} | harga belum tersedia`;
     }
-    const ready = w.price <= w.entryPrice;
-    return `${name} | bidask:sol menunggu harga <= ${target} | harga ${fmtNum(w.price)} → ${
+    const ready = Number(w.price) <= Number(w.entryPrice);
+    return `${name} | bidask:sol menunggu harga <= ${target} | harga ${fmtQuote(w.price, unit)} → ${
       ready ? "sudah menyentuh harga entry (siap entry)" : "masih DI ATAS harga entry"
     }`;
   }

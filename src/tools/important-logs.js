@@ -11,7 +11,7 @@ import {
   inferLoggerMeta,
   readImportantEvents,
 } from "../core/important-log.js";
-import { clock, fmtPct, fmtNum, humanReason } from "../core/report.js";
+import { clock, fmtPct, fmtNum, fmtQuote, humanReason } from "../core/report.js";
 
 function isDirectRun(metaUrl) {
   if (process.env.NODE_TEST_CONTEXT) return false;
@@ -354,7 +354,8 @@ export function buildImportantLogsReport({
     const poolSummaries = watched.map((w) => {
       const name = w.pairName || `${w.pool?.slice(0, 8)}…`;
       if (w.pendingBidaskSol) {
-        return `${name} (bidask:sol ${w.sizeSol} SOL, harga ${fmtNum(w.price)} vs target ${fmtNum(w.entryPrice)})`;
+        const unit = w.entryPriceUnit === "sol" ? "sol" : "usd";
+        return `${name} (bidask:sol ${w.sizeSol} SOL, harga ${fmtQuote(w.price, unit)} vs target ${fmtQuote(w.entryPrice, unit)})`;
       }
       const trend = w.trend === "bullish" ? "NAIK" : w.trend === "bearish" ? "TURUN" : "?";
       return `${name} (${w.sizeSol} SOL, tren ${trend}, harga ${fmtNum(w.price)} vs garis ${fmtNum(w.line)})`;
