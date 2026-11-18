@@ -23,6 +23,27 @@ test("bearish tidak pernah ditandai siap entry walau harga di bawah garis", () =
   assert.match(block, /tidak dipantau untuk entry/);
 });
 
+test("bidask:sol yang menunggu harga tampil di ringkasan", () => {
+  const waiting = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPrice: 0.002,
+    price: 0.003,
+  });
+  assert.match(waiting, /bidask:sol menunggu harga/);
+  assert.match(waiting, /DI ATAS harga entry/);
+  assert.doesNotMatch(waiting, /siap entry/);
+  const ready = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPrice: 0.003,
+    price: 0.002,
+  });
+  assert.match(ready, /siap entry/);
+});
+
 test("clock menampilkan WIB (UTC+7)", () => {
   const ts = Date.UTC(2026, 8, 20, 0, 15, 44);
   assert.equal(clock(ts), "20 Sep 2026 07:15:44 WIB");

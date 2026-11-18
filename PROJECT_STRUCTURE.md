@@ -19,6 +19,7 @@
 - `strat.conf` → default strategi (entry/exit/DCA/swap, dll). Di-commit ke git; tuning di sini.
 - `.env` → rahasia & setelan instance saja (wallet, RPC, API Key, telegram, DRY_RUN). Jangan di-commit.
 - `.env.example` → contoh pengisian `.env`
-- `pool.txt` → daftar pool yang dipantau bot
+- `pool.txt` → daftar pool yang dipantau bot (gitignored; header format ditulis bot)
+- `pool.txt.example` → contoh format baris yang sama dengan header itu
 - `src/index.js` → file utama yang menjalankan bot
 - `src/config/env.js` → tempat memuat pengaturan dari .env

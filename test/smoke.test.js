@@ -45,6 +45,7 @@ const MODULES = [
   "../src/entry/index.js",
   "../src/entry/runtime.js",
   "../src/entry/pool-list.js",
+  "../src/entry/bidask-sol-entry.js",
   "../src/entry/pool-info.js",
   "../src/entry/price-watch.js",
   "../src/entry/pool-price.js",

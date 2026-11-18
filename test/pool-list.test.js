@@ -4,7 +4,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import config from "../src/config/index.js";
-import { parsePoolList, loadPoolList, commentPoolInList } from "../src/entry/pool-list.js";
+import {
+  parsePoolList,
+  loadPoolList,
+  commentPoolInList,
+  applyPoolListHeader,
+  ensurePoolListHeader,
+  poolListHeaderLines,
+} from "../src/entry/pool-list.js";
 
 const ADDR_A = "3C6qVymTAwWNKCSspmd1qbUH9avaqhsjgW2yntvEYBXt";
 const ADDR_B = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
@@ -79,6 +86,75 @@ test("kolom ke-4 bidask / bidask:double valid, nilai lain di-skip", () => {
       { pool: ADDR_B, sizeSol: 0.2, mode: "bidask:double" },
     ]);
   });
+});
+
+test("bidask:sol hanya sah bersama ca dan harga entry USD positif", () => {
+  withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
+    assert.deepEqual(parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,0.00125\n`), [
+      { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:sol", ca: true, entryPrice: 0.00125 },
+    ]);
+    assert.deepEqual(parsePoolList(`${ADDR_B},0.5,,bidask:sol,ca,2\n${ADDR_A},tier2,,bidask:sol,ca,0.5\n`), [
+      { pool: ADDR_B, sizeSol: 0.5, mode: "bidask:sol", ca: true, entryPrice: 2 },
+      { pool: ADDR_A, sizeSol: 0.25, mode: "bidask:sol", ca: true, entryPrice: 0.5 },
+    ]);
+    assert.deepEqual(
+      parsePoolList(
+        `${ADDR_A},1x,,bidask:sol\n${ADDR_A},1x,,bidask:sol,ca\n${ADDR_A},1x,,bidask:sol,ca,0\n${ADDR_A},1x,,bidask:sol,ca,-1\n${ADDR_A},1x,,bidask:sol,ca,abc\n${ADDR_B},1x,,bidask:sol,bukan-ca,1\n`
+      ),
+      []
+    );
+    assert.deepEqual(parsePoolList(`${ADDR_A},1x,,spot\n${ADDR_B},1x,,spot,ca\n${ADDR_A}\n`), [
+      { pool: ADDR_A, sizeSol: 0.2, mode: "spot" },
+      { pool: ADDR_B, sizeSol: 0.2, mode: "spot", ca: true },
+      { pool: ADDR_A, sizeSol: 0.2, mode: "bidask:double" },
+    ]);
+  });
+});
+
+test("header pool.txt idempoten dan tidak mengubah baris pengguna", () => {
+  const user = "KEEP_ME,1x,,spot\n# catatan user\n";
+  const first = applyPoolListHeader(user);
+  assert.equal(first.changed, true);
+  assert.ok(first.next.startsWith("# === FORMAT (dikelola bot) ===\n"));
+  assert.ok(first.next.includes("# === END FORMAT ===\nKEEP_ME,1x,,spot\n# catatan user\n"));
+  const second = applyPoolListHeader(first.next);
+  assert.equal(second.changed, false);
+  assert.equal(second.next, first.next);
+
+  const dirty = first.next.replace("Kelipatan", "TEKS_LAMA");
+  const fixed = applyPoolListHeader(dirty);
+  assert.equal(fixed.changed, true);
+  assert.equal(fixed.next, first.next);
+
+  const above = `USER_TOP,0.5,,bidask:double\n${first.next}`;
+  const kept = applyPoolListHeader(above);
+  assert.equal(kept.changed, false);
+  assert.ok(kept.next.startsWith("USER_TOP,0.5,,bidask:double\n"));
+  assert.ok(kept.next.includes("KEEP_ME,1x,,spot\n# catatan user\n"));
+
+  const example = fs.readFileSync(path.resolve("pool.txt.example"), "utf8");
+  assert.equal(example, applyPoolListHeader("").next);
+  assert.deepEqual(example.replace(/\n$/, "").split("\n"), poolListHeaderLines());
+});
+
+test("ensurePoolListHeader menulis atomik dan tidak menulis ulang bila sama", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pool-header-"));
+  const file = path.join(dir, "pool.txt");
+  fs.writeFileSync(file, "ADDR_USER,1.5x,,spot\n");
+  try {
+    assert.equal(ensurePoolListHeader(file), true);
+    const once = fs.readFileSync(file, "utf8");
+    assert.match(once, /# === FORMAT \(dikelola bot\) ===/);
+    assert.match(once, /ADDR_USER,1\.5x,,spot\n$/);
+    assert.equal(ensurePoolListHeader(file), false);
+    assert.equal(fs.readFileSync(file, "utf8"), once);
+    assert.equal(
+      fs.readdirSync(dir).some((name) => name.endsWith(".tmp")),
+      false
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("baris # dan kosong diabaikan", () => {

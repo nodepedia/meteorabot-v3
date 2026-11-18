@@ -34,17 +34,33 @@ function resolveSizeSol(sizeRaw, defaultSize) {
   return Number(sizeRaw);
 }
 
-function resolveEntryMode(modeRaw) {
+function parsePositivePrice(raw) {
+  if (raw == null || raw === "") return null;
+  const token = String(raw).split(/[\s#]/)[0];
+  if (!token) return null;
+  const n = Number(token);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+// bidask:sol hanya sah bersama kolom `ca` dan harga entry USD yang positif.
+// Tanpa itu kembalikan null supaya pemanggil memperingatkan dan melewati baris.
+function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null } = {}) {
   if (!modeRaw) return "bidask:double";
   const key = String(modeRaw).trim().toLowerCase();
   if (key === "spot") return "spot";
   if (key === "bidask" || key === "bidask:double") return "bidask:double";
+  if (key === "bidask:sol") {
+    if (isCa && Number.isFinite(entryPrice) && entryPrice > 0) return "bidask:sol";
+    return null;
+  }
   return null;
 }
 
 // Baris `alamat` saja memakai ENTRY_DEFAULT_SIZE_SOL.
 // Format lama `alamat,size,max[,mode[,ca]]` tetap terbaca: kolom ke-3 (max
 // entry seumur hidup) diabaikan. Mode tetap kolom ke-4.
+// bidask:sol: `CA,size,,bidask:sol,ca,HARGA_USD` (kolom ke-6 = harga entry).
 export function parsePoolList(raw) {
   const defaultSize = Number(config.entry.defaultSizeSol);
   const entries = [];
@@ -58,6 +74,7 @@ export function parsePoolList(raw) {
     const sizeRaw = parts[1];
     const modeRaw = parts[3];
     const kindRaw = parts[4];
+    const entryPrice = parsePositivePrice(parts[5]);
     if (!address) continue;
     // Kolom ke-5 `ca`: kolom pertama adalah CA token (mint), pool dipilih saat entry.
     const isCa = Boolean(kindRaw && kindRaw.split(/[\s#]/)[0].toLowerCase() === "ca");
@@ -67,9 +84,20 @@ export function parsePoolList(raw) {
     }
 
     const secondIsSpot = Boolean(sizeRaw && sizeRaw.toLowerCase() === "spot" && !modeRaw);
-    const mode = secondIsSpot ? "spot" : resolveEntryMode(modeRaw);
+    const modeKey = String(modeRaw || "")
+      .trim()
+      .toLowerCase();
+    const mode = secondIsSpot ? "spot" : resolveEntryMode(modeRaw, { isCa, entryPrice });
     if (!mode) {
-      log.warn(`Pool ${address.slice(0, 8)} skipped: entry_mode invalid "${modeRaw ?? ""}" (gunakan spot atau bidask:double)`);
+      if (modeKey === "bidask:sol") {
+        log.warn(
+          `Pool ${address.slice(0, 8)} skipped: bidask:sol butuh kolom ca dan harga entry USD positif (CA,size,,bidask:sol,ca,HARGA)`
+        );
+      } else {
+        log.warn(
+          `Pool ${address.slice(0, 8)} skipped: entry_mode invalid "${modeRaw ?? ""}" (gunakan spot atau bidask:double)`
+        );
+      }
       continue;
     }
 
@@ -81,7 +109,13 @@ export function parsePoolList(raw) {
       continue;
     }
 
-    entries.push(isCa ? { pool: address, sizeSol, mode, ca: true } : { pool: address, sizeSol, mode });
+    if (mode === "bidask:sol") {
+      entries.push({ pool: address, sizeSol, mode, ca: true, entryPrice });
+    } else if (isCa) {
+      entries.push({ pool: address, sizeSol, mode, ca: true });
+    } else {
+      entries.push({ pool: address, sizeSol, mode });
+    }
   }
   return entries;
 }
@@ -154,7 +188,9 @@ export function replacePoolInList(oldPoolAddress, newPoolAddress) {
     fs.renameSync(tmp, file);
     return true;
   } catch (err) {
-    log.warn(`Gagal mengganti pool ${oldPoolAddress.slice(0, 8)} -> ${newPoolAddress.slice(0, 8)} di ${config.entry.poolListFile}: ${err.message}`);
+    log.warn(
+      `Gagal mengganti pool ${oldPoolAddress.slice(0, 8)} -> ${newPoolAddress.slice(0, 8)} di ${config.entry.poolListFile}: ${err.message}`
+    );
     return false;
   }
 }
@@ -190,4 +226,64 @@ export function lookupConfiguredEntrySizeSol(poolAddress, opts = {}) {
   }
   if (Number.isFinite(defaultSize) && defaultSize > 0) return Number(defaultSize.toFixed(6));
   return null;
+}
+
+// Blok komentar di puncak pool.txt. Bot menimpa teks di antara penanda bila
+// format berubah, dan tidak mengubah baris di luar blok itu.
+export const POOL_LIST_HEADER_START = "# === FORMAT (dikelola bot) ===";
+export const POOL_LIST_HEADER_END = "# === END FORMAT ===";
+
+export function poolListHeaderLines() {
+  return [
+    POOL_LIST_HEADER_START,
+    "# Blok ini ditulis ulang oleh bot bila teksnya berubah. Jangan diedit.",
+    "# Baris di luar blok ini tidak disentuh.",
+    "#",
+    "# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry_usd",
+    "# Kolom ke-3 (max entry lama) diabaikan.",
+    "# Size: angka SOL (contoh 0.5), kelipatan 1x / 1.25x / 1.5x, atau tier1 / tier2 / tier3.",
+    "# Kosong = ENTRY_DEFAULT_SIZE_SOL. Kelipatan dan tier dikali default itu.",
+    "#",
+    "# spot, alamat pool:",
+    "#   POOL_ADDRESS,1x,,spot",
+    "# spot, CA token (pool dipilih bot):",
+    "#   TOKEN_CA,1x,,spot,ca",
+    "# bidask:double, alamat pool:",
+    "#   POOL_ADDRESS,0.5,,bidask:double",
+    "# bidask:double, CA token:",
+    "#   TOKEN_CA,1.25x,,bidask:double,ca",
+    "# bidask:sol (hanya CA + harga entry USD per token, tanpa Supertrend):",
+    "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123",
+    "#   Masuk saat harga Jupiter <= 0.00123. Kolom pertama adalah mint, bukan pool.",
+    POOL_LIST_HEADER_END,
+  ];
+}
+
+// Murni: sisipkan atau ganti blok format. Baris di luar penanda tetap apa adanya.
+export function applyPoolListHeader(raw) {
+  const header = poolListHeaderLines();
+  const text = String(raw ?? "");
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.length ? text.split(/\r?\n/) : [];
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+
+  const start = lines.findIndex((line) => line.trim() === POOL_LIST_HEADER_START);
+  const end = start >= 0 ? lines.findIndex((line, i) => i > start && line.trim() === POOL_LIST_HEADER_END) : -1;
+  const nextLines =
+    start >= 0 && end > start ? [...lines.slice(0, start), ...header, ...lines.slice(end + 1)] : [...header, ...lines];
+  const next = `${nextLines.join(nl)}${nl}`;
+  return { next, changed: next !== text };
+}
+
+// Tulis header ke pool.txt secara atomik. Tidak menulis ulang bila teksnya sama.
+export function ensurePoolListHeader(file = poolListPath()) {
+  let raw = "";
+  if (fs.existsSync(file)) raw = fs.readFileSync(file, "utf8");
+  const { next, changed } = applyPoolListHeader(raw);
+  if (!changed) return false;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, next);
+  fs.renameSync(tmp, file);
+  return true;
 }

@@ -115,9 +115,45 @@ export function notifyStartup(info = {}) {
   send(lines.join("\n"));
 }
 
-export function notifyEntry({ pair, pool, feeMode, feeSol }) {
+function fmtEntryUsd(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "?";
+  if (n >= 1) return n.toFixed(4);
+  return n.toPrecision(4);
+}
+
+function fmtEntryTvl(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "?";
+  return `$${Math.round(n)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+}
+
+export function notifyEntry({
+  pair,
+  pool,
+  feeMode,
+  feeSol,
+  modeLabel,
+  binStep,
+  tvlUsd,
+  binCount,
+  priceFrom,
+  priceTo,
+  priceRangeLabel,
+}) {
   const mode = feeMode || config.entry.fees.mode;
   const lines = [`🚀 ENTRY ${pair || pool?.slice(0, 8) || ""}`, `Pool: ${pool || "?"}`];
+  if (modeLabel) lines.push(`Mode: ${modeLabel}`);
+  if (Number.isFinite(Number(binStep))) lines.push(`Bin step: ${binStep}`);
+  if (Number.isFinite(Number(tvlUsd))) lines.push(`TVL: ${fmtEntryTvl(tvlUsd)}`);
+  if (Number.isFinite(Number(binCount))) {
+    lines.push(`Bin: ${binCount}${priceRangeLabel ? ` (${priceRangeLabel})` : ""}`);
+  }
+  if (priceFrom != null && priceTo != null) {
+    lines.push(`Range harga: ${fmtEntryUsd(priceFrom)} – ${fmtEntryUsd(priceTo)} USD`);
+  }
   if (mode && mode !== "none") {
     lines.push(`Fee: ${mode}${feeSol > 0 ? ` (~${feeSol.toFixed(6)} SOL)` : ""}`);
   }
