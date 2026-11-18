@@ -30,16 +30,17 @@ test("bidask:sol yang menunggu harga tampil di ringkasan", () => {
     pendingBidaskSol: true,
     entryPrice: 0.002,
     price: 0.003,
+    touchDirection: "down",
   });
-  assert.match(waiting, /bidask:sol menunggu harga/);
-  assert.match(waiting, /DI ATAS harga entry/);
+  assert.match(waiting, /bidask:sol menunggu turun ke \$0\.002 \(sekarang 0\.003\)/);
   assert.doesNotMatch(waiting, /siap entry/);
   const ready = blockWith({
     pool: "mintmint",
     pairName: "CA mintmint",
     pendingBidaskSol: true,
     entryPrice: 0.003,
-    price: 0.002,
+    price: 0.003,
+    touchDirection: "up",
   });
   assert.match(ready, /siap entry/);
   assert.match(waiting, /\$0\.002/);
@@ -54,11 +55,11 @@ test("bidask:sol ringkasan menampilkan satuan SOL dan USD", () => {
     entryPrice: 0.0000123,
     entryPriceUnit: "sol",
     price: 0.00002,
+    touchDirection: "down",
   });
-  assert.match(sol, /0\.0000123 SOL/);
-  assert.match(sol, /0\.00002 SOL/);
-  assert.match(sol, /DI ATAS harga entry/);
+  assert.match(sol, /menunggu turun ke 0\.0000123 SOL \(sekarang 0\.00002\)/);
   assert.doesNotMatch(sol, /\$/);
+  assert.doesNotMatch(sol, /siap entry/);
 
   const usd = blockWith({
     pool: "mintmint",
@@ -67,10 +68,21 @@ test("bidask:sol ringkasan menampilkan satuan SOL dan USD", () => {
     entryPrice: 0.0012,
     entryPriceUnit: "usd",
     price: 0.001,
+    touchDirection: "up",
   });
-  assert.match(usd, /\$0\.0012/);
-  assert.match(usd, /\$0\.001/);
-  assert.match(usd, /siap entry/);
+  assert.match(usd, /menunggu naik ke \$0\.0012 \(sekarang 0\.001\)/);
+  assert.doesNotMatch(usd, /siap entry/);
+
+  const macca = blockWith({
+    pool: "mintmint",
+    pairName: "CA AKotzk1d",
+    pendingBidaskSol: true,
+    entryPrice: 0.0000379,
+    entryPriceUnit: "sol",
+    price: 0.00002953,
+    touchDirection: "up",
+  });
+  assert.match(macca, /menunggu naik ke 0\.0000379 SOL \(sekarang 0\.00002953\)/);
 
   const noSol = blockWith({
     pool: "mintmint",

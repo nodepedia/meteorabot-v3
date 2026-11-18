@@ -18,10 +18,14 @@ const {
   pollBidaskSolPrices,
   bidaskSolQuotePrice,
   coveredEntryPrices,
+  decideBidaskSolTouch,
 } = await import("../src/entry/bidask-sol-entry.js");
-const { executeBidaskSolEntry } = await import("../src/entry/execute.js");
+const { executeBidaskSolEntry, formatTxSignature } = await import("../src/entry/execute.js");
+const { runBidaskSolEntry } = await import("../src/entry/index.js");
 const config = (await import("../src/config/index.js")).default;
 const { getTrackedPosition, getInitialCapitalSol, getEntrySizeSol } = await import("../src/state/positions.js");
+const { bidaskSolTouchKey, getBidaskSolTouchDirection, pruneBidaskSolTouch } =
+  await import("../src/state/bidask-sol-touch.js");
 
 const CA = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
 const SOL = "So11111111111111111111111111111111111111112";
@@ -355,15 +359,16 @@ test("pemicu satuan SOL = tokenUsd / solUsd, dan harga SOL hilang tidak memicu",
   assert.ok(asked.includes(CA));
   assert.ok(asked.includes(other));
   assert.ok(asked.includes(SOL));
-  assert.equal(hit.triggered.length, 2);
+  assert.equal(hit.triggered.length, 1);
   const solHit = hit.triggered.find((row) => row.mint === CA);
   assert.equal(solHit.price, 0.25);
   assert.equal(solHit.priceUsd, 1);
   assert.equal(solHit.solPrice, 4);
   assert.equal(solHit.entryPriceUnit, "sol");
-  const usdHit = hit.triggered.find((row) => row.mint === other);
-  assert.equal(usdHit.price, 0.001);
-  assert.equal(usdHit.entryPriceUnit, "usd");
+  assert.equal(
+    hit.triggered.find((row) => row.mint === other),
+    undefined
+  );
 
   const above = await pollBidaskSolPrices([{ mint: CA, entryPrice: 0.2, entryPriceUnit: "sol" }], {
     getPrices: async () =>
@@ -398,7 +403,7 @@ test("pemicu satuan SOL = tokenUsd / solUsd, dan harga SOL hilang tidak memicu",
   });
   assert.equal(negative.triggered.length, 0);
 
-  const usdWithoutSol = await pollBidaskSolPrices([{ mint: other, entryPrice: 0.002 }], {
+  const usdWithoutSol = await pollBidaskSolPrices([{ mint: other, entryPrice: 0.001 }], {
     getPrices: async () => new Map([[other, 0.001]]),
   });
   assert.equal(usdWithoutSol.triggered.length, 1);
@@ -485,4 +490,233 @@ test("executeBidaskSolEntry satuan sol mengirim range SOL ke alert", async () =>
   assert.equal(alerts[0].priceUnit, "sol");
   assert.ok(alerts[0].priceFrom > 0 && alerts[0].priceFrom < 0.01);
   assert.ok(alerts[0].priceTo > 0.01 && alerts[0].priceTo < 0.02);
+});
+
+const MACCA = "AKotzk1dhcNangAJBtvNKtT9bhbSVZc2mMhRFgkFpump";
+const TOUCH_ABOVE = "MintAbove1111111111111111111111111111111";
+const TOUCH_MISS = "MintMiss11111111111111111111111111111111";
+const TOUCH_RESET = "MintReset1111111111111111111111111111111";
+
+function pricesOf(rows) {
+  return async () => new Map(rows);
+}
+
+test("arah sentuh: di bawah naik, di atas turun, tepat target masuk sekarang", () => {
+  assert.deepEqual(decideBidaskSolTouch(0.00002953, 0.0000379, null), {
+    direction: "up",
+    triggered: false,
+    record: true,
+  });
+  assert.deepEqual(decideBidaskSolTouch(0.00004, 0.0000379, null), {
+    direction: "down",
+    triggered: false,
+    record: true,
+  });
+  assert.deepEqual(decideBidaskSolTouch(0.0000379, 0.0000379, null), {
+    direction: null,
+    triggered: true,
+    record: false,
+  });
+  assert.deepEqual(decideBidaskSolTouch(NaN, 0.0000379, null), {
+    direction: null,
+    triggered: false,
+    record: false,
+  });
+  assert.equal(decideBidaskSolTouch(0.00003, 0.0000379, "up").triggered, false);
+  assert.equal(decideBidaskSolTouch(0.0000379, 0.0000379, "up").triggered, true);
+  assert.equal(decideBidaskSolTouch(0.00005, 0.0000379, "up").triggered, true);
+  assert.equal(decideBidaskSolTouch(0.00005, 0.0000379, "down").triggered, false);
+  assert.equal(decideBidaskSolTouch(0.0000379, 0.0000379, "down").triggered, true);
+  assert.equal(decideBidaskSolTouch(0.00001, 0.0000379, "down").triggered, true);
+});
+
+test("naik hanya saat harga naik, turun hanya saat harga turun, dan arah tahan dibaca ulang", async () => {
+  const upKey = bidaskSolTouchKey(MACCA, 0.0000379, "sol");
+  const below = await pollBidaskSolPrices([{ mint: MACCA, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [MACCA, 0.00002953 * 100],
+      [SOL, 100],
+    ]),
+  });
+  assert.equal(below.triggered.length, 0);
+  assert.equal(getBidaskSolTouchDirection(upKey), "up");
+  const stored = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  assert.equal(stored.bidaskSolTouch[upKey], "up");
+
+  const stillBelow = await pollBidaskSolPrices([{ mint: MACCA, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [MACCA, 0.00003 * 100],
+      [SOL, 100],
+    ]),
+  });
+  assert.equal(stillBelow.triggered.length, 0);
+  assert.equal(getBidaskSolTouchDirection(upKey), "up");
+
+  const rose = await pollBidaskSolPrices([{ mint: MACCA, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [MACCA, 0.005],
+      [SOL, 100],
+    ]),
+  });
+  assert.equal(rose.triggered.length, 1);
+  assert.ok(rose.triggered[0].price >= 0.0000379);
+  assert.equal(rose.triggered[0].touchDirection, "up");
+
+  const downKey = bidaskSolTouchKey(TOUCH_ABOVE, 0.0000379, "sol");
+  const above = await pollBidaskSolPrices([{ mint: TOUCH_ABOVE, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [TOUCH_ABOVE, 0.00005 * 80],
+      [SOL, 80],
+    ]),
+  });
+  assert.equal(above.triggered.length, 0);
+  assert.equal(getBidaskSolTouchDirection(downKey), "down");
+  const stillAbove = await pollBidaskSolPrices([{ mint: TOUCH_ABOVE, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [TOUCH_ABOVE, 0.00004 * 80],
+      [SOL, 80],
+    ]),
+  });
+  assert.equal(stillAbove.triggered.length, 0);
+  const fell = await pollBidaskSolPrices([{ mint: TOUCH_ABOVE, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [TOUCH_ABOVE, 0.002],
+      [SOL, 80],
+    ]),
+  });
+  assert.equal(fell.triggered.length, 1);
+  assert.equal(fell.triggered[0].touchDirection, "down");
+});
+
+test("harga hilang tidak mencatat arah, dan mengubah target tidak memakai arah lama", async () => {
+  const missKey = bidaskSolTouchKey(TOUCH_MISS, 0.0000379, "sol");
+  const missing = await pollBidaskSolPrices([{ mint: TOUCH_MISS, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([[SOL, 100]]),
+  });
+  assert.equal(missing.triggered.length, 0);
+  assert.equal(getBidaskSolTouchDirection(missKey), null);
+
+  const oldKey = bidaskSolTouchKey(TOUCH_RESET, 0.0000379, "sol");
+  const newKey = bidaskSolTouchKey(TOUCH_RESET, 0.00001, "sol");
+  const seeded = await pollBidaskSolPrices([{ mint: TOUCH_RESET, entryPrice: 0.0000379, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [TOUCH_RESET, 0.00002 * 50],
+      [SOL, 50],
+    ]),
+  });
+  assert.equal(seeded.triggered.length, 0);
+  assert.equal(getBidaskSolTouchDirection(oldKey), "up");
+
+  const edited = await pollBidaskSolPrices([{ mint: TOUCH_RESET, entryPrice: 0.00001, entryPriceUnit: "sol" }], {
+    getPrices: pricesOf([
+      [TOUCH_RESET, 0.00002 * 50],
+      [SOL, 50],
+    ]),
+  });
+  assert.equal(edited.triggered.length, 0);
+  assert.equal(getBidaskSolTouchDirection(newKey), "down");
+  assert.equal(getBidaskSolTouchDirection(oldKey), "up");
+  pruneBidaskSolTouch([newKey]);
+  assert.equal(getBidaskSolTouchDirection(oldKey), null);
+  assert.equal(getBidaskSolTouchDirection(newKey), "down");
+});
+
+test("baris CA 6 kolom berakhiran sol di-# setelah entry bidask:sol berhasil", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bidask-sol-line-"));
+  const file = path.join(dir, "pool.txt");
+  const line = `${MACCA},1.25x,1,bidask:sol,ca,0.00003790sol`;
+  fs.writeFileSync(file, `${line}\n`);
+  const key = bidaskSolTouchKey(MACCA, 0.0000379, "sol");
+  try {
+    const res = await runBidaskSolEntry(
+      {
+        mint: MACCA,
+        sizeSol: 1.25,
+        entryPrice: 0.0000379,
+        entryPriceUnit: "sol",
+        price: 0.0000379,
+        solPrice: 100,
+        touchDirection: "up",
+      },
+      {
+        dryRun: false,
+        poolListFile: file,
+        resolveCaPool: async () => ({
+          pools: [
+            pool("MaccaPool111111111111111111111111111111111", {
+              token_x: { address: MACCA },
+              token_y: { address: SOL },
+            }),
+          ],
+        }),
+        executeBidaskSolEntry: async () => ({ success: true, position: "PosMacca" }),
+      }
+    );
+    assert.equal(res, undefined);
+    assert.equal(fs.readFileSync(file, "utf8"), `#${line}\n`);
+    assert.equal(getBidaskSolTouchDirection(key), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("log open bidask:sol mencetak signature transaksi, bukan [object Object]", async () => {
+  assert.equal(
+    formatTxSignature({ signature: "5RealSigBidaskSol", mode: "priority", attempts: 1 }),
+    "5RealSigBidaskSol"
+  );
+  assert.equal(formatTxSignature("tx_sol_unit"), "tx_sol_unit");
+  assert.equal(formatTxSignature({ mode: "priority" }), "");
+
+  const wallet = Keypair.generate();
+  const lines = [];
+  const orig = console.log;
+  console.log = (...args) => {
+    lines.push(args.map((part) => String(part)).join(" "));
+    orig(...args);
+  };
+  try {
+    const res = await executeBidaskSolEntry(POOL, 0.4, {
+      dryRun: false,
+      allowDuplicateMint: true,
+      getPoolInfo: async () => ({
+        pool: {
+          lbPair: { binStep: 100 },
+          async getActiveBin() {
+            return { binId: 1000, pricePerToken: "0.01" };
+          },
+          async quoteCreatePosition() {
+            return { binArrayCost: 0, bitmapExtensionCost: 0 };
+          },
+          async createExtendedEmptyPosition() {
+            return { tx: "init" };
+          },
+          async addLiquidityByStrategy() {
+            return { tx: "add" };
+          },
+        },
+        baseMint: CA,
+        baseIsX: true,
+        quoteMint: SOL,
+        unsupported: false,
+        collectFeeMode: 0,
+        pairName: "TOK-SOL",
+      }),
+      getDlmmSdk: async () => ({ StrategyType: { BidAsk: 2, Spot: 0 } }),
+      getConnection: () => ({}),
+      getWallet: () => wallet,
+      getSolBalance: async () => 5,
+      buildFeePlan: () => ({ mode: "none" }),
+      checkFeeCap: () => ({ ok: true, totalSol: 0 }),
+      sendAndConfirmRobust: async () => ({ signature: "5RealSigBidaskSol", mode: "priority", attempts: 1 }),
+      notifyEntry: () => {},
+    });
+    assert.equal(res.success, true);
+    assert.equal(res.txSig, "5RealSigBidaskSol");
+    const opened = lines.find((row) => row.includes("position opened"));
+    assert.match(opened, /tx: 5RealSigBidaskSol/);
+    assert.doesNotMatch(opened, /\[object Object\]/);
+  } finally {
+    console.log = orig;
+  }
 });

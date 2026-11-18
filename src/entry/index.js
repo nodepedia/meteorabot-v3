@@ -4,6 +4,12 @@ import { fmtQuote } from "../core/report.js";
 import { WSOL_MINT } from "../core/constants.js";
 import * as tg from "../notify/telegram.js";
 import { getOpenTrackedPositions } from "../state/positions.js";
+import {
+  bidaskSolTouchKey,
+  clearBidaskSolTouchForMint,
+  getBidaskSolTouchDirection,
+  pruneBidaskSolTouch,
+} from "../state/bidask-sol-touch.js";
 import { loadPoolList, commentPoolInList, ensurePoolListHeader } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
@@ -69,6 +75,7 @@ function buildLocalWatchSnapshot() {
       solUsd: prices.get(WSOL_MINT),
       entryPriceUnit: c.entryPriceUnit,
     });
+    const unit = c.entryPriceUnit === "sol" ? "sol" : "usd";
     rows.push({
       pool: c.mint,
       pairName: c.pairName || `CA ${c.mint.slice(0, 8)}`,
@@ -78,6 +85,8 @@ function buildLocalWatchSnapshot() {
       entryPrice: c.entryPrice,
       entryPriceUnit: cmp.unit,
       price: cmp.price,
+      touchDirection:
+        c.touchDirection || getBidaskSolTouchDirection(bidaskSolTouchKey(c.mint, c.entryPrice, unit)) || null,
       pendingBidaskSol: true,
     });
   }
@@ -171,10 +180,11 @@ function spotRentFallbackEnabled() {
 // in-process seketika (poll harga cepat tidak mengecek `skipped`). Hapus `#`
 // secara manual untuk mengaktifkan kembali — refresh berikutnya mengangkat
 // gate memori (cooldown, timer expiry, skipped) tanpa restart.
-export function deactivatePool(pool, reason) {
+export function deactivatePool(pool, reason, opts = {}) {
   if (!pool) return false;
+  const dryRun = opts.dryRun != null ? opts.dryRun : config.dryRun;
   // Dry run tidak boleh mengubah pool.txt; cukup skip runtime.
-  if (config.dryRun) {
+  if (dryRun) {
     skipped.add(pool);
     heldThisRefresh.add(pool);
     return false;
@@ -187,11 +197,14 @@ export function deactivatePool(pool, reason) {
   bidaskSolCache = bidaskSolCache.filter((c) => c.mint !== pool && c.mint !== alias);
   heldThisRefresh.add(pool);
   if (alias) heldThisRefresh.add(alias);
-  if (commentPoolInList(pool, alias)) {
+  if (commentPoolInList(pool, alias, opts.file)) {
+    clearBidaskSolTouchForMint(pool);
+    if (alias && alias !== pool) clearBidaskSolTouchForMint(alias);
     clearInMemoryGate(pool);
     if (alias) clearPoolAliasesFor(alias);
+    const listed = opts.file || config.entry.poolListFile;
     log.info(
-      `Pool ${pool.slice(0, 8)} ditandai '#' di ${config.entry.poolListFile}${reason ? ` (${reason})` : ""} — hapus '#' untuk memantau lagi`
+      `Pool ${pool.slice(0, 8)} ditandai '#' di ${listed}${reason ? ` (${reason})` : ""} — hapus '#' untuk memantau lagi`
     );
     return true;
   }
@@ -227,6 +240,7 @@ export async function refreshCandidates() {
     if (pools.length === 0) {
       candidateCache = [];
       bidaskSolCache = [];
+      pruneBidaskSolTouch([]);
       setWatchSnapshot([]);
       return null;
     }
@@ -515,6 +529,12 @@ export async function refreshCandidates() {
 
     candidateCache = candidates;
     bidaskSolCache = solWatches;
+    pruneBidaskSolTouch(
+      pools
+        .filter((row) => row.mode === "bidask:sol")
+        .map((row) => bidaskSolTouchKey(row.pool, row.entryPrice, row.entryPriceUnit))
+        .filter(Boolean)
+    );
     setWatchSnapshot(buildLocalWatchSnapshot());
     return candidates;
   } catch (err) {
@@ -1018,20 +1038,25 @@ function bidaskSolWaitMs() {
   return Math.max(15_000, (Number(config.entry.caCacheSec) || 60) * 1000);
 }
 
-// Harga sudah <= target. Pilih pool sekarang; kalau tidak ada yang lolos, tunggu.
+// Harga sudah menyentuh target. Pilih pool sekarang; kalau tidak ada yang lolos, tunggu.
 function bidaskSolHarga(price, entryPrice, unit) {
   const u = unit === "sol" ? "sol" : "usd";
-  return `${fmtQuote(price, u)} <= ${fmtQuote(entryPrice, u)}`;
+  return `${fmtQuote(price, u)} menyentuh ${fmtQuote(entryPrice, u)}`;
 }
 
-async function runBidaskSolEntry(watch) {
+export async function runBidaskSolEntry(watch, deps = {}) {
+  const resolveFn = deps.resolveCaPool || resolveCaPool;
+  const executeFn = deps.executeBidaskSolEntry || executeBidaskSolEntry;
+  const pickFn = deps.pickBidaskSolEntryPool || pickBidaskSolEntryPool;
+  const dryRun = deps.dryRun != null ? deps.dryRun : config.dryRun;
+  const poolListFile = deps.poolListFile;
   const { mint, sizeSol, entryPrice, price, solPrice, priceUsd, entryPriceUnit } = watch;
   const unit = entryPriceUnit === "sol" ? "sol" : "usd";
   const pairHint = `CA ${mint.slice(0, 8)}`;
   addEntryInProgressMint(mint);
   let poolLocked = null;
   try {
-    const resolved = await resolveCaPool(mint);
+    const resolved = await resolveFn(mint);
     if (!Array.isArray(resolved?.pools)) {
       bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
       if (shouldLogCaSkip(`bidasksol:${mint}`)) {
@@ -1041,7 +1066,7 @@ async function runBidaskSolEntry(watch) {
       }
       return;
     }
-    const picked = pickBidaskSolEntryPool(resolved.pools, mint);
+    const picked = pickFn(resolved.pools, mint);
     if (!picked.ranked.length) {
       bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
       if (shouldLogCaSkip(`bidasksol:${mint}`)) {
@@ -1052,7 +1077,7 @@ async function runBidaskSolEntry(watch) {
       return;
     }
 
-    if (config.dryRun) {
+    if (dryRun) {
       if (!dryRunNoted.has(mint)) {
         dryRunNoted.add(mint);
         const top = picked.ranked[0];
@@ -1091,7 +1116,7 @@ async function runBidaskSolEntry(watch) {
       log.info(
         `${pairHint} → pool ${pool.slice(0, 8)} bidask:sol (bin step ${row.binStep}, TVL ${Math.round(row.tvl)}, ${row.binCount} bin, fee/active TVL ${row.feeRatio})`
       );
-      const result = await executeBidaskSolEntry(pool, sizeSol, {
+      const result = await executeFn(pool, sizeSol, {
         tvlUsd: row.tvl,
         entryPrice,
         entryPriceUnit: unit,
@@ -1111,6 +1136,8 @@ async function runBidaskSolEntry(watch) {
         failureCounts.delete(mint);
         bidaskSolWaitUntil.delete(mint);
         bidaskSolCache = bidaskSolCache.filter((c) => c.mint !== mint);
+        // Baris CA (termasuk 6 kolom + akhiran sol/usd) diberi # supaya tidak masuk lagi.
+        deactivatePool(mint, "bidask:sol entry berhasil", { dryRun, file: poolListFile });
         return;
       }
       if (result?.duplicateMint) {
