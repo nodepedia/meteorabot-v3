@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import config from "../config/index.js";
+import { parseBidaskSolRange } from "../config/bidask-sol-range.js";
 import log from "../core/logger.js";
 import { ROOT } from "../core/paths.js";
 import { getPoolAlias } from "./runtime.js";
@@ -159,6 +160,7 @@ function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null, entryNow =
 // Format lama `alamat,size,max[,mode[,ca]]` tetap terbaca: kolom ke-3 (max
 // entry seumur hidup) diabaikan. Mode tetap kolom ke-4.
 // bidask:sol: `CA,size,,bidask:sol,ca,HARGA` (usd atau sol) atau `...,now`.
+// Kolom ke-7 opsional: rentang `bawah/atas`, contoh `-30/15`. Kosong = strat.conf.
 export function parsePoolList(raw) {
   const defaultSize = Number(config.entry.defaultSizeSol);
   const entries = [];
@@ -173,6 +175,7 @@ export function parsePoolList(raw) {
     const modeRaw = parts[3];
     const kindRaw = parts[4];
     const parsedPrice = parseEntryPrice(parts[5]);
+    const parsedRange = parseBidaskSolRange(parts[6]);
     const entryNow = Boolean(parsedPrice?.entryNow);
     const entryPrice = parsedPrice?.ok && !entryNow ? parsedPrice.entryPrice : null;
     const entryPriceUnit = entryNow ? "now" : parsedPrice?.ok ? parsedPrice.entryPriceUnit : null;
@@ -217,8 +220,22 @@ export function parsePoolList(raw) {
     }
 
     if (mode === "bidask:sol") {
+      if (parsedRange && !parsedRange.ok) {
+        const shown = String(parts[6] || "")
+          .split("#")[0]
+          .trim()
+          .slice(0, 40);
+        log.warn(
+          `Pool ${address.slice(0, 8)} skipped: bidask:sol rentang "${shown}" tidak valid (bawah -99..-1, atas 0..100, contoh -30/15)`
+        );
+        continue;
+      }
       const row = { pool: address, sizeSol, mode, ca: true, entryPrice, entryPriceUnit };
       if (entryNow) row.entryNow = true;
+      if (parsedRange?.ok) {
+        row.lowerPct = parsedRange.lowerPct;
+        row.upperPct = parsedRange.upperPct;
+      }
       entries.push(row);
     } else if (isCa) {
       entries.push({ pool: address, sizeSol, mode, ca: true });
@@ -375,7 +392,7 @@ export function poolListHeaderLines() {
     "# Blok ini ditulis ulang oleh bot bila teksnya berubah. Jangan diedit.",
     "# Baris di luar blok ini tidak disentuh.",
     "#",
-    "# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry",
+    "# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry, rentang",
     "# Kolom ke-3 (max entry lama) diabaikan.",
     "# Size: angka SOL (contoh 0.5), kelipatan 1x / 1.25x / 1.5x, atau tier1 / tier2 / tier3.",
     "# Kosong = ENTRY_DEFAULT_SIZE_SOL. Kelipatan dan tier dikali default itu.",
@@ -393,9 +410,14 @@ export function poolListHeaderLines() {
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd",
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol",
     "#   TOKEN_CA,1x,,bidask:sol,ca,now",
+    "#   TOKEN_CA,1x,,bidask:sol,ca,now,-30/15",
+    "#   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol,-20/15",
+    "#   Kolom ke-7 opsional, hanya bidask:sol: bawah/atas. Contoh -30/15 atau -20/+15.",
+    "#   Bawah -99 sampai -1, atas 0 sampai 100. Kosong = BIDASK_SOL_ENTRY_LOWER_PCT / UPPER_PCT.",
+    "#   Di luar rentang itu, baris dilewati.",
     "#   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).",
     "#   now (huruf besar/kecil) = masuk begitu harga terbaca. Bukan harga target.",
-    "#   Arah sentuh tidak disimpan. Rentang dihitung dari harga bin aktif saat entry.",
+    "#   Arah sentuh tidak disimpan. Lebar posisi dihitung dari harga bin aktif saat entry.",
     "#   Akhiran lain, nol, atau negatif = baris dilewati.",
     "#   Sentuh: harga pertama di bawah target menunggu naik sampai target.",
     "#   Harga pertama di atas target menunggu turun sampai target.",

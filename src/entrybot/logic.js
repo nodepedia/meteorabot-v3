@@ -1,5 +1,6 @@
 // Parser, teks, dan keputusan antrean entry bot. Tanpa jaringan dan tanpa file.
 import config from "../config/index.js";
+import { formatBidaskSolRangeLabel } from "../config/bidask-sol-range.js";
 import { LEGACY_MODE } from "../config/rules.js";
 import { WSOL_MINT } from "../core/constants.js";
 import { fmtQuote } from "../core/report.js";
@@ -44,6 +45,10 @@ export function emptySession(now = 0) {
     targetUnit: null,
     entryNow: false,
     preview: null,
+    pools: null,
+    lowerPct: null,
+    upperPct: null,
+    rangeToken: null,
     updatedAt: now,
   };
 }
@@ -80,8 +85,11 @@ export function shortAddr(value) {
   return `${text.slice(0, 4)}…${text.slice(-4)}`;
 }
 
-export function formatEntryLine({ strategy, mint, targetToken } = {}) {
-  if (strategy === "bidask:sol") return `${mint},,,bidask:sol,ca,${targetToken}`;
+export function formatEntryLine({ strategy, mint, targetToken, rangeToken } = {}) {
+  if (strategy === "bidask:sol") {
+    const range = rangeToken ? `,${rangeToken}` : "";
+    return `${mint},,,bidask:sol,ca,${targetToken}${range}`;
+  }
   if (strategy === "spot") return `${mint},,,spot,ca`;
   return `${mint},,,bidask:double,ca`;
 }
@@ -101,6 +109,8 @@ export function parseCallbackData(data) {
   if (text === CB.ok) return { type: "confirm" };
   if (text === CB.now) return { type: "now" };
   if (text === CB.target) return { type: "target" };
+  const range = /^eb:rg:(\d{1,2})$/.exec(text);
+  if (range) return { type: "range", index: Number(range[1]) };
   if (text.startsWith("eb:rm:")) {
     const address = text.slice("eb:rm:".length).trim();
     if (!address || address.length > 50) return null;
@@ -136,6 +146,15 @@ export function solChoiceKeyboard() {
       [{ text: "❌ Batal", callback_data: CB.cancel }],
     ],
   };
+}
+
+export function rangeKeyboard(presets = config.entry.bidaskSolEntryPresets) {
+  const rows = (presets || []).map((preset, index) => {
+    const label = formatBidaskSolRangeLabel(preset.lowerPct, preset.upperPct) || "?";
+    return [{ text: `Preset ${index + 1}: ${label}`, callback_data: `eb:rg:${index}` }];
+  });
+  rows.push([{ text: "❌ Batal", callback_data: CB.cancel }]);
+  return { inline_keyboard: rows };
 }
 
 export function confirmKeyboard() {
@@ -365,9 +384,25 @@ export function formatSummary(session, sizeSol) {
     ? "entry sekarang (harga pasar)"
     : triggerPhrase(session.strategy, currentForUnit(session), session.target);
   lines.push(`Pemicu   : ${trigger}`);
+  if (session.strategy === "bidask:sol") {
+    const label =
+      formatBidaskSolRangeLabel(session.lowerPct, session.upperPct) ||
+      formatBidaskSolRangeLabel(config.entry.bidaskSolLowerPct, config.entry.bidaskSolUpperPct);
+    if (label) lines.push(`Rentang  : ${label}`);
+  }
   lines.push("");
   lines.push(formatPreview(session.preview));
   return lines.join("\n");
+}
+
+export function formatRangeAsk(session) {
+  const symbol = session.symbol || shortAddr(session.mint);
+  return [
+    `${symbol} · ${shortAddr(session.mint)}`,
+    formatPriceLine(session.priceSol, session.priceUsd),
+    "",
+    "Pilih rentang posisi:",
+  ].join("\n");
 }
 
 export function formatQuoteAsk(session) {
@@ -546,6 +581,13 @@ export function formatEntered(item, position, meta = {}) {
   lines.push(`Bin step : ${meta.binStep != null ? meta.binStep : "—"}`);
   const size = Number(position?.entrySizeSol ?? item.sizeSol);
   lines.push(`Size     : ${Number.isFinite(size) ? `${size} SOL` : "?"}`);
+  if (item?.strategy === "bidask:sol" || position?.mode === "bidask:sol") {
+    const label =
+      formatBidaskSolRangeLabel(item?.lowerPct, item?.upperPct) ||
+      formatBidaskSolRangeLabel(position?.entryLowerPct, position?.entryUpperPct) ||
+      formatBidaskSolRangeLabel(config.entry.bidaskSolLowerPct, config.entry.bidaskSolUpperPct);
+    if (label) lines.push(`Rentang  : ${label}`);
+  }
   if (meta.tx) lines.push(`Tx       : https://solscan.io/tx/${meta.tx}`);
   return lines.join("\n");
 }

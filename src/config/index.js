@@ -1,5 +1,6 @@
 import { loadEnv, bool, num } from "./env.js";
 import { modeRules, LEGACY_MODE } from "./rules.js";
+import { parseBidaskSolPresets } from "./bidask-sol-range.js";
 
 const FEE_MODES = ["none", "priority", "jito", "both"];
 function normalizeFeeMode(raw) {
@@ -178,6 +179,9 @@ export function buildConfig(e = {}) {
     bidaskSolMaxBins: Math.max(1, Math.floor(num(e.BIDASK_SOL_ENTRY_MAX_BINS, 169))),
     bidaskSolLowerPct: num(e.BIDASK_SOL_ENTRY_LOWER_PCT, -50),
     bidaskSolUpperPct: num(e.BIDASK_SOL_ENTRY_UPPER_PCT, 15),
+    // Tombol preset entry bot. Tiap item { lowerPct, upperPct }.
+    // Kosong atau tidak ada yang valid = -50/15, -30/15, -20/15.
+    bidaskSolEntryPresets: parseBidaskSolPresets(e.BIDASK_SOL_ENTRY_PRESETS),
     // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
     scanIntervalSec: num(e.ENTRY_SCAN_INTERVAL_SEC, 15),
     timeframe: e.ENTRY_TIMEFRAME || "15m",

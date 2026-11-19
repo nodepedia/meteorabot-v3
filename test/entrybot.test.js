@@ -180,15 +180,26 @@ test("wizard bidask sol sampai antrean, tolak harga buruk dan duplikat", async (
 
   res = await turn(state, { type: "text", text: "0.0000379sol" }, box);
   state = res.state;
+  assert.match(res.replies[0].text, /Pilih rentang posisi:/);
+  assert.equal(state.session.step, "range");
+  const presets = res.replies[0].keyboard.inline_keyboard.flat().map((button) => button.text);
+  assert.deepEqual(presets, ["Preset 1: -50% / +15%", "Preset 2: -30% / +15%", "Preset 3: -20% / +15%", "❌ Batal"]);
+
+  res = await turn(state, { type: "callback", data: "eb:rg:1" }, box);
+  state = res.state;
   assert.match(res.replies[0].text, /📋 Konfirmasi entry/);
   assert.match(res.replies[0].text, /0\.1 SOL \(preset\)/);
   assert.match(res.replies[0].text, /tunggu harga naik sampai target/);
+  assert.match(res.replies[0].text, /Rentang {2}: -30% \/ \+15%/);
   assert.match(res.replies[0].text, /bin step 100/);
+  assert.match(res.replies[0].text, /52 bin/);
+  assert.match(res.replies[0].text, /TVL \$50,000/);
   assert.match(res.replies[0].text, /Pool calon/);
 
   res = await turn(state, { type: "callback", data: "eb:ok" }, box);
   state = res.state;
-  assert.equal(box.lines[0], `${MINT},,,bidask:sol,ca,0.0000379sol`);
+  assert.equal(box.lines[0], `${MINT},,,bidask:sol,ca,0.0000379sol,-30/15`);
+  assert.match(res.replies[0].text, /Rentang {2}: -30% \/ \+15%/);
   assert.match(res.replies[0].text, /⏳ Masuk antrean, dipantau/);
   assert.equal(state.items[0].status, "watching");
   assert.equal(state.session.step, "idle");
@@ -202,6 +213,8 @@ test("wizard bidask sol sampai antrean, tolak harga buruk dan duplikat", async (
   res = await turn(state, { type: "callback", data: "eb:px" }, box);
   state = res.state;
   res = await turn(state, { type: "text", text: "0.01" }, box);
+  state = res.state;
+  res = await turn(state, { type: "callback", data: "eb:rg:0" }, box);
   state = res.state;
   res = await turn(state, { type: "callback", data: "eb:ok" }, box);
   state = res.state;
@@ -220,20 +233,35 @@ test("entry sekarang menulis now dan ringkasannya harga pasar", async () => {
   state = res.state;
   res = await turn(state, { type: "callback", data: "eb:now" }, box);
   state = res.state;
-  assert.equal(state.session.step, "confirm");
+  assert.equal(state.session.step, "range");
   assert.equal(state.session.entryNow, true);
+  assert.match(res.replies[0].text, /Pilih rentang posisi:/);
+
+  res = await turn(state, { type: "text", text: "halo" }, box);
+  state = res.state;
+  assert.match(res.replies[0].text, /Pakai tombolnya ya/);
+
+  res = await turn(state, { type: "callback", data: "eb:rg:2" }, box);
+  state = res.state;
+  assert.equal(state.session.step, "confirm");
   assert.match(res.replies[0].text, /📋 Konfirmasi entry/);
   assert.match(res.replies[0].text, /Pemicu {3}: entry sekarang \(harga pasar\)/);
+  assert.match(res.replies[0].text, /Rentang {2}: -20% \/ \+15%/);
+  assert.match(res.replies[0].text, /39 bin/);
   assert.doesNotMatch(res.replies[0].text, /Target/);
   assert.equal(res.replies[0].keyboard.inline_keyboard[0][0].text, "✅ Konfirmasi");
 
   res = await turn(state, { type: "callback", data: "eb:ok" }, box);
   state = res.state;
-  assert.equal(box.lines[0], `${MINT},,,bidask:sol,ca,now`);
+  assert.equal(box.lines[0], `${MINT},,,bidask:sol,ca,now,-20/15`);
+  assert.equal(state.items[0].lowerPct, -20);
+  assert.equal(state.items[0].upperPct, 15);
   assert.equal(state.items[0].status, "watching");
   assert.equal(state.items[0].targetRaw, "now");
   assert.equal(parsePoolList(box.lines[0])[0].entryNow, true);
   assert.equal(parsePoolList(box.lines[0])[0].entryPrice, null);
+  assert.equal(parsePoolList(box.lines[0])[0].lowerPct, -20);
+  assert.equal(parsePoolList(box.lines[0])[0].upperPct, 15);
 });
 
 test("spot dan bidask double tidak minta harga; batal dan timeout", async () => {
@@ -401,8 +429,32 @@ test("pantauan baris now: peringatan skip dan entry berhasil", () => {
     queuedAt + 2000
   );
   assert.match(done.notes[0].text, /✅ Entry BONK berhasil/);
+  assert.match(done.notes[0].text, /Rentang {2}: -50% \/ \+15%/);
   assert.match(done.notes[0].text, new RegExp(`https://solscan.io/tx/${TX}`));
   assert.equal(done.items[0].status, "entered");
+
+  const custom = reviewQueue(
+    [{ ...item, id: "qrange", lowerPct: -30, upperPct: 15 }],
+    {
+      poolText: "",
+      positions: {
+        a: {
+          baseMint: MINT,
+          mode: "bidask:sol",
+          closed: false,
+          firstSeenAt: queuedAt + 1000,
+          position: POS,
+          pool: POOL,
+          entrySizeSol: 0.1,
+          entryLowerPct: -50,
+          entryUpperPct: 15,
+        },
+      },
+      logLines: [`bidask:sol position opened: ${POS} (tx: ${TX}) | bins [1..2] step 80`],
+    },
+    queuedAt + 2000
+  );
+  assert.match(custom.notes[0].text, /Rentang {2}: -30% \/ \+15%/);
 });
 
 test("classify skip tidak menganggap log bin step sukses sebagai gagal", () => {
