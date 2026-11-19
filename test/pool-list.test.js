@@ -174,6 +174,45 @@ test("bidask:sol token now masuk tanpa harga target", () => {
   });
 });
 
+test("kolom rentang bidask:sol opsional; tidak valid melewati baris", () => {
+  withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
+    assert.deepEqual(parsePoolList(`${ADDR_A},,,bidask:sol,ca,now,-30/15\n`), [
+      {
+        pool: ADDR_A,
+        sizeSol: 0.2,
+        mode: "bidask:sol",
+        ca: true,
+        entryPrice: null,
+        entryPriceUnit: "now",
+        entryNow: true,
+        lowerPct: -30,
+        upperPct: 15,
+      },
+    ]);
+    assert.deepEqual(parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,0.0000379sol,-20/+15\n`), [
+      {
+        pool: ADDR_A,
+        sizeSol: 0.2,
+        mode: "bidask:sol",
+        ca: true,
+        entryPrice: 0.0000379,
+        entryPriceUnit: "sol",
+        lowerPct: -20,
+        upperPct: 15,
+      },
+    ]);
+    assert.deepEqual(parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,now, -50 / +15 \n`)[0].lowerPct, -50);
+    assert.equal(parsePoolList(`${ADDR_A},,,bidask:sol,ca,now\n`)[0].lowerPct, undefined);
+    assert.equal(parsePoolList(`${ADDR_A},,,bidask:sol,ca,now,\n`)[0].upperPct, undefined);
+    assert.deepEqual(
+      parsePoolList(
+        `${ADDR_A},1x,,bidask:sol,ca,now,-100/15\n${ADDR_A},1x,,bidask:sol,ca,now,0/15\n${ADDR_A},1x,,bidask:sol,ca,now,-30/101\n${ADDR_A},1x,,bidask:sol,ca,now,abc\n${ADDR_B},1x,,spot,ca,x,-30/15\n`
+      ),
+      [{ pool: ADDR_B, sizeSol: 0.2, mode: "spot", ca: true }]
+    );
+  });
+});
+
 test("header pool.txt idempoten dan tidak mengubah baris pengguna", () => {
   const user = "KEEP_ME,1x,,spot\n# catatan user\n";
   const first = applyPoolListHeader(user);
@@ -203,6 +242,8 @@ test("header pool.txt idempoten dan tidak mengubah baris pengguna", () => {
   assert.match(header, /0\.00123usd/);
   assert.match(header, /0\.0000123sol/);
   assert.match(header, /TOKEN_CA,1x,,bidask:sol,ca,now/);
+  assert.match(header, /now,-30\/15/);
+  assert.match(header, /0\.0000123sol,-20\/15/);
   assert.match(header, /USD per token/);
   assert.match(header, /SOL per token/);
   assert.match(header, /now \(huruf besar\/kecil\)/);

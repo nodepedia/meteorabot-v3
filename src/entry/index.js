@@ -10,6 +10,7 @@ import {
   getBidaskSolTouchDirection,
   pruneBidaskSolTouch,
 } from "../state/bidask-sol-touch.js";
+import { bidaskSolRangePair } from "../config/bidask-sol-range.js";
 import { loadPoolList, commentPoolInList, ensurePoolListHeader, isBidaskSolNow } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
@@ -266,6 +267,8 @@ export async function refreshCandidates() {
       entryPrice = null,
       entryPriceUnit = null,
       entryNow = false,
+      lowerPct = null,
+      upperPct = null,
     } of pools) {
       // lineKey = kolom pertama baris pool.txt (alamat pool, atau CA untuk baris `,ca`).
       let poolAddress = lineKey;
@@ -302,7 +305,7 @@ export async function refreshCandidates() {
         );
         if (sameStrategyOpen) continue;
         if (solWatches.some((w) => w.mint === lineKey)) continue;
-        solWatches.push({
+        const watch = {
           mint: lineKey,
           sizeSol,
           entryPrice: solNow ? null : Number(entryPrice),
@@ -311,7 +314,13 @@ export async function refreshCandidates() {
           mode,
           strategy,
           pairName: `CA ${lineKey.slice(0, 8)}`,
-        });
+        };
+        const range = bidaskSolRangePair(lowerPct, upperPct);
+        if (range) {
+          watch.lowerPct = range.lowerPct;
+          watch.upperPct = range.upperPct;
+        }
+        solWatches.push(watch);
         continue;
       }
 
@@ -1045,6 +1054,12 @@ function bidaskSolWaitMs() {
   return Math.max(15_000, (Number(config.entry.caCacheSec) || 60) * 1000);
 }
 
+// Hanya angka yang ada di baris. Kosong = pemanggil memakai default strat.conf.
+function bidaskSolRangeOpts(watch) {
+  const range = bidaskSolRangePair(watch?.lowerPct, watch?.upperPct);
+  return range ? { lowerPct: range.lowerPct, upperPct: range.upperPct } : {};
+}
+
 // Harga sudah menyentuh target. Pilih pool sekarang; kalau tidak ada yang lolos, tunggu.
 function bidaskSolHarga(price, entryPrice, unit) {
   if (unit === "now") return `${fmtQuote(price, "usd")} (entry sekarang)`;
@@ -1059,6 +1074,7 @@ export async function runBidaskSolEntry(watch, deps = {}) {
   const dryRun = deps.dryRun != null ? deps.dryRun : config.dryRun;
   const poolListFile = deps.poolListFile;
   const { mint, sizeSol, entryPrice, price, solPrice, priceUsd, entryPriceUnit } = watch;
+  const rangeOpts = bidaskSolRangeOpts(watch);
   const solNow = isBidaskSolNow(watch);
   const unit = solNow ? "now" : entryPriceUnit === "sol" ? "sol" : "usd";
   const pairHint = `CA ${mint.slice(0, 8)}`;
@@ -1075,7 +1091,7 @@ export async function runBidaskSolEntry(watch, deps = {}) {
       }
       return;
     }
-    const picked = pickFn(resolved.pools, mint);
+    const picked = pickFn(resolved.pools, mint, rangeOpts);
     if (!picked.ranked.length) {
       bidaskSolWaitUntil.set(mint, Date.now() + bidaskSolWaitMs());
       if (shouldLogCaSkip(`bidasksol:${mint}`)) {
@@ -1090,8 +1106,9 @@ export async function runBidaskSolEntry(watch, deps = {}) {
       if (!dryRunNoted.has(mint)) {
         dryRunNoted.add(mint);
         const top = picked.ranked[0];
+        const rangeNote = rangeOpts.lowerPct != null ? ` rentang ${rangeOpts.lowerPct}%..+${rangeOpts.upperPct}%` : "";
         log.info(
-          `[DRY RUN] Would enter bidask:sol ${pairHint} — ${sizeSol} SOL saat harga ${bidaskSolHarga(price, entryPrice, unit)} | pool ${top.pool.slice(0, 8)} step ${top.binStep} TVL ${Math.round(top.tvl)} ${top.binCount} bin`
+          `[DRY RUN] Would enter bidask:sol ${pairHint} — ${sizeSol} SOL saat harga ${bidaskSolHarga(price, entryPrice, unit)} | pool ${top.pool.slice(0, 8)} step ${top.binStep} TVL ${Math.round(top.tvl)} ${top.binCount} bin${rangeNote}`
         );
       }
       return;
@@ -1122,8 +1139,9 @@ export async function runBidaskSolEntry(watch, deps = {}) {
       addEntryInProgressPool(slotKey);
       poolLocked = slotKey;
       if (getPoolAlias(pool) !== mint) setPoolAlias(pool, mint);
+      const rangeNote = rangeOpts.lowerPct != null ? `, rentang ${rangeOpts.lowerPct}%..+${rangeOpts.upperPct}%` : "";
       log.info(
-        `${pairHint} → pool ${pool.slice(0, 8)} bidask:sol (bin step ${row.binStep}, TVL ${Math.round(row.tvl)}, ${row.binCount} bin, fee/active TVL ${row.feeRatio})`
+        `${pairHint} → pool ${pool.slice(0, 8)} bidask:sol (bin step ${row.binStep}, TVL ${Math.round(row.tvl)}, ${row.binCount} bin, fee/active TVL ${row.feeRatio}${rangeNote})`
       );
       const result = await executeFn(pool, sizeSol, {
         tvlUsd: row.tvl,
@@ -1133,6 +1151,7 @@ export async function runBidaskSolEntry(watch, deps = {}) {
         priceUsd: priceUsd ?? (unit === "usd" || solNow ? price : null),
         solPrice,
         binStepHint: row.binStep,
+        ...rangeOpts,
       });
       removeEntryInProgressPool(slotKey);
       poolLocked = null;

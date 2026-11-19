@@ -2,7 +2,7 @@
 # Blok ini ditulis ulang oleh bot bila teksnya berubah. Jangan diedit.
 # Baris di luar blok ini tidak disentuh.
 #
-# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry
+# Kolom: alamat_atau_CA, size, (kolom ke-3 diabaikan), mode, ca, harga_entry, rentang
 # Kolom ke-3 (max entry lama) diabaikan.
 # Size: angka SOL (contoh 0.5), kelipatan 1x / 1.25x / 1.5x, atau tier1 / tier2 / tier3.
 # Kosong = ENTRY_DEFAULT_SIZE_SOL. Kelipatan dan tier dikali default itu.
@@ -20,9 +20,14 @@
 #   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd
 #   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol
 #   TOKEN_CA,1x,,bidask:sol,ca,now
+#   TOKEN_CA,1x,,bidask:sol,ca,now,-30/15
+#   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol,-20/15
+#   Kolom ke-7 opsional, hanya bidask:sol: bawah/atas. Contoh -30/15 atau -20/+15.
+#   Bawah -99 sampai -1, atas 0 sampai 100. Kosong = BIDASK_SOL_ENTRY_LOWER_PCT / UPPER_PCT.
+#   Di luar rentang itu, baris dilewati.
 #   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).
 #   now (huruf besar/kecil) = masuk begitu harga terbaca. Bukan harga target.
-#   Arah sentuh tidak disimpan. Rentang dihitung dari harga bin aktif saat entry.
+#   Arah sentuh tidak disimpan. Lebar posisi dihitung dari harga bin aktif saat entry.
 #   Akhiran lain, nol, atau negatif = baris dilewati.
 #   Sentuh: harga pertama di bawah target menunggu naik sampai target.
 #   Harga pertama di atas target menunggu turun sampai target.

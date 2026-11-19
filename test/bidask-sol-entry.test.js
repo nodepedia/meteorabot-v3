@@ -22,7 +22,7 @@ const {
 } = await import("../src/entry/bidask-sol-entry.js");
 const { executeBidaskSolEntry, formatTxSignature } = await import("../src/entry/execute.js");
 const { runBidaskSolEntry } = await import("../src/entry/index.js");
-const config = (await import("../src/config/index.js")).default;
+const { default: config, buildConfig } = await import("../src/config/index.js");
 const { getTrackedPosition, getInitialCapitalSol, getEntrySizeSol } = await import("../src/state/positions.js");
 const { bidaskSolTouchKey, getBidaskSolTouchDirection, pruneBidaskSolTouch, setBidaskSolTouchDirection } =
   await import("../src/state/bidask-sol-touch.js");
@@ -56,6 +56,34 @@ test("bin math: binStep 100 sekitar 70 bawah dan 15 atas", () => {
   assert.equal(plan.maxBinId, 1015);
   assert.equal(plan.depositMinBinId, 930);
   assert.equal(plan.depositMaxBinId, 1000);
+});
+
+test("bin plan tiap preset -50/15, -30/15, -20/15", () => {
+  assert.deepEqual(config.entry.bidaskSolEntryPresets, [
+    { lowerPct: -50, upperPct: 15 },
+    { lowerPct: -30, upperPct: 15 },
+    { lowerPct: -20, upperPct: 15 },
+  ]);
+  const plans = config.entry.bidaskSolEntryPresets.map((preset) =>
+    bidaskSolEntryBinPlan({ binStep: 100, activeBinId: 1000, ...preset })
+  );
+  assert.deepEqual(
+    plans.map((plan) => plan.binCount),
+    [86, 52, 39]
+  );
+  assert.equal(plans[1].binsBelow, 36);
+  assert.equal(plans[2].binsBelow, 23);
+  assert.equal(plans[0].minBinId, 930);
+  assert.equal(plans[2].minBinId, 977);
+  assert.ok(plans.every((plan) => plan.maxBinId === 1015 && plan.depositMaxBinId === 1000));
+
+  const wide = pool("WIDE", { dlmm_params: { bin_step: 80 }, fee_active_tvl_ratio: 9 });
+  const blocked = pickBidaskSolEntryPool([wide], CA, { minTvlUsd: 20000, maxBins: 100, lowerPct: -50, upperPct: 15 });
+  assert.equal(blocked.pool, null);
+  assert.equal(blocked.tooWide, 1);
+  const fitted = pickBidaskSolEntryPool([wide], CA, { minTvlUsd: 20000, maxBins: 100, lowerPct: -20, upperPct: 15 });
+  assert.equal(fitted.pool, "WIDE");
+  assert.equal(fitted.binCount, 48);
 });
 
 test("bin math: binStep 80 (106) dan binStep 50 (169) lolos ambang 169", () => {
@@ -191,6 +219,9 @@ test("executeBidaskSolEntry mencatat mode bidask:sol, modal awal, dan bin atas k
   assert.equal(tracked.binSpan, 85);
   assert.equal(tracked.openBinsBelow, 70);
   assert.equal(tracked.openBinsAbove, 15);
+  assert.equal(tracked.entryLowerPct, -50);
+  assert.equal(tracked.entryUpperPct, 15);
+  assert.equal(alerts[0].priceRangeLabel, "-50%..+15%");
 
   assert.equal(alerts.length, 1);
   assert.equal(alerts[0].modeLabel, "bidask:sol");
@@ -850,5 +881,144 @@ test("log open bidask:sol mencetak signature transaksi, bukan [object Object]", 
     assert.doesNotMatch(opened, /\[object Object\]/);
   } finally {
     console.log = orig;
+  }
+});
+
+test("preset rusak di config jatuh ke tiga default", () => {
+  const bad = buildConfig({ BIDASK_SOL_ENTRY_PRESETS: "nope,200/1" });
+  assert.deepEqual(bad.entry.bidaskSolEntryPresets, [
+    { lowerPct: -50, upperPct: 15 },
+    { lowerPct: -30, upperPct: 15 },
+    { lowerPct: -20, upperPct: 15 },
+  ]);
+  const one = buildConfig({ BIDASK_SOL_ENTRY_PRESETS: "-20/15" });
+  assert.deepEqual(one.entry.bidaskSolEntryPresets, [{ lowerPct: -20, upperPct: 15 }]);
+});
+
+test("executeBidaskSolEntry memakai rentang per baris untuk quote dan state", async () => {
+  const calls = { quote: null };
+  const res = await executeBidaskSolEntry(POOL, 0.4, {
+    dryRun: false,
+    allowDuplicateMint: true,
+    lowerPct: -20,
+    upperPct: 15,
+    getPoolInfo: async () => ({
+      pool: {
+        lbPair: { binStep: 100 },
+        async getActiveBin() {
+          return { binId: 1000, pricePerToken: "0.01" };
+        },
+        async quoteCreatePosition({ strategy }) {
+          calls.quote = strategy;
+          return { binArrayCost: 0, bitmapExtensionCost: 0 };
+        },
+        async createExtendedEmptyPosition() {
+          return { tx: "init" };
+        },
+        async addLiquidityByStrategy() {
+          return { tx: "add" };
+        },
+      },
+      baseMint: CA,
+      baseIsX: true,
+      quoteMint: SOL,
+      unsupported: false,
+      pairName: "TOK-SOL",
+    }),
+    getDlmmSdk: async () => ({ StrategyType: { BidAsk: 2 } }),
+    getConnection: () => ({}),
+    getWallet: () => Keypair.generate(),
+    getSolBalance: async () => 5,
+    buildFeePlan: () => ({ mode: "none" }),
+    checkFeeCap: () => ({ ok: true, totalSol: 0 }),
+    sendAndConfirmRobust: async () => "tx_range",
+    notifyEntry: () => {},
+  });
+  assert.equal(res.success, true);
+  assert.equal(res.binCount, 39);
+  assert.deepEqual(calls.quote, { minBinId: 977, maxBinId: 1015 });
+  assert.equal(res.depositMaxBinId, 1000);
+  const tracked = getTrackedPosition(res.position);
+  assert.equal(tracked.entryLowerPct, -20);
+  assert.equal(tracked.entryUpperPct, 15);
+  assert.equal(tracked.openBinsBelow, 23);
+  assert.equal(tracked.openBinsAbove, 15);
+  assert.equal(tracked.binSpan, 38);
+});
+
+test("runBidaskSolEntry meneruskan rentang baris dan mengosongkan bila tidak ada", async () => {
+  const mint = "MintRangeLine11111111111111111111111111";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bidask-sol-range-"));
+  const file = path.join(dir, "pool.txt");
+  fs.writeFileSync(file, `${mint},,,bidask:sol,ca,now,-20/15\n`);
+  const poolRow = pool("RangePool111111111111111111111111111111", {
+    token_x: { address: mint },
+    token_y: { address: SOL },
+  });
+  try {
+    let passed = null;
+    await runBidaskSolEntry(
+      {
+        mint,
+        sizeSol: 0.2,
+        entryNow: true,
+        entryPrice: null,
+        entryPriceUnit: "now",
+        price: 0.004,
+        priceUsd: 0.004,
+        solPrice: 200,
+        lowerPct: -20,
+        upperPct: 15,
+      },
+      {
+        dryRun: false,
+        poolListFile: file,
+        resolveCaPool: async () => ({ pools: [poolRow] }),
+        executeBidaskSolEntry: async (_poolAddress, _sizeSol, opts) => {
+          passed = opts;
+          return { success: true, position: "PosRange" };
+        },
+      }
+    );
+    assert.equal(passed.lowerPct, -20);
+    assert.equal(passed.upperPct, 15);
+    assert.equal(fs.readFileSync(file, "utf8").startsWith("#"), true);
+
+    const plain = "MintNoRange1111111111111111111111111111";
+    const plainFile = path.join(dir, "plain.txt");
+    fs.writeFileSync(plainFile, `${plain},,,bidask:sol,ca,now\n`);
+    let plainOpts = null;
+    await runBidaskSolEntry(
+      {
+        mint: plain,
+        sizeSol: 0.2,
+        entryNow: true,
+        entryPrice: null,
+        entryPriceUnit: "now",
+        price: 0.004,
+        priceUsd: 0.004,
+        solPrice: 200,
+      },
+      {
+        dryRun: false,
+        poolListFile: plainFile,
+        resolveCaPool: async () => ({
+          pools: [
+            pool("PlainPool1111111111111111111111111111111", {
+              token_x: { address: plain },
+              token_y: { address: SOL },
+            }),
+          ],
+        }),
+        executeBidaskSolEntry: async (_poolAddress, _sizeSol, opts) => {
+          plainOpts = opts;
+          return { success: true, position: "PosPlain" };
+        },
+      }
+    );
+    assert.equal(plainOpts.lowerPct, undefined);
+    assert.equal(plainOpts.upperPct, undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

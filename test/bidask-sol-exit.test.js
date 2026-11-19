@@ -20,6 +20,7 @@ const {
   getTrackedPosition,
   recordTrackedRange,
   setBidaskSolOpenOffset,
+  setBidaskSolEntryRange,
   noteBidaskSolOpenOffset,
   getSpotReentryCount,
   setExitWarmupStartedAt,
@@ -40,6 +41,7 @@ const {
   setLastBidaskSolReentryAt,
   clearBidaskSolReentryCooldown,
   readBidaskSolOpenOffset,
+  bidaskSolReentryOffset,
 } = await import("../src/exit/bidask-sol-reentry.js");
 const { buildCloseMessage, buildBidaskSolReentryMessage, buildBidaskSolReentryFailedMessage } =
   await import("../src/notify/telegram.js");
@@ -447,6 +449,7 @@ test("re-entry membuka bidask:sol SOL-only dengan lebar bin yang sama dan warmup
   trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol", false, { exitWarmupStartedAt: t0 });
   recordTrackedRange(POS, 100, 140);
   setBidaskSolOpenOffset(POS, 10, 30);
+  setBidaskSolEntryRange(POS, -20, 15);
   assert.deepEqual(readBidaskSolOpenOffset(getTrackedPosition(POS)), { binsBelow: 10, binsAbove: 30 });
 
   const wallet = Keypair.generate();
@@ -504,8 +507,99 @@ test("re-entry membuka bidask:sol SOL-only dengan lebar bin yang sama dan warmup
   assert.equal(getSpotReentryCount(res.position), 1);
   assert.equal(child.openBinsBelow, 10);
   assert.equal(child.openBinsAbove, 30);
+  assert.equal(child.entryLowerPct, -20);
+  assert.equal(child.entryUpperPct, 15);
   assert.notEqual(child.mode, "spot");
   assert.notEqual(child.mode, "bidask:double");
+});
+
+test("re-entry offset: rentang tersimpan, lalu default, lalu seluruh span di bawah", () => {
+  assert.deepEqual(
+    bidaskSolReentryOffset(
+      {
+        openBinOffsetNoted: true,
+        openBinsBelow: null,
+        openBinsAbove: null,
+        binSpan: 38,
+        entryLowerPct: -20,
+        entryUpperPct: 15,
+      },
+      100
+    ),
+    { binsBelow: 23, binsAbove: 15 }
+  );
+  assert.deepEqual(
+    bidaskSolReentryOffset(
+      {
+        openBinOffsetNoted: true,
+        openBinsBelow: 10,
+        openBinsAbove: 30,
+        binSpan: 40,
+        entryLowerPct: -20,
+        entryUpperPct: 15,
+      },
+      100
+    ),
+    { binsBelow: 10, binsAbove: 30 }
+  );
+  assert.deepEqual(
+    bidaskSolReentryOffset({ openBinOffsetNoted: true, openBinsBelow: null, openBinsAbove: null, binSpan: 85 }, 100),
+    { binsBelow: 70, binsAbove: 15 }
+  );
+  assert.deepEqual(
+    bidaskSolReentryOffset({ openBinOffsetNoted: true, openBinsBelow: null, openBinsAbove: null, binSpan: 40 }, 100),
+    { binsBelow: null, binsAbove: null }
+  );
+});
+
+test("offset tidak diketahui tapi rentang tersimpan: re-entry memakai rentang itu", async () => {
+  resetState();
+  trackPosition(POS, POOL, "TOK-SOL", MINT, null, "bidask:sol");
+  recordTrackedRange(POS, 100, 138);
+  noteBidaskSolOpenOffset(POS, 200, 100, 138);
+  setBidaskSolEntryRange(POS, -20, 15);
+
+  let opened = null;
+  const res = await handleBidaskSolOorKananReentry(
+    { ...makePos(), lowerBin: 100, upperBin: 138, binSpan: 38 },
+    {
+      dryRun: false,
+      getPoolInfo: async () => ({
+        pool: {
+          lbPair: { binStep: 100 },
+          async getActiveBin() {
+            return { binId: 500 };
+          },
+          async quoteCreatePosition() {
+            return { binArrayCost: 0, bitmapExtensionCost: 0, positionCost: 0 };
+          },
+          async initializePositionAndAddLiquidityByStrategy(args) {
+            opened = args;
+            return { tx: "init" };
+          },
+        },
+        baseMint: MINT,
+        baseIsX: true,
+        unsupported: false,
+      }),
+      getDlmmSdk: async () => ({ StrategyType: { BidAsk: 2 } }),
+      getConnection: () => ({}),
+      getWallet: () => Keypair.generate(),
+      getSolBalance: async () => 5,
+      buildFeePlan: () => ({ mode: "none" }),
+      checkFeeCap: () => ({ ok: true }),
+      sendAndConfirmRobust: async () => "sig_range",
+      notifyBidaskSolReentry: async () => {},
+      notifyBidaskSolReentryFailed: async () => {},
+    }
+  );
+  assert.equal(res.success, true);
+  assert.equal(opened.strategy.minBinId, 477);
+  assert.equal(opened.strategy.maxBinId, 515);
+  assert.equal(getTrackedPosition(res.position).entryLowerPct, -20);
+  assert.equal(getTrackedPosition(res.position).entryUpperPct, 15);
+  assert.equal(getTrackedPosition(res.position).openBinsBelow, 23);
+  assert.equal(getTrackedPosition(res.position).openBinsAbove, 15);
 });
 
 test("offset tidak diketahui: re-entry berakhir di bin aktif", async () => {

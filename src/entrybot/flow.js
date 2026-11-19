@@ -1,4 +1,6 @@
 // Satu langkah wizard / perintah. IO (harga, pool.txt) masuk lewat deps.
+import { formatBidaskSolRangeLabel, formatBidaskSolRangeToken } from "../config/bidask-sol-range.js";
+import config from "../config/index.js";
 import {
   cancelKeyboard,
   confirmKeyboard,
@@ -7,6 +9,7 @@ import {
   formatEntryLine,
   formatQueueMessage,
   formatQuoteAsk,
+  formatRangeAsk,
   formatSolChoice,
   formatSummary,
   isSolanaMint,
@@ -16,6 +19,7 @@ import {
   parseTargetPrice,
   previewEntryPool,
   priceErrorText,
+  rangeKeyboard,
   sameChat,
   sessionExpired,
   solChoiceKeyboard,
@@ -30,6 +34,31 @@ function touch(session, now, patch) {
 
 function reply(text, keyboard = null, toast = null) {
   return { replies: [{ text, keyboard }], toast };
+}
+
+function toRange(session, now, patch) {
+  return touch(session, now, {
+    step: "range",
+    lowerPct: null,
+    upperPct: null,
+    rangeToken: null,
+    ...patch,
+  });
+}
+
+function configEntryPreset(index) {
+  const presets = config.entry.bidaskSolEntryPresets || [];
+  const preset = presets[index];
+  if (!preset) return null;
+  return preset;
+}
+
+function previewForRange(session, deps, lowerPct, upperPct) {
+  const base = deps.previewOpts || {};
+  return previewEntryPool(session.strategy, Array.isArray(session.pools) ? session.pools : [], session.mint, {
+    ...base,
+    bidaskSol: { ...(base.bidaskSol || {}), lowerPct, upperPct },
+  });
 }
 
 export async function handleEntrybotTurn(state, turn, deps) {
@@ -111,18 +140,35 @@ export async function handleEntrybotTurn(state, turn, deps) {
         const next = touch(session, now, { step: "price", entryNow: false });
         return finish(state, next, items, reply(formatQuoteAsk(next), cancelKeyboard(), "Harga target"), now);
       }
-      const next = touch(session, now, {
-        step: "confirm",
+      const next = toRange(session, now, {
         entryNow: true,
         targetRaw: "now",
         target: null,
         targetUnit: null,
       });
+      return finish(state, next, items, reply(formatRangeAsk(next), rangeKeyboard(), "Entry sekarang"), now);
+    }
+    if (parsed.type === "range") {
+      if (session.step !== "range" || session.strategy !== "bidask:sol") {
+        return finish(state, session, items, reply("Pakai tombol yang ada di pesan terakhir ya.", null, "Batal"), now);
+      }
+      const preset = configEntryPreset(parsed.index);
+      if (!preset) {
+        return finish(state, session, items, reply("Presetnya nggak dikenal.", rangeKeyboard(), "Batal"), now);
+      }
+      const next = touch(session, now, {
+        step: "confirm",
+        lowerPct: preset.lowerPct,
+        upperPct: preset.upperPct,
+        rangeToken: formatBidaskSolRangeToken(preset.lowerPct, preset.upperPct),
+        preview: previewForRange(session, deps, preset.lowerPct, preset.upperPct),
+      });
+      const label = formatBidaskSolRangeLabel(preset.lowerPct, preset.upperPct);
       return finish(
         state,
         next,
         items,
-        reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard(), "Entry sekarang"),
+        reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard(), label ? `Rentang ${label}` : "Rentang"),
         now
       );
     }
@@ -130,7 +176,12 @@ export async function handleEntrybotTurn(state, turn, deps) {
       if (session.step !== "confirm") {
         return finish(state, session, items, reply("Nggak ada yang dikonfirmasi. Ketik /entry.", null, "Batal"), now);
       }
-      const line = formatEntryLine({ strategy: session.strategy, mint: session.mint, targetToken: session.targetRaw });
+      const line = formatEntryLine({
+        strategy: session.strategy,
+        mint: session.mint,
+        targetToken: session.targetRaw,
+        rangeToken: session.rangeToken,
+      });
       const written = await deps.appendLine(line);
       if (!written?.ok && written?.duplicate) {
         return finish(
@@ -158,6 +209,8 @@ export async function handleEntrybotTurn(state, turn, deps) {
         line,
         sizeSol: deps.defaultSizeSol,
         targetRaw: session.targetRaw || null,
+        lowerPct: session.lowerPct,
+        upperPct: session.upperPct,
         queuedAt: now,
         status: "watching",
         skips: {},
@@ -167,7 +220,7 @@ export async function handleEntrybotTurn(state, turn, deps) {
         state,
         emptySession(now),
         [...items, item],
-        reply(`⏳ Masuk antrean, dipantau.\n${line}`, deleteKeyboard(session.mint), "Masuk antrean"),
+        reply(queuedText(session, line), deleteKeyboard(session.mint), "Masuk antrean"),
         now
       );
     }
@@ -204,6 +257,7 @@ export async function handleEntrybotTurn(state, turn, deps) {
       symbol,
       priceUsd: Number.isFinite(Number(quote?.priceUsd)) ? Number(quote.priceUsd) : null,
       priceSol: Number.isFinite(Number(quote?.priceSol)) ? Number(quote.priceSol) : null,
+      pools,
       preview,
     });
     if (session.strategy === "bidask:sol") {
@@ -231,35 +285,36 @@ export async function handleEntrybotTurn(state, turn, deps) {
       return finish(state, touch(session, now, {}), items, reply(priceErrorText(parsed.reason), cancelKeyboard()), now);
     }
     if (parsed.entryNow) {
-      const next = touch(session, now, {
-        step: "confirm",
+      const next = toRange(session, now, {
         entryNow: true,
         targetRaw: "now",
         target: null,
         targetUnit: null,
       });
-      return finish(state, next, items, reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard()), now);
+      return finish(state, next, items, reply(formatRangeAsk(next), rangeKeyboard(), "Entry sekarang"), now);
     }
-    const next = touch(session, now, {
-      step: "confirm",
+    const next = toRange(session, now, {
       entryNow: false,
       targetRaw: parsed.token,
       target: parsed.entryPrice,
       targetUnit: parsed.entryPriceUnit,
     });
-    return finish(state, next, items, reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard()), now);
+    return finish(state, next, items, reply(formatRangeAsk(next), rangeKeyboard(), "Harga target"), now);
   }
 
   if (
     turn.type === "text" &&
-    (session.step === "strategy" || session.step === "confirm" || session.step === "solChoice")
+    (session.step === "strategy" ||
+      session.step === "confirm" ||
+      session.step === "solChoice" ||
+      session.step === "range")
   ) {
     const hint =
       session.step === "strategy"
         ? "Pilih strateginya lewat tombol ya."
-        : session.step === "solChoice"
-          ? "Pakai tombolnya ya."
-          : "Pakai tombol konfirmasi ya.";
+        : session.step === "confirm"
+          ? "Pakai tombol konfirmasi ya."
+          : "Pakai tombolnya ya.";
     return finish(state, session, items, reply(hint), now);
   }
 
@@ -276,6 +331,16 @@ async function removeQueued(address, items, deps) {
   );
   if (!removed) return reply("Gagal mengubah pool.txt. Coba lagi ya.", null, "Gagal");
   return { replies: [{ text: "Oke, barisnya di-#.", keyboard: null }], toast: "Dihapus", items: next };
+}
+
+function queuedText(session, line) {
+  const lines = ["⏳ Masuk antrean, dipantau."];
+  if (session?.strategy === "bidask:sol") {
+    const label = formatBidaskSolRangeLabel(session.lowerPct, session.upperPct);
+    if (label) lines.push(`Rentang  : ${label}`);
+  }
+  lines.push(line);
+  return lines.join("\n");
 }
 
 function finish(state, session, items, out, _now) {

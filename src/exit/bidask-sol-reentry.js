@@ -1,5 +1,6 @@
 import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import BN from "bn.js";
+import { bidaskSolRangePair } from "../config/bidask-sol-range.js";
 import config from "../config/index.js";
 import log from "../core/logger.js";
 import * as tg from "../notify/telegram.js";
@@ -10,6 +11,7 @@ import { buildFeePlan, checkFeeCap } from "../solana/fees.js";
 import { sendAndConfirmRobust } from "../solana/send.js";
 import { getDlmmSdk } from "../meteora/sdk.js";
 import { bidaskSolReentryBinRange, openBidaskSolPosition } from "../meteora/open-sol-position.js";
+import { bidaskSolEntryBinPlan } from "../entry/bidask-sol-entry.js";
 import { getPoolInfo } from "../entry/pool-info.js";
 import {
   getEffectiveSpotReentryCooldownSec,
@@ -29,6 +31,7 @@ import {
   setExitWarmupStartedAt,
   resolveExitWarmupStartedAt,
   setBidaskSolOpenOffset,
+  setBidaskSolEntryRange,
   recordClose,
 } from "../state/positions.js";
 import {
@@ -89,6 +92,28 @@ export function readBidaskSolOpenOffset(tracked) {
     return { binsBelow: null, binsAbove: null };
   }
   return { binsBelow: Math.floor(below), binsAbove: Math.floor(above) };
+}
+
+function offsetFromEntryPct(binStep, span, lowerPct, upperPct) {
+  const pair = bidaskSolRangePair(lowerPct, upperPct);
+  if (!pair) return null;
+  const plan = bidaskSolEntryBinPlan({ binStep, lowerPct: pair.lowerPct, upperPct: pair.upperPct });
+  if (!plan || plan.binsBelow + plan.binsAbove !== span) return null;
+  return { binsBelow: plan.binsBelow, binsAbove: plan.binsAbove };
+}
+
+// Offset bin yang tersimpan menang. Kalau tidak ada, pakai persen yang
+// tersimpan di posisi, lalu default strat.conf, hanya bila jumlah bin-nya
+// sama dengan span. Kalau tidak cocok, seluruh span tetap di bawah bin aktif.
+export function bidaskSolReentryOffset(tracked, binStep) {
+  const known = readBidaskSolOpenOffset(tracked);
+  if (known.binsBelow != null && known.binsAbove != null) return known;
+  const step = Number(binStep);
+  const span = Number(tracked?.binSpan);
+  if (!(step > 0) || !Number.isFinite(span)) return known;
+  const stored = bidaskSolRangePair(tracked?.entryLowerPct, tracked?.entryUpperPct);
+  if (stored) return offsetFromEntryPct(step, span, stored.lowerPct, stored.upperPct) || known;
+  return offsetFromEntryPct(step, span, config.entry.bidaskSolLowerPct, config.entry.bidaskSolUpperPct) || known;
 }
 
 /**
@@ -206,7 +231,7 @@ export async function handleBidaskSolOorKananReentry(pos, opts = {}) {
   const pair = pos.pair || pos.position?.slice(0, 8) || "?";
   const tracked = getTrackedPosition(pos.position);
   const span = Number(tracked?.binSpan ?? pos.binSpan ?? 0);
-  const offset = readBidaskSolOpenOffset(tracked);
+  const carriedRange = bidaskSolRangePair(tracked?.entryLowerPct, tracked?.entryUpperPct);
   const warmupStart = resolveExitWarmupStartedAt(tracked);
   const carriedCapital = getInitialCapitalSol(pos.position);
   const prevCount = getSpotReentryCount(pos.position);
@@ -268,6 +293,8 @@ export async function handleBidaskSolOorKananReentry(pos, opts = {}) {
 
     const activeBin = await pool.getActiveBin();
     const activeBinId = Number(activeBin?.binId);
+    const binStep = Number(pool?.lbPair?.binStep) || Number(opts.binStep) || 0;
+    const offset = bidaskSolReentryOffset(tracked, binStep);
     const range = bidaskSolReentryBinRange({
       activeBinId,
       binSpan: span,
@@ -403,11 +430,14 @@ export async function handleBidaskSolOorKananReentry(pos, opts = {}) {
         initialCapitalSol: carriedCapital ?? sizeSol,
         openBinsBelow: range.binsBelow,
         openBinsAbove: range.binsAbove,
+        entryLowerPct: carriedRange?.lowerPct,
+        entryUpperPct: carriedRange?.upperPct,
       }
     );
     setExitWarmupStartedAt(newAddr, warmupStart);
     setInitialCapitalSol(newAddr, carriedCapital ?? sizeSol);
     setBidaskSolOpenOffset(newAddr, range.binsBelow, range.binsAbove);
+    if (carriedRange) setBidaskSolEntryRange(newAddr, carriedRange.lowerPct, carriedRange.upperPct);
     recordTrackedRange(newAddr, minBinId, maxBinId);
     setEntrySizeSol(newAddr, sizeSol);
     setSpotReentryCount(newAddr, nextCount);

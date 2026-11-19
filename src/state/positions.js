@@ -1,4 +1,5 @@
 import fs from "fs";
+import { bidaskSolRangePair } from "../config/bidask-sol-range.js";
 import { DECISION_LOG_FILE } from "../core/paths.js";
 import { LEGACY_MODE } from "../config/rules.js";
 import { readState, writeState, readJsonArray } from "./store.js";
@@ -37,6 +38,7 @@ export function trackPosition(
   // Baris yang sudah ada tidak diubah. Deteksi on-chain berikutnya tidak boleh
   // menimpa firstSeenAt atau exitWarmupStartedAt yang sudah diwariskan.
   if (!state.positions[positionAddress]) {
+    const entryRange = bidaskSolRangePair(extra?.entryLowerPct, extra?.entryUpperPct);
     state.positions[positionAddress] = {
       position: positionAddress,
       pool: pool || "",
@@ -53,6 +55,10 @@ export function trackPosition(
         (finiteNonNegInt(extra?.openBinsBelow) != null && finiteNonNegInt(extra?.openBinsAbove) != null),
       openBinsBelow: finiteNonNegInt(extra?.openBinsBelow),
       openBinsAbove: finiteNonNegInt(extra?.openBinsAbove),
+      // Persen rentang saat posisi dibuka. Re-entry menyalin ini.
+      // Kosong = posisi lama / diadopsi; bin tetap dari offset atau span.
+      entryLowerPct: entryRange?.lowerPct ?? null,
+      entryUpperPct: entryRange?.upperPct ?? null,
       collectFeeMode: collectFeeMode ?? null,
       mode: mode ?? "spot",
       // Range bin posisi (dicatat sekali saat pertama terlihat; tidak pernah
@@ -222,6 +228,21 @@ export function noteBidaskSolOpenOffset(positionAddress, activeBin, lowerBin, up
   }
   writeState(state);
   return { binsBelow: p.openBinsBelow, binsAbove: p.openBinsAbove };
+}
+
+// Catat persen rentang sekali. Nilai yang sudah ada tidak ditimpa.
+export function setBidaskSolEntryRange(positionAddress, lowerPct, upperPct) {
+  const pair = bidaskSolRangePair(lowerPct, upperPct);
+  if (!positionAddress || !pair) return null;
+  const state = readState();
+  const p = state.positions[positionAddress];
+  if (!p) return null;
+  const existing = bidaskSolRangePair(p.entryLowerPct, p.entryUpperPct);
+  if (existing) return existing;
+  p.entryLowerPct = pair.lowerPct;
+  p.entryUpperPct = pair.upperPct;
+  writeState(state);
+  return pair;
 }
 
 // Isi offset re-entry sekali, bila baris sudah ada (deteksi on-chain lebih dulu)

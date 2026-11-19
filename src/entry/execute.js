@@ -18,6 +18,7 @@ import {
   recordTrackedRange,
   setEntrySizeSol,
   setInitialCapitalSol,
+  setBidaskSolEntryRange,
   getOpenPositionsForMint,
 } from "../state/positions.js";
 import {
@@ -738,7 +739,10 @@ export async function executeBidaskSolEntry(poolAddress, sizeSol, opts = {}) {
       initialCapitalSol: sizeSol,
       openBinsBelow: plan.binsBelow,
       openBinsAbove: plan.binsAbove,
+      entryLowerPct: plan.lowerPct,
+      entryUpperPct: plan.upperPct,
     });
+    setBidaskSolEntryRange(positionAddress, plan.lowerPct, plan.upperPct);
     recordTrackedRange(positionAddress, plan.minBinId, plan.maxBinId);
     setEntrySizeSol(positionAddress, sizeSol);
     setInitialCapitalSol(positionAddress, sizeSol);

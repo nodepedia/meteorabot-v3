@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 const MODULES = [
   "../src/config/index.js",
+  "../src/config/bidask-sol-range.js",
   "../src/config/env.js",
   "../src/config/rules.js",
   "../src/core/constants.js",
