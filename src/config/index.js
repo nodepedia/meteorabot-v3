@@ -353,6 +353,10 @@ export function buildConfig(e = {}) {
 
     telegramBotToken: e.TELEGRAM_BOT_TOKEN || "",
     telegramChatId: e.TELEGRAM_CHAT_ID || "",
+    // Bot Telegram kedua untuk antre entry. Token wajib beda dari telegramBotToken
+    // (satu bot hanya boleh satu konsumen getUpdates). Chat kosong = pakai telegramChatId.
+    entrybotTelegramToken: e.ENTRYBOT_TELEGRAM_TOKEN || "",
+    entrybotTelegramChatId: e.ENTRYBOT_TELEGRAM_CHAT_ID || "",
     tgStatusInterval: num(e.TG_STATUS_INTERVAL, 5),
     // true = pesan Position Status membawa tombol Rebalance / Zap Out.
     // false = teks status persis seperti biasa, tanpa keyboard.

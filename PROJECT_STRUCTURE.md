@@ -11,6 +11,8 @@
 - `src/meteora/` → interaksi dengan Meteora DLMM
 - `src/state/` → penyimpanan data posisi & status bot
 - `src/notify/` → notifikasi Telegram
+- `src/entrybot/` → bot Telegram antre entry (hanya menulis `pool.txt`, tidak buka posisi)
+- `src/worker-entrybot.js` → proses PM2 `meteorabot-entrybot`
 - `scripts/` → script bantu (laporan PnL, dll)
 - `test/` → file pengujian
 

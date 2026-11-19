@@ -39,5 +39,12 @@ module.exports = {
       error_file: "./logs/telegram-error.log",
       out_file: "./logs/telegram-out.log",
     },
+    {
+      ...baseConfig,
+      name: "meteorabot-entrybot",
+      script: "src/worker-entrybot.js",
+      error_file: "./logs/entrybot-error.log",
+      out_file: "./logs/entrybot-out.log",
+    },
   ],
 };

@@ -67,10 +67,16 @@ const MODULES = [
   "../src/exit/bidask-double-rebalance.js",
   "../src/exit/bidask-sol-rebalance.js",
   "../src/exit/telegram-commands.js",
+  "../src/entrybot/logic.js",
+  "../src/entrybot/flow.js",
+  "../src/entrybot/store.js",
+  "../src/entrybot/logs.js",
+  "../src/entrybot/api.js",
   "../src/worker-entry.js",
   "../src/worker-exit.js",
   "../src/worker-wallet.js",
   "../src/worker-telegram.js",
+  "../src/worker-entrybot.js",
 ];
 
 test("every module loads without import errors", async () => {

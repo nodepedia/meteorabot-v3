@@ -5,8 +5,79 @@ import log from "../core/logger.js";
 import { ROOT } from "../core/paths.js";
 import { getPoolAlias } from "./runtime.js";
 
-function poolListPath() {
+export function poolListFilePath() {
   return path.resolve(ROOT, config.entry.poolListFile);
+}
+
+function poolListPath() {
+  return poolListFilePath();
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Kunci file supaya entry bot dan worker-entry tidak saling timpa pool.txt.
+function acquirePoolLock(file, timeoutMs = 5000) {
+  const target = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const fd = fs.openSync(target, "wx");
+      fs.writeFileSync(fd, String(process.pid));
+      return fd;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        const st = fs.statSync(target);
+        if (Date.now() - st.mtimeMs > 15000) fs.unlinkSync(target);
+      } catch {
+        // kunci sudah hilang
+      }
+      sleepSync(20);
+    }
+  }
+  throw new Error("pool.txt lock timeout");
+}
+
+function releasePoolLock(file, fd) {
+  try {
+    fs.closeSync(fd);
+  } catch {
+    // sudah tertutup
+  }
+  try {
+    fs.unlinkSync(`${file}.lock`);
+  } catch {
+    // sudah dilepas
+  }
+}
+
+function withPoolListLock(file, fn) {
+  const fd = acquirePoolLock(file);
+  try {
+    return fn();
+  } finally {
+    releasePoolLock(file, fd);
+  }
+}
+
+function atomicReplace(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+}
+
+function hasActiveFirstColumn(raw, address) {
+  if (!address) return false;
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.split(",")[0].trim() === address) return true;
+  }
+  return false;
 }
 
 const TIER_MULTIPLIERS = {
@@ -36,7 +107,7 @@ function resolveSizeSol(sizeRaw, defaultSize) {
 
 // Harga entry bidask:sol. Kosong / usd = USD per token. Akhiran sol = SOL per token.
 // null = kolom kosong. { ok:false } = angka tidak valid atau akhiran tidak dikenal.
-function parseEntryPrice(raw) {
+export function parseEntryPrice(raw) {
   if (raw == null) return null;
   const body = String(raw).split("#")[0].trim();
   if (!body) return null;
@@ -154,21 +225,23 @@ export function commentPoolInList(poolAddress, alias = getPoolAlias(poolAddress)
   const targets = new Set([poolAddress, alias].filter(Boolean));
   if (!file) file = poolListPath();
   try {
-    if (!fs.existsSync(file)) return false;
-    const lines = fs.readFileSync(file, "utf8").split("\n");
-    let active = false;
-    const out = lines.map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) return line;
-      if (!targets.has(trimmed.split(",")[0].trim())) return line;
-      active = true;
-      return `#${line}`;
+    return withPoolListLock(file, () => {
+      if (!fs.existsSync(file)) return false;
+      const lines = fs.readFileSync(file, "utf8").split("\n");
+      let active = false;
+      const out = lines.map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return line;
+        if (!targets.has(trimmed.split(",")[0].trim())) return line;
+        active = true;
+        return `#${line}`;
+      });
+      if (!active) return true;
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, out.join("\n"));
+      fs.renameSync(tmp, file);
+      return true;
     });
-    if (!active) return true;
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, out.join("\n"));
-    fs.renameSync(tmp, file);
-    return true;
   } catch (err) {
     log.warn(`Gagal menandai pool ${poolAddress.slice(0, 8)} di ${config.entry.poolListFile}: ${err.message}`);
     return false;
@@ -181,33 +254,57 @@ export function replacePoolInList(oldPoolAddress, newPoolAddress) {
   if (!oldPoolAddress || !newPoolAddress || oldPoolAddress === newPoolAddress) return false;
   const file = poolListPath();
   try {
-    if (!fs.existsSync(file)) return false;
-    const lines = fs.readFileSync(file, "utf8").split("\n");
-    const hasNewActive = lines.some((line) => {
-      const t = line.trim();
-      return t && !t.startsWith("#") && t.split(",")[0].trim() === newPoolAddress;
+    return withPoolListLock(file, () => {
+      if (!fs.existsSync(file)) return false;
+      const lines = fs.readFileSync(file, "utf8").split("\n");
+      const hasNewActive = lines.some((line) => {
+        const t = line.trim();
+        return t && !t.startsWith("#") && t.split(",")[0].trim() === newPoolAddress;
+      });
+      let changed = false;
+      const out = lines.map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return line;
+        const parts = trimmed.split(",");
+        if (parts[0].trim() !== oldPoolAddress) return line;
+        changed = true;
+        if (hasNewActive) return `#${line}`;
+        parts[0] = newPoolAddress;
+        return parts.join(",");
+      });
+      if (!changed) return true;
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, out.join("\n"));
+      fs.renameSync(tmp, file);
+      return true;
     });
-    let changed = false;
-    const out = lines.map((line) => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) return line;
-      const parts = trimmed.split(",");
-      if (parts[0].trim() !== oldPoolAddress) return line;
-      changed = true;
-      if (hasNewActive) return `#${line}`;
-      parts[0] = newPoolAddress;
-      return parts.join(",");
-    });
-    if (!changed) return true;
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, out.join("\n"));
-    fs.renameSync(tmp, file);
-    return true;
   } catch (err) {
     log.warn(
       `Gagal mengganti pool ${oldPoolAddress.slice(0, 8)} -> ${newPoolAddress.slice(0, 8)} di ${config.entry.poolListFile}: ${err.message}`
     );
     return false;
+  }
+}
+
+// Tambah satu baris CA di akhir. Header bot tetap, baris lain tidak diubah.
+// Tolak bila kolom pertama yang sama masih aktif (belum diberi #).
+export function appendCaEntryLine(line, file = poolListPath()) {
+  const text = String(line || "").trim();
+  if (!text || text.startsWith("#") || /[\r\n]/.test(text)) return { ok: false, error: "invalid" };
+  const mint = text.split(",")[0].trim();
+  if (!mint) return { ok: false, error: "invalid" };
+  try {
+    return withPoolListLock(file, () => {
+      const raw = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+      if (hasActiveFirstColumn(raw, mint)) return { ok: false, duplicate: true };
+      const headed = applyPoolListHeader(raw).next;
+      const body = headed.endsWith("\n") || headed === "" ? headed : `${headed}\n`;
+      atomicReplace(file, `${body}${text}\n`);
+      return { ok: true, line: text };
+    });
+  } catch (err) {
+    log.warn(`Gagal menambah baris di pool.txt: ${err.message}`);
+    return { ok: false, error: err.message };
   }
 }
 
@@ -301,13 +398,12 @@ export function applyPoolListHeader(raw) {
 
 // Tulis header ke pool.txt secara atomik. Tidak menulis ulang bila teksnya sama.
 export function ensurePoolListHeader(file = poolListPath()) {
-  let raw = "";
-  if (fs.existsSync(file)) raw = fs.readFileSync(file, "utf8");
-  const { next, changed } = applyPoolListHeader(raw);
-  if (!changed) return false;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, next);
-  fs.renameSync(tmp, file);
-  return true;
+  return withPoolListLock(file, () => {
+    let raw = "";
+    if (fs.existsSync(file)) raw = fs.readFileSync(file, "utf8");
+    const { next, changed } = applyPoolListHeader(raw);
+    if (!changed) return false;
+    atomicReplace(file, next);
+    return true;
+  });
 }
