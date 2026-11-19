@@ -10,7 +10,7 @@ import {
   getBidaskSolTouchDirection,
   pruneBidaskSolTouch,
 } from "../state/bidask-sol-touch.js";
-import { loadPoolList, commentPoolInList, ensurePoolListHeader } from "./pool-list.js";
+import { loadPoolList, commentPoolInList, ensurePoolListHeader, isBidaskSolNow } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
 import { watchPrices, getLastPrices } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
@@ -70,23 +70,26 @@ function buildLocalWatchSnapshot() {
     };
   });
   for (const c of bidaskSolCache) {
+    const solNow = isBidaskSolNow(c);
     const cmp = bidaskSolQuotePrice({
       tokenUsd: prices.get(c.mint),
       solUsd: prices.get(WSOL_MINT),
-      entryPriceUnit: c.entryPriceUnit,
+      entryPriceUnit: solNow ? "usd" : c.entryPriceUnit,
     });
-    const unit = c.entryPriceUnit === "sol" ? "sol" : "usd";
+    const unit = solNow ? "now" : c.entryPriceUnit === "sol" ? "sol" : "usd";
     rows.push({
       pool: c.mint,
       pairName: c.pairName || `CA ${c.mint.slice(0, 8)}`,
       mint: c.mint,
       sizeSol: c.sizeSol,
       mode: "bidask:sol",
-      entryPrice: c.entryPrice,
-      entryPriceUnit: cmp.unit,
+      entryPrice: solNow ? null : c.entryPrice,
+      entryPriceUnit: solNow ? "now" : cmp.unit,
+      entryNow: solNow,
       price: cmp.price,
-      touchDirection:
-        c.touchDirection || getBidaskSolTouchDirection(bidaskSolTouchKey(c.mint, c.entryPrice, unit)) || null,
+      touchDirection: solNow
+        ? null
+        : c.touchDirection || getBidaskSolTouchDirection(bidaskSolTouchKey(c.mint, c.entryPrice, unit)) || null,
       pendingBidaskSol: true,
     });
   }
@@ -262,6 +265,7 @@ export async function refreshCandidates() {
       ca = false,
       entryPrice = null,
       entryPriceUnit = null,
+      entryNow = false,
     } of pools) {
       // lineKey = kolom pertama baris pool.txt (alamat pool, atau CA untuk baris `,ca`).
       let poolAddress = lineKey;
@@ -287,9 +291,10 @@ export async function refreshCandidates() {
         continue;
       }
 
-      // bidask:sol: pantau harga Jupiter saja. Pool dipilih nanti, saat harga menyentuh target.
+      // bidask:sol: pantau harga Jupiter saja. Pool dipilih saat sentuh, atau segera bila now.
       if (mode === "bidask:sol") {
-        if (!(Number(entryPrice) > 0)) continue;
+        const solNow = entryNow || isBidaskSolNow(entryPrice, entryPriceUnit);
+        if (!solNow && !(Number(entryPrice) > 0)) continue;
         if (isEntryInProgressMint(lineKey) || isMintClosing(lineKey)) continue;
         const sameStrategyOpen = openPositions.some(
           (p) =>
@@ -300,8 +305,9 @@ export async function refreshCandidates() {
         solWatches.push({
           mint: lineKey,
           sizeSol,
-          entryPrice: Number(entryPrice),
-          entryPriceUnit: entryPriceUnit === "sol" ? "sol" : "usd",
+          entryPrice: solNow ? null : Number(entryPrice),
+          entryPriceUnit: solNow ? "now" : entryPriceUnit === "sol" ? "sol" : "usd",
+          entryNow: solNow,
           mode,
           strategy,
           pairName: `CA ${lineKey.slice(0, 8)}`,
@@ -550,7 +556,8 @@ export async function refreshCandidates() {
 function bidaskSolWatchable(now = Date.now()) {
   const openPositions = getOpenTrackedPositions();
   return bidaskSolCache.filter((w) => {
-    if (!w?.mint || !(Number(w.entryPrice) > 0)) return false;
+    if (!w?.mint) return false;
+    if (!isBidaskSolNow(w) && !(Number(w.entryPrice) > 0)) return false;
     if (now < (bidaskSolWaitUntil.get(w.mint) || 0)) return false;
     if (now < (failureCooldownUntil.get(w.mint) || 0)) return false;
     if (isEntryInProgressMint(w.mint) || isMintClosing(w.mint) || isMintSwapPending(w.mint)) return false;
@@ -1040,6 +1047,7 @@ function bidaskSolWaitMs() {
 
 // Harga sudah menyentuh target. Pilih pool sekarang; kalau tidak ada yang lolos, tunggu.
 function bidaskSolHarga(price, entryPrice, unit) {
+  if (unit === "now") return `${fmtQuote(price, "usd")} (entry sekarang)`;
   const u = unit === "sol" ? "sol" : "usd";
   return `${fmtQuote(price, u)} menyentuh ${fmtQuote(entryPrice, u)}`;
 }
@@ -1051,7 +1059,8 @@ export async function runBidaskSolEntry(watch, deps = {}) {
   const dryRun = deps.dryRun != null ? deps.dryRun : config.dryRun;
   const poolListFile = deps.poolListFile;
   const { mint, sizeSol, entryPrice, price, solPrice, priceUsd, entryPriceUnit } = watch;
-  const unit = entryPriceUnit === "sol" ? "sol" : "usd";
+  const solNow = isBidaskSolNow(watch);
+  const unit = solNow ? "now" : entryPriceUnit === "sol" ? "sol" : "usd";
   const pairHint = `CA ${mint.slice(0, 8)}`;
   addEntryInProgressMint(mint);
   let poolLocked = null;
@@ -1118,10 +1127,10 @@ export async function runBidaskSolEntry(watch, deps = {}) {
       );
       const result = await executeFn(pool, sizeSol, {
         tvlUsd: row.tvl,
-        entryPrice,
+        entryPrice: solNow ? null : entryPrice,
         entryPriceUnit: unit,
         triggerPrice: price,
-        priceUsd: priceUsd ?? (unit === "usd" ? price : null),
+        priceUsd: priceUsd ?? (unit === "usd" || solNow ? price : null),
         solPrice,
         binStepHint: row.binStep,
       });

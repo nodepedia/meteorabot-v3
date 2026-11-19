@@ -16,6 +16,7 @@ import {
 } from "../state/bidask-sol-touch.js";
 import { getLastPrices } from "./price-watch.js";
 import { addrOf, isDlmmPool, isCaPoolInvalid } from "./ca-resolve.js";
+import { isBidaskSolNow } from "./pool-list.js";
 
 const n = (v) => {
   const x = Number(v);
@@ -241,9 +242,15 @@ function noteMissingSolPrice(count, now = Date.now()) {
 // Di bawah target → naik (masuk saat harga >= target).
 // Di atas target → turun (masuk saat harga <= target).
 // Tepat di target → masuk sekarang, arah tidak disimpan.
+// Token now → masuk begitu harga > 0 terbaca. Arah tidak disimpan,
+// termasuk bila ada arah lama yang ikut terkirim.
 // Harga tidak ada → tidak mencatat arah dan tidak masuk.
 export function decideBidaskSolTouch(price, target, direction) {
   const p = Number(price);
+  if (isBidaskSolNow(target)) {
+    if (!Number.isFinite(p) || !(p > 0)) return { direction: null, triggered: false, record: false };
+    return { direction: null, triggered: true, record: false };
+  }
   const t = Number(target);
   if (!Number.isFinite(p) || !(t > 0)) return { direction: null, triggered: false, record: false };
   if (direction !== "up" && direction !== "down") {
@@ -260,7 +267,7 @@ export function decideBidaskSolTouch(price, target, direction) {
 // Harga terakhir disimpan supaya ringkasan log menampilkan harga yang dipantau.
 export async function pollBidaskSolPrices(watches = [], deps = {}) {
   const fetchPrices = deps.getPrices || getPrices;
-  const list = (watches || []).filter((w) => w?.mint && Number(w.entryPrice) > 0);
+  const list = (watches || []).filter((w) => w?.mint && (isBidaskSolNow(w) || Number(w.entryPrice) > 0));
   if (list.length === 0) return { triggered: [] };
 
   const prices = await fetchPrices([...list.map((w) => w.mint), WSOL_MINT]);
@@ -277,19 +284,22 @@ export async function pollBidaskSolPrices(watches = [], deps = {}) {
   const triggered = [];
   let missingSol = 0;
   for (const w of list) {
+    const entryNow = isBidaskSolNow(w);
     const cmp = bidaskSolQuotePrice({
       tokenUsd: prices.get(w.mint),
       solUsd,
-      entryPriceUnit: w.entryPriceUnit,
+      entryPriceUnit: entryNow ? "usd" : w.entryPriceUnit,
     });
     if (cmp.price == null) {
-      if (cmp.reason === "sol") missingSol += 1;
+      if (!entryNow && cmp.reason === "sol") missingSol += 1;
       continue;
     }
-    const key = bidaskSolTouchKey(w.mint, w.entryPrice, cmp.unit);
-    const stored = getBidaskSolTouchDirection(key);
-    const decision = decideBidaskSolTouch(cmp.price, w.entryPrice, stored);
-    if (decision.record && decision.direction) {
+    const target = entryNow ? "now" : w.entryPrice;
+    const unit = entryNow ? "now" : cmp.unit;
+    const key = bidaskSolTouchKey(w.mint, target, unit);
+    const stored = entryNow ? null : getBidaskSolTouchDirection(key);
+    const decision = decideBidaskSolTouch(cmp.price, target, stored);
+    if (!entryNow && decision.record && decision.direction) {
       setBidaskSolTouchDirection(key, decision.direction);
       log.info(
         `CA ${String(w.mint).slice(0, 8)} bidask:sol ${bidaskSolTouchPhrase({
@@ -307,7 +317,9 @@ export async function pollBidaskSolPrices(watches = [], deps = {}) {
         price: cmp.price,
         priceUsd: Number(prices.get(w.mint)),
         solPrice: solUsd,
-        entryPriceUnit: cmp.unit,
+        entryPrice: entryNow ? null : w.entryPrice,
+        entryPriceUnit: entryNow ? "now" : cmp.unit,
+        entryNow,
         touchDirection: decision.direction,
       });
     }

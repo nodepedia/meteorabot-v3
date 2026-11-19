@@ -7,6 +7,7 @@ import {
   formatEntryLine,
   formatQueueMessage,
   formatQuoteAsk,
+  formatSolChoice,
   formatSummary,
   isSolanaMint,
   listActiveLines,
@@ -17,6 +18,7 @@ import {
   priceErrorText,
   sameChat,
   sessionExpired,
+  solChoiceKeyboard,
   strategyKeyboard,
   strategyLabel,
   symbolFromPools,
@@ -101,6 +103,29 @@ export async function handleEntrybotTurn(state, turn, deps) {
         now
       );
     }
+    if (parsed.type === "now" || parsed.type === "target") {
+      if (session.step !== "solChoice" || session.strategy !== "bidask:sol") {
+        return finish(state, session, items, reply("Pakai tombol yang ada di pesan terakhir ya.", null, "Batal"), now);
+      }
+      if (parsed.type === "target") {
+        const next = touch(session, now, { step: "price", entryNow: false });
+        return finish(state, next, items, reply(formatQuoteAsk(next), cancelKeyboard(), "Harga target"), now);
+      }
+      const next = touch(session, now, {
+        step: "confirm",
+        entryNow: true,
+        targetRaw: "now",
+        target: null,
+        targetUnit: null,
+      });
+      return finish(
+        state,
+        next,
+        items,
+        reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard(), "Entry sekarang"),
+        now
+      );
+    }
     if (parsed.type === "confirm") {
       if (session.step !== "confirm") {
         return finish(state, session, items, reply("Nggak ada yang dikonfirmasi. Ketik /entry.", null, "Batal"), now);
@@ -182,7 +207,13 @@ export async function handleEntrybotTurn(state, turn, deps) {
       preview,
     });
     if (session.strategy === "bidask:sol") {
-      return finish(state, { ...next, step: "price" }, items, reply(formatQuoteAsk(next), cancelKeyboard()), now);
+      return finish(
+        state,
+        { ...next, step: "solChoice", entryNow: false },
+        items,
+        reply(formatSolChoice(next), solChoiceKeyboard()),
+        now
+      );
     }
     const confirmed = { ...next, step: "confirm" };
     return finish(
@@ -199,8 +230,19 @@ export async function handleEntrybotTurn(state, turn, deps) {
     if (!parsed.ok) {
       return finish(state, touch(session, now, {}), items, reply(priceErrorText(parsed.reason), cancelKeyboard()), now);
     }
+    if (parsed.entryNow) {
+      const next = touch(session, now, {
+        step: "confirm",
+        entryNow: true,
+        targetRaw: "now",
+        target: null,
+        targetUnit: null,
+      });
+      return finish(state, next, items, reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard()), now);
+    }
     const next = touch(session, now, {
       step: "confirm",
+      entryNow: false,
       targetRaw: parsed.token,
       target: parsed.entryPrice,
       targetUnit: parsed.entryPriceUnit,
@@ -208,8 +250,16 @@ export async function handleEntrybotTurn(state, turn, deps) {
     return finish(state, next, items, reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard()), now);
   }
 
-  if (turn.type === "text" && (session.step === "strategy" || session.step === "confirm")) {
-    const hint = session.step === "strategy" ? "Pilih strateginya lewat tombol ya." : "Pakai tombol konfirmasi ya.";
+  if (
+    turn.type === "text" &&
+    (session.step === "strategy" || session.step === "confirm" || session.step === "solChoice")
+  ) {
+    const hint =
+      session.step === "strategy"
+        ? "Pilih strateginya lewat tombol ya."
+        : session.step === "solChoice"
+          ? "Pakai tombolnya ya."
+          : "Pakai tombol konfirmasi ya.";
     return finish(state, session, items, reply(hint), now);
   }
 
