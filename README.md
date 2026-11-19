@@ -50,7 +50,7 @@ Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kal
 - `BIDASK_DOUBLE_REBALANCE_ENABLED=true`: saat harga pool turun kelipatan 10% dari harga entry tiap posisi `bidask:double` (utama dan tiap DCA), token di atas bin aktif dibentuk ulang jadi BidAsk di posisi yang sama. `false` mematikan sisi token dan sisi SOL.
 - `BIDASK_DOUBLE_SOL_REBALANCE_ENABLED=true`: saat harga pulih minimal satu step dari rebalance terakhir, SOL di bawah bin aktif dibentuk ulang jadi BidAsk. `false` hanya mematikan sisi SOL.
 - `BIDASK_SOL_REBALANCE_ENABLED=true`: posisi `bidask:sol` (SOL-only) tiap kelipatan 10% porsi bin token dibentuk ulang sisi tokennya saja jadi BidAsk. Bin yang masih SOL tidak disentuh, dan tidak ada rebalance sisi SOL saat harga pulih.
-- `BIDASK_SOL_ENTRY_MIN_TVL_USD=20000`, `BIDASK_SOL_ENTRY_MAX_BINS=169`, `BIDASK_SOL_ENTRY_LOWER_PCT=-50`, `BIDASK_SOL_ENTRY_UPPER_PCT=15`: entry manual `bidask:sol` dari `pool.txt`. Arah sentuh dicatat dari harga pertama: di bawah target bot menunggu harga naik, di atas target menunggu harga turun, tepat di target langsung masuk. Lalu bot memilih pool DLMM token/SOL (TVL dan lebar bin lolos) dan membuka posisi SOL-only. Setelah entry berhasil baris itu diberi `#`.
+- `BIDASK_SOL_ENTRY_MIN_TVL_USD=20000`, `BIDASK_SOL_ENTRY_MAX_BINS=169`, `BIDASK_SOL_ENTRY_LOWER_PCT=-50`, `BIDASK_SOL_ENTRY_UPPER_PCT=15`: entry manual `bidask:sol` dari `pool.txt`. Arah sentuh dicatat dari harga pertama: di bawah target bot menunggu harga naik, di atas target menunggu harga turun, tepat di target langsung masuk. Token `now` masuk begitu harga terbaca, tanpa menunggu sentuh. Lalu bot memilih pool DLMM token/SOL (TVL dan lebar bin lolos) dan membuka posisi SOL-only. Setelah entry berhasil baris itu diberi `#`.
 - `REBALANCE_MODE=inplace`: semua rebalance (spot token, spot SOL, bidask token, bidask SOL) memakai instruksi di tempat, jadi saldo yang sudah ada di wallet tidak ikut masuk. `withdraw` kembali ke tarik-lalu-setor, hanya sejumlah yang keluar dari posisi.
 - Swap ke SOL saat close: token base **dan** reward di-swap ke SOL, kecuali mint yang dilindungi (posisi aktif, entry/rebalance/reentry OOR kanan/fallback OOR kiri yang sedang berjalan, USDC). Swap gagal → "swap tertunda", dicoba ulang tiap `SWAP_PENDING_RETRY_SEC` (90s); pool baru ditandai `#` setelah swap tuntas atau dihentikan (alert Telegram). Safety sweep juga memindai token Token-2022.
 
@@ -65,7 +65,7 @@ File ini gitignored. Contoh yang ikut commit: `pool.txt.example`. Saat entry wor
 | `max` | kolom lama, tidak dipakai | — |
 | `mode` | `bidask:double` (atau `bidask`), `spot`, `bidask:sol` | `bidask:double` |
 | kolom ke-5 | `ca` = kolom pertama adalah **CA token (mint)**, bukan pool | kosong (alamat pool) |
-| kolom ke-6 | harga entry per token, hanya `bidask:sol`. Tanpa akhiran atau `usd` = USD. Akhiran `sol` = SOL per token | — |
+| kolom ke-6 | harga entry per token, hanya `bidask:sol`. Tanpa akhiran atau `usd` = USD. Akhiran `sol` = SOL per token. `now` = masuk begitu harga terbaca | — |
 
 ```
 PoolAddr1                       # bidask:double, 0.1 SOL
@@ -74,6 +74,7 @@ PoolAddr3,1.25x,1,spot          # spot, 0.125 SOL (angka max diabaikan)
 TokenMint,1.5x,1,spot,ca        # baris CA: pool dipilih bot saat entry
 TokenMint,1x,,bidask:sol,ca,0.00123        # USD per token (sama dengan 0.00123usd)
 TokenMint,1x,,bidask:sol,ca,0.0000379sol   # SOL per token, masuk saat harga menyentuh level itu
+TokenMint,1x,,bidask:sol,ca,now            # masuk di harga pasar, tanpa target
 ```
 
 `bidask:sol` hanya valid bersama `ca` dan harga positif. Harga tanpa akhiran, atau berakhiran `usd` (huruf besar/kecil), adalah USD per token. Akhiran `sol` adalah SOL per token. Akhiran lain, nol, atau negatif membuat baris dilewati (ada peringatan). Tidak ada gerbang Supertrend. Pemicu USD membandingkan harga Jupiter token. Pemicu SOL membandingkan harga token USD dibagi harga SOL (WSOL, satu batch Jupiter yang sama). Harga SOL yang tidak ada atau tidak valid tidak memicu dan tidak mencatat arah.
@@ -86,6 +87,8 @@ Masuknya memakai sentuh. Arah dicatat dari harga valid pertama untuk pasangan mi
 - harga belum terbaca → tidak ada arah, tidak masuk
 
 Contoh: harga sekarang `0.00002953` SOL dan target `0.0000379sol` menunggu naik dulu. Log dan ringkasan menulis `menunggu naik ke 0.0000379 SOL (sekarang 0.00002953)`.
+
+Token `now` (huruf besar/kecil, baris `CA,,,bidask:sol,ca,now`) tidak memakai sentuh. Begitu harga Jupiter terbaca, bot memilih pool dan membuka posisi pada siklus itu. Harga sekarang tidak ditulis sebagai target, jadi pergerakan kecil tidak menunda entry. Kalau pool, sewa, duplikat, atau saldo membuat entry dilewati, baris tetap aktif. Rentang default −50%/+15% tetap dihitung dari harga bin aktif saat posisi dibuka.
 
 Saat harga sudah menyentuh target, bot memilih pool DLMM token/SOL (bukan blacklist, TVL >= `BIDASK_SOL_ENTRY_MIN_TVL_USD`, lebar bin <= `BIDASK_SOL_ENTRY_MAX_BINS`) berdasarkan fee/active TVL, lalu volume/TVL, lalu jumlah bin lebih sedikit. Tidak ada yang lolos = tetap menunggu, baris tidak diberi `#`. Setelah entry berhasil, baris itu (termasuk baris CA 6 kolom berakhiran `sol`) diberi `#`, jadi tidak masuk lagi setelah posisi tutup. Hapus `#` untuk memantau lagi. Posisi SOL-only BidAsk: bin bawah `BIDASK_SOL_ENTRY_LOWER_PCT` (default −50%) sampai atas `BIDASK_SOL_ENTRY_UPPER_PCT` (default +15%), setoran hanya sampai bin aktif. Setelah terbuka, exit / rebalance / re-entry sama seperti `bidask:sol` yang sudah ada. Log, ringkasan, dan alert Telegram menampilkan harga beserta satuannya (`$0.0012` atau `0.0000379 SOL`), dan rentang posisi dalam satuan yang sama.
 
@@ -109,11 +112,11 @@ Entry bot **tidak membuka posisi**. Dia menulis satu baris ke `pool.txt` (size d
 
 Perintah, di chat yang diizinkan:
 
-- `/entry` — pilih Bidask SOL, Bidask Double, atau Spot, kirim CA, (Bidask SOL saja) kirim harga target, konfirmasi.
+- `/entry` — pilih Bidask SOL, Bidask Double, atau Spot, lalu kirim CA. Bidask SOL menampilkan harga sekarang dan tombol Entry sekarang atau Harga target, lalu konfirmasi.
 - `/antrean` — daftar baris aktif. Yang dari entry bot ditandai. Tombol hapus memberi `#` pada baris itu.
 - `/batal` — batalkan wizard yang sedang jalan (sekitar 10 menit, lalu sesi hangus).
 
-Baris yang ditulis: `CA,,,bidask:sol,ca,HARGA` (akhiran harga dipertahankan), `CA,,,bidask:double,ca`, atau `CA,,,spot,ca`.
+Baris yang ditulis: `CA,,,bidask:sol,ca,HARGA` (akhiran harga dipertahankan), `CA,,,bidask:sol,ca,now`, `CA,,,bidask:double,ca`, atau `CA,,,spot,ca`.
 
 Buat botnya di Telegram lewat [@BotFather](https://t.me/BotFather):
 

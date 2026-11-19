@@ -105,12 +105,32 @@ function resolveSizeSol(sizeRaw, defaultSize) {
   return Number(sizeRaw);
 }
 
+// Token `now` (huruf besar/kecil): masuk begitu harga terbaca, bukan harga target.
+export function isBidaskSolNow(value, unit) {
+  if (String(unit || "").toLowerCase() === "now") return true;
+  if (value && typeof value === "object") {
+    if (value.entryNow === true) return true;
+    if (String(value.entryPriceUnit || "").toLowerCase() === "now") return true;
+    return (
+      String(value.entryPrice ?? "")
+        .trim()
+        .toLowerCase() === "now"
+    );
+  }
+  return (
+    String(value ?? "")
+      .trim()
+      .toLowerCase() === "now"
+  );
+}
+
 // Harga entry bidask:sol. Kosong / usd = USD per token. Akhiran sol = SOL per token.
-// null = kolom kosong. { ok:false } = angka tidak valid atau akhiran tidak dikenal.
+// now = masuk begitu harga terbaca. null = kolom kosong. { ok:false } = tidak valid.
 export function parseEntryPrice(raw) {
   if (raw == null) return null;
   const body = String(raw).split("#")[0].trim();
   if (!body) return null;
+  if (/^now$/i.test(body)) return { ok: true, entryNow: true, entryPrice: null, entryPriceUnit: "now" };
   const m = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?:\s*([A-Za-z]+))?$/.exec(body);
   if (!m) return { ok: false, reason: "invalid" };
   const n = Number(m[1]);
@@ -121,15 +141,15 @@ export function parseEntryPrice(raw) {
   return { ok: false, reason: "suffix", suffix };
 }
 
-// bidask:sol hanya sah bersama kolom `ca` dan harga entry positif (usd atau sol).
-// Tanpa itu kembalikan null supaya pemanggil memperingatkan dan melewati baris.
-function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null } = {}) {
+// bidask:sol hanya sah bersama kolom `ca` dan harga entry positif (usd atau sol),
+// atau token `now`. Tanpa itu kembalikan null supaya pemanggil melewati baris.
+function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null, entryNow = false } = {}) {
   if (!modeRaw) return "bidask:double";
   const key = String(modeRaw).trim().toLowerCase();
   if (key === "spot") return "spot";
   if (key === "bidask" || key === "bidask:double") return "bidask:double";
   if (key === "bidask:sol") {
-    if (isCa && Number.isFinite(entryPrice) && entryPrice > 0) return "bidask:sol";
+    if (isCa && (entryNow || (Number.isFinite(entryPrice) && entryPrice > 0))) return "bidask:sol";
     return null;
   }
   return null;
@@ -138,7 +158,7 @@ function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null } = {}) {
 // Baris `alamat` saja memakai ENTRY_DEFAULT_SIZE_SOL.
 // Format lama `alamat,size,max[,mode[,ca]]` tetap terbaca: kolom ke-3 (max
 // entry seumur hidup) diabaikan. Mode tetap kolom ke-4.
-// bidask:sol: `CA,size,,bidask:sol,ca,HARGA` (kolom ke-6 = harga entry, usd atau sol).
+// bidask:sol: `CA,size,,bidask:sol,ca,HARGA` (usd atau sol) atau `...,now`.
 export function parsePoolList(raw) {
   const defaultSize = Number(config.entry.defaultSizeSol);
   const entries = [];
@@ -153,8 +173,9 @@ export function parsePoolList(raw) {
     const modeRaw = parts[3];
     const kindRaw = parts[4];
     const parsedPrice = parseEntryPrice(parts[5]);
-    const entryPrice = parsedPrice?.ok ? parsedPrice.entryPrice : null;
-    const entryPriceUnit = parsedPrice?.ok ? parsedPrice.entryPriceUnit : null;
+    const entryNow = Boolean(parsedPrice?.entryNow);
+    const entryPrice = parsedPrice?.ok && !entryNow ? parsedPrice.entryPrice : null;
+    const entryPriceUnit = entryNow ? "now" : parsedPrice?.ok ? parsedPrice.entryPriceUnit : null;
     if (!address) continue;
     // Kolom ke-5 `ca`: kolom pertama adalah CA token (mint), pool dipilih saat entry.
     const isCa = Boolean(kindRaw && kindRaw.split(/[\s#]/)[0].toLowerCase() === "ca");
@@ -167,7 +188,7 @@ export function parsePoolList(raw) {
     const modeKey = String(modeRaw || "")
       .trim()
       .toLowerCase();
-    const mode = secondIsSpot ? "spot" : resolveEntryMode(modeRaw, { isCa, entryPrice });
+    const mode = secondIsSpot ? "spot" : resolveEntryMode(modeRaw, { isCa, entryPrice, entryNow });
     if (!mode) {
       if (modeKey === "bidask:sol") {
         if (parsedPrice?.reason === "suffix") {
@@ -176,7 +197,7 @@ export function parsePoolList(raw) {
           );
         } else {
           log.warn(
-            `Pool ${address.slice(0, 8)} skipped: bidask:sol butuh kolom ca dan harga entry positif (CA,size,,bidask:sol,ca,0.0012 atau 0.0000123sol)`
+            `Pool ${address.slice(0, 8)} skipped: bidask:sol butuh kolom ca dan harga entry positif, atau now (CA,size,,bidask:sol,ca,0.0012 atau 0.0000123sol atau now)`
           );
         }
       } else {
@@ -196,7 +217,9 @@ export function parsePoolList(raw) {
     }
 
     if (mode === "bidask:sol") {
-      entries.push({ pool: address, sizeSol, mode, ca: true, entryPrice, entryPriceUnit });
+      const row = { pool: address, sizeSol, mode, ca: true, entryPrice, entryPriceUnit };
+      if (entryNow) row.entryNow = true;
+      entries.push(row);
     } else if (isCa) {
       entries.push({ pool: address, sizeSol, mode, ca: true });
     } else {
@@ -369,7 +392,10 @@ export function poolListHeaderLines() {
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123",
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd",
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol",
+    "#   TOKEN_CA,1x,,bidask:sol,ca,now",
     "#   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).",
+    "#   now (huruf besar/kecil) = masuk begitu harga terbaca. Bukan harga target.",
+    "#   Arah sentuh tidak disimpan. Rentang dihitung dari harga bin aktif saat entry.",
     "#   Akhiran lain, nol, atau negatif = baris dilewati.",
     "#   Sentuh: harga pertama di bawah target menunggu naik sampai target.",
     "#   Harga pertama di atas target menunggu turun sampai target.",

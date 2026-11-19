@@ -1,5 +1,6 @@
 // Arah sentuh entry manual bidask:sol.
 // Kunci = mint + target + satuan, jadi mengubah harga membuat arah baru.
+// Token `now` punya kunci mint|now dan tidak pernah menyimpan arah.
 // Disimpan di state.json supaya tahan restart.
 import { readState, writeState } from "./store.js";
 
@@ -16,8 +17,18 @@ function canonicalTarget(target) {
   return text;
 }
 
+function isNowToken(target, unit) {
+  if (String(unit || "").toLowerCase() === "now") return true;
+  return (
+    String(target ?? "")
+      .trim()
+      .toLowerCase() === "now"
+  );
+}
+
 export function bidaskSolTouchKey(mint, target, unit = "usd") {
   if (!mint) return null;
+  if (isNowToken(target, unit)) return `${mint}|now`;
   const price = canonicalTarget(target);
   if (!price) return null;
   const u = unit === "sol" ? "sol" : "usd";
@@ -40,12 +51,13 @@ function writeMap(state, map) {
 }
 
 export function getBidaskSolTouchDirection(key) {
-  if (!key) return null;
+  if (!key || String(key).endsWith("|now")) return null;
   return readMap()[key] || null;
 }
 
 export function setBidaskSolTouchDirection(key, direction) {
-  if (!key || (direction !== "up" && direction !== "down")) return;
+  if (!key || String(key).endsWith("|now")) return;
+  if (direction !== "up" && direction !== "down") return;
   const state = readState();
   const map = readMap(state);
   if (map[key] === direction) return;

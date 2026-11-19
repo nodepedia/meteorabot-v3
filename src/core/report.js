@@ -58,6 +58,16 @@ function quoteNumber(v, unit) {
 // Kalimat arah sentuh bidask:sol, misalnya
 // `menunggu naik ke 0.0000379 SOL (sekarang 0.00002953)`.
 export function bidaskSolTouchPhrase({ entryPrice, entryPriceUnit, price, touchDirection, direction } = {}) {
+  if (
+    entryPriceUnit === "now" ||
+    String(entryPrice ?? "")
+      .trim()
+      .toLowerCase() === "now"
+  ) {
+    const hasPrice = price != null && price !== "" && Number.isFinite(Number(price)) && Number(price) > 0;
+    if (!hasPrice) return "entry sekarang (harga pasar) | harga belum tersedia";
+    return `entry sekarang (harga pasar) (sekarang ${quoteNumber(price, "usd")}) — siap entry`;
+  }
   const unit = entryPriceUnit === "sol" ? "sol" : "usd";
   const dir = touchDirection || direction;
   const target = fmtQuote(entryPrice, unit);

@@ -24,7 +24,7 @@ const { executeBidaskSolEntry, formatTxSignature } = await import("../src/entry/
 const { runBidaskSolEntry } = await import("../src/entry/index.js");
 const config = (await import("../src/config/index.js")).default;
 const { getTrackedPosition, getInitialCapitalSol, getEntrySizeSol } = await import("../src/state/positions.js");
-const { bidaskSolTouchKey, getBidaskSolTouchDirection, pruneBidaskSolTouch } =
+const { bidaskSolTouchKey, getBidaskSolTouchDirection, pruneBidaskSolTouch, setBidaskSolTouchDirection } =
   await import("../src/state/bidask-sol-touch.js");
 
 const CA = "7EJqZHD4TTk8B9BCjUwLtfssGbxiDAsrbFHT8YWgrE7U";
@@ -528,6 +528,22 @@ test("arah sentuh: di bawah naik, di atas turun, tepat target masuk sekarang", (
   assert.equal(decideBidaskSolTouch(0.00005, 0.0000379, "down").triggered, false);
   assert.equal(decideBidaskSolTouch(0.0000379, 0.0000379, "down").triggered, true);
   assert.equal(decideBidaskSolTouch(0.00001, 0.0000379, "down").triggered, true);
+  assert.deepEqual(decideBidaskSolTouch(0.00002953, "now", null), {
+    direction: null,
+    triggered: true,
+    record: false,
+  });
+  assert.deepEqual(decideBidaskSolTouch(0.00004, "NOW", "up"), {
+    direction: null,
+    triggered: true,
+    record: false,
+  });
+  assert.deepEqual(decideBidaskSolTouch(NaN, "now", "down"), {
+    direction: null,
+    triggered: false,
+    record: false,
+  });
+  assert.equal(decideBidaskSolTouch(0, "now", null).triggered, false);
 });
 
 test("naik hanya saat harga naik, turun hanya saat harga turun, dan arah tahan dibaca ulang", async () => {
@@ -655,6 +671,122 @@ test("baris CA 6 kolom berakhiran sol di-# setelah entry bidask:sol berhasil", a
     assert.equal(res, undefined);
     assert.equal(fs.readFileSync(file, "utf8"), `#${line}\n`);
     assert.equal(getBidaskSolTouchDirection(key), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("token now masuk begitu harga terbaca, termasuk setelah harga bergeser, tanpa arah", async () => {
+  const mint = "MintNow111111111111111111111111111111111";
+  const key = bidaskSolTouchKey(mint, null, "now");
+  assert.equal(key, `${mint}|now`);
+  setBidaskSolTouchDirection(key, "up");
+  assert.equal(getBidaskSolTouchDirection(key), null);
+
+  const first = await pollBidaskSolPrices(
+    [{ mint, entryPrice: null, entryPriceUnit: "now", entryNow: true, sizeSol: 1 }],
+    {
+      getPrices: pricesOf([
+        [mint, 0.004],
+        [SOL, 200],
+      ]),
+    }
+  );
+  assert.equal(first.triggered.length, 1);
+  assert.equal(first.triggered[0].entryNow, true);
+  assert.equal(first.triggered[0].entryPrice, null);
+  assert.equal(first.triggered[0].entryPriceUnit, "now");
+  assert.equal(first.triggered[0].price, 0.004);
+  assert.equal(first.triggered[0].touchDirection, null);
+  assert.equal(getBidaskSolTouchDirection(key), null);
+
+  const moved = await pollBidaskSolPrices([{ mint, entryNow: true, entryPriceUnit: "now" }], {
+    getPrices: pricesOf([
+      [mint, 0.0041],
+      [SOL, 210],
+    ]),
+  });
+  assert.equal(moved.triggered.length, 1);
+  assert.equal(moved.triggered[0].price, 0.0041);
+
+  const unread = await pollBidaskSolPrices([{ mint, entryNow: true }], {
+    getPrices: pricesOf([[SOL, 200]]),
+  });
+  assert.equal(unread.triggered.length, 0);
+  const stored = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8"));
+  const touch = stored.bidaskSolTouch || {};
+  assert.equal(
+    Object.keys(touch).some((name) => name.startsWith(`${mint}|`)),
+    false
+  );
+});
+
+test("baris now di-# setelah entry, dan tetap menunggu bila pool tidak ada", async () => {
+  const mint = "MintNowLine11111111111111111111111111111";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bidask-sol-now-"));
+  const file = path.join(dir, "pool.txt");
+  const line = `${mint},,,bidask:sol,ca,now`;
+  fs.writeFileSync(file, `${line}\n`);
+  const watch = {
+    mint,
+    sizeSol: 0.1,
+    entryPrice: null,
+    entryPriceUnit: "now",
+    entryNow: true,
+    price: 0.004,
+    priceUsd: 0.004,
+    solPrice: 200,
+  };
+  try {
+    await runBidaskSolEntry(watch, {
+      dryRun: false,
+      poolListFile: file,
+      resolveCaPool: async () => ({ pools: [] }),
+      executeBidaskSolEntry: async () => {
+        throw new Error("seharusnya belum membuka posisi");
+      },
+    });
+    assert.equal(fs.readFileSync(file, "utf8"), `${line}\n`);
+
+    let passed = null;
+    await runBidaskSolEntry(watch, {
+      dryRun: false,
+      poolListFile: file,
+      resolveCaPool: async () => ({
+        pools: [
+          pool("NowPool1111111111111111111111111111111111", {
+            token_x: { address: mint },
+            token_y: { address: SOL },
+          }),
+        ],
+      }),
+      executeBidaskSolEntry: async (poolAddress, sizeSol, opts) => {
+        passed = { poolAddress, sizeSol, opts };
+        return { success: true, position: "PosNow" };
+      },
+    });
+    assert.equal(fs.readFileSync(file, "utf8"), `#${line}\n`);
+    assert.equal(passed.sizeSol, 0.1);
+    assert.equal(passed.opts.entryPrice ?? null, null);
+    assert.equal(passed.opts.entryPriceUnit, "now");
+    assert.equal(passed.opts.triggerPrice, 0.004);
+    assert.equal(passed.opts.priceUsd, 0.004);
+    const plan = bidaskSolEntryBinPlan({ binStep: 100, activeBinId: 1000 });
+    assert.equal(plan.lowerPct, config.entry.bidaskSolLowerPct);
+    assert.equal(plan.upperPct, config.entry.bidaskSolUpperPct);
+    const covered = coveredEntryPrices({
+      entryPriceUnit: "now",
+      solPerToken: 0.00002,
+      solUsd: 200,
+      triggerPrice: 0.004,
+      priceUsd: 0.004,
+      binStep: plan.binStep,
+      binsBelow: plan.binsBelow,
+      binsAbove: plan.binsAbove,
+    });
+    assert.equal(covered.unit, "usd");
+    assert.ok(Math.abs(covered.priceFrom - 0.004 * 1.01 ** -plan.binsBelow) < 1e-12);
+    assert.ok(Math.abs(covered.priceTo - 0.004 * 1.01 ** plan.binsAbove) < 1e-12);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -97,6 +97,27 @@ test("bidask:sol ringkasan menampilkan satuan SOL dan USD", () => {
   assert.doesNotMatch(noSol, /siap entry/);
 });
 
+test("bidask:sol now menulis entry sekarang, bukan arah sentuh", () => {
+  const ready = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPrice: null,
+    entryPriceUnit: "now",
+    price: 0.004,
+  });
+  assert.match(ready, /entry sekarang \(harga pasar\) \(sekarang 0\.004\) — siap entry/);
+  assert.doesNotMatch(ready, /menunggu naik|menunggu turun/);
+  const unread = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPriceUnit: "now",
+    price: null,
+  });
+  assert.match(unread, /entry sekarang \(harga pasar\) \| harga belum tersedia/);
+});
+
 test("clock menampilkan WIB (UTC+7)", () => {
   const ts = Date.UTC(2026, 8, 20, 0, 15, 44);
   assert.equal(clock(ts), "20 Sep 2026 07:15:44 WIB");

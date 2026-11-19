@@ -25,6 +25,8 @@ export const CB = {
   spt: "eb:st:spt",
   cancel: "eb:x",
   ok: "eb:ok",
+  now: "eb:now",
+  target: "eb:px",
 };
 
 const B58 = "1-9A-HJ-NP-Za-km-z";
@@ -40,6 +42,7 @@ export function emptySession(now = 0) {
     targetRaw: null,
     target: null,
     targetUnit: null,
+    entryNow: false,
     preview: null,
     updatedAt: now,
   };
@@ -67,6 +70,7 @@ export function parseTargetPrice(raw) {
   const parsed = parseEntryPrice(body);
   if (!parsed) return { ok: false, reason: "invalid" };
   if (!parsed.ok) return parsed;
+  if (parsed.entryNow) return { ...parsed, token: "now", entryNow: true };
   return { ...parsed, token: body.replace(/\s+/g, "") };
 }
 
@@ -95,6 +99,8 @@ export function parseCallbackData(data) {
   if (text === CB.spt) return { type: "strategy", strategy: "spot" };
   if (text === CB.cancel) return { type: "cancel" };
   if (text === CB.ok) return { type: "confirm" };
+  if (text === CB.now) return { type: "now" };
+  if (text === CB.target) return { type: "target" };
   if (text.startsWith("eb:rm:")) {
     const address = text.slice("eb:rm:".length).trim();
     if (!address || address.length > 50) return null;
@@ -118,6 +124,18 @@ export function strategyKeyboard() {
 
 export function cancelKeyboard() {
   return { inline_keyboard: [[{ text: "❌ Batal", callback_data: CB.cancel }]] };
+}
+
+export function solChoiceKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "⚡ Entry sekarang", callback_data: CB.now },
+        { text: "🎯 Harga target", callback_data: CB.target },
+      ],
+      [{ text: "❌ Batal", callback_data: CB.cancel }],
+    ],
+  };
 }
 
 export function confirmKeyboard() {
@@ -317,6 +335,16 @@ export function formatPriceLine(priceSol, priceUsd) {
   return `Harga sekarang: ${sol} · ${usd}`;
 }
 
+export function formatSolChoice(session) {
+  const symbol = session.symbol || shortAddr(session.mint);
+  return [
+    `${symbol} · ${shortAddr(session.mint)}`,
+    formatPriceLine(session.priceSol, session.priceUsd),
+    "",
+    "Masuk sekarang, atau pakai harga target?",
+  ].join("\n");
+}
+
 export function formatSummary(session, sizeSol) {
   const symbol = session.symbol || shortAddr(session.mint);
   const lines = [
@@ -326,13 +354,17 @@ export function formatSummary(session, sizeSol) {
     `Size     : ${fmtSize(sizeSol)}`,
   ];
   lines.push(formatPriceLine(session.priceSol, session.priceUsd));
-  if (session.strategy === "bidask:sol") {
+  const entryNow = session.entryNow === true || String(session.targetRaw || "").toLowerCase() === "now";
+  if (session.strategy === "bidask:sol" && !entryNow) {
     const unit = session.targetUnit === "sol" ? "sol" : "usd";
     const pct = fmtPct(pctApart(currentForUnit(session), session.target));
     const pctText = pct ? ` (${pct} vs harga sekarang)` : "";
     lines.push(`Target   : ${fmtQuote(session.target, unit)}${pctText}`);
   }
-  lines.push(`Pemicu   : ${triggerPhrase(session.strategy, currentForUnit(session), session.target)}`);
+  const trigger = entryNow
+    ? "entry sekarang (harga pasar)"
+    : triggerPhrase(session.strategy, currentForUnit(session), session.target);
+  lines.push(`Pemicu   : ${trigger}`);
   lines.push("");
   lines.push(formatPreview(session.preview));
   return lines.join("\n");

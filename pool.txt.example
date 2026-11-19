@@ -19,7 +19,10 @@
 #   TOKEN_CA,1x,,bidask:sol,ca,0.00123
 #   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd
 #   TOKEN_CA,1x,,bidask:sol,ca,0.0000123sol
+#   TOKEN_CA,1x,,bidask:sol,ca,now
 #   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token (huruf besar/kecil).
+#   now (huruf besar/kecil) = masuk begitu harga terbaca. Bukan harga target.
+#   Arah sentuh tidak disimpan. Rentang dihitung dari harga bin aktif saat entry.
 #   Akhiran lain, nol, atau negatif = baris dilewati.
 #   Sentuh: harga pertama di bawah target menunggu naik sampai target.
 #   Harga pertama di atas target menunggu turun sampai target.

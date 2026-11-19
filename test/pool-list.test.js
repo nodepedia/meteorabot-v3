@@ -152,6 +152,28 @@ test("bidask:sol membaca satuan sol, usd, angka polos, dan menolak akhiran lain"
   });
 });
 
+test("bidask:sol token now masuk tanpa harga target", () => {
+  withEntry({ defaultSizeSol: 0.2, defaultMaxPositions: 1 }, () => {
+    assert.deepEqual(parsePoolList(`${ADDR_A},,,bidask:sol,ca,now\n`), [
+      {
+        pool: ADDR_A,
+        sizeSol: 0.2,
+        mode: "bidask:sol",
+        ca: true,
+        entryPrice: null,
+        entryPriceUnit: "now",
+        entryNow: true,
+      },
+    ]);
+    assert.equal(parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,NOW\n`)[0].entryNow, true);
+    assert.equal(parsePoolList(`${ADDR_B},1x,,bidask:sol,ca,Now\n`)[0].entryPriceUnit, "now");
+    assert.deepEqual(
+      parsePoolList(`${ADDR_A},1x,,bidask:sol,ca,nowusd\n${ADDR_A},1x,,bidask:sol,ca,1now\n${ADDR_A},1x,,bidask:sol\n`),
+      []
+    );
+  });
+});
+
 test("header pool.txt idempoten dan tidak mengubah baris pengguna", () => {
   const user = "KEEP_ME,1x,,spot\n# catatan user\n";
   const first = applyPoolListHeader(user);
@@ -180,8 +202,10 @@ test("header pool.txt idempoten dan tidak mengubah baris pengguna", () => {
   assert.match(header, /TOKEN_CA,1x,,bidask:sol,ca,0\.00123\n/);
   assert.match(header, /0\.00123usd/);
   assert.match(header, /0\.0000123sol/);
+  assert.match(header, /TOKEN_CA,1x,,bidask:sol,ca,now/);
   assert.match(header, /USD per token/);
   assert.match(header, /SOL per token/);
+  assert.match(header, /now \(huruf besar\/kecil\)/);
 });
 
 test("ensurePoolListHeader menulis atomik dan tidak menulis ulang bila sama", () => {

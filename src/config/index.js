@@ -173,7 +173,7 @@ export function buildConfig(e = {}) {
     // Entry bidask:double hanya ke pool bin step >= nilai ini. 0 = mati.
     // Spot dan mode lain tidak memakai angka ini. DCA tidak pindah pool.
     bidaskDoubleMinBinStep: Math.max(0, Math.floor(num(e.BIDASK_DOUBLE_MIN_BIN_STEP, 100))),
-    // Entry manual bidask:sol (CA + harga). Pool dipilih saat harga tersentuh.
+    // Entry manual bidask:sol (CA + harga, atau token now). Pool dipilih saat sentuh, atau segera bila now.
     bidaskSolMinTvlUsd: Math.max(0, num(e.BIDASK_SOL_ENTRY_MIN_TVL_USD, 20000)),
     bidaskSolMaxBins: Math.max(1, Math.floor(num(e.BIDASK_SOL_ENTRY_MAX_BINS, 169))),
     bidaskSolLowerPct: num(e.BIDASK_SOL_ENTRY_LOWER_PCT, -50),
