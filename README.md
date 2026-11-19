@@ -33,6 +33,8 @@ cp .env.example .env && chmod 600 .env
 | `JUPITER_PRICE_API_KEY` | key khusus polling harga |
 | `JUPITER_SWAP_API_KEY` | key khusus swap |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | notifikasi Telegram |
+| `ENTRYBOT_TELEGRAM_TOKEN` | token bot Telegram **kedua** untuk antre entry (`/entry`). Jangan sama dengan `TELEGRAM_BOT_TOKEN` |
+| `ENTRYBOT_TELEGRAM_CHAT_ID` | chat yang boleh pakai entry bot. Kosong = pakai `TELEGRAM_CHAT_ID` |
 | `DRY_RUN` | `true` untuk tes, `false` untuk live |
 
 
@@ -99,16 +101,40 @@ Baris CA (`,ca`):
 - File ini dibaca ulang tiap siklus refresh kandidat. Menghapus `#` saat `meteorabot-entry` sedang jalan cukup — tidak perlu restart. Gate di memori (cooldown gagal, timer kedaluwarsa, pool yang sempat di-skip) ikut dibersihkan saat baris itu aktif lagi.
 - Setelah **deploy** kode baru, restart proses yang memuatnya (`pm2 restart ecosystem.config.cjs`, atau minimal `meteorabot-entry` dan `meteorabot-exit`). Menghapus `#` setelah proses baru jalan tidak perlu restart lagi.
 
+## Entry bot Telegram
+
+Proses PM2 terpisah, `meteorabot-entrybot` (`src/worker-entrybot.js`). Ini bot Telegram lain, bukan `meteorabot-telegram`, karena satu bot cuma boleh satu konsumen `getUpdates`.
+
+Entry bot **tidak membuka posisi**. Dia menulis satu baris ke `pool.txt` (size dikosongkan, jadi `ENTRY_DEFAULT_SIZE_SOL` yang dipakai) lalu memantau sampai worker entry yang sudah ada yang mengerjakan. Pilih pool, cek sewa, saldo, Supertrend, dan sentuh harga `bidask:sol` tetap di jalur itu.
+
+Perintah, di chat yang diizinkan:
+
+- `/entry` — pilih Bidask SOL, Bidask Double, atau Spot, kirim CA, (Bidask SOL saja) kirim harga target, konfirmasi.
+- `/antrean` — daftar baris aktif. Yang dari entry bot ditandai. Tombol hapus memberi `#` pada baris itu.
+- `/batal` — batalkan wizard yang sedang jalan (sekitar 10 menit, lalu sesi hangus).
+
+Baris yang ditulis: `CA,,,bidask:sol,ca,HARGA` (akhiran harga dipertahankan), `CA,,,bidask:double,ca`, atau `CA,,,spot,ca`.
+
+Buat botnya di Telegram lewat [@BotFather](https://t.me/BotFather):
+
+1. `/newbot`, ikuti nama yang diminta, simpan token.
+2. Tempel token ke `ENTRYBOT_TELEGRAM_TOKEN` di `.env` (jangan di-commit).
+3. `ENTRYBOT_TELEGRAM_CHAT_ID` boleh kosong kalau chat-nya sama dengan `TELEGRAM_CHAT_ID`.
+4. `pm2 start ecosystem.config.cjs --only meteorabot-entrybot` (atau restart sekalian).
+5. Kalau token kosong, proses tetap hidup tapi idle: dia log lalu tidak mem-poll.
+
+State antrean ada di `state/entrybot.json` (gitignored, ikut folder `state/`).
+
 ## Jalankan (PM2)
 ```bash
-pm2 start ecosystem.config.cjs    # meteorabot-entry, meteorabot-exit, meteorabot-wallet, meteorabot-telegram
+pm2 start ecosystem.config.cjs    # meteorabot-entry, meteorabot-exit, meteorabot-wallet, meteorabot-telegram, meteorabot-entrybot
 pm2 save && pm2 startup
 npm run pm2:logrotate             # opsional: rotasi log
 ```
 Log:
 ```bash
-pm2 logs meteorabot-entry         # juga: meteorabot-exit, meteorabot-wallet, meteorabot-telegram
-ls logs/                          # entry-out.log, exit-error.log, telegram-out.log, dst.
+pm2 logs meteorabot-entry         # juga: meteorabot-exit, meteorabot-wallet, meteorabot-telegram, meteorabot-entrybot
+ls logs/                          # entry-out.log, exit-error.log, telegram-out.log, entrybot-out.log, dst.
 ```
 
 ## Update
