@@ -37,6 +37,7 @@ const { createTelegramApi } = await import("../src/entrybot/api.js");
 const { loadEntrybotState, saveEntrybotState, emptyEntrybotState } = await import("../src/entrybot/store.js");
 const { runEntrybot } = await import("../src/worker-entrybot.js");
 const { appendCaEntryLine, commentPoolInList, parsePoolList } = await import("../src/entry/pool-list.js");
+const { default: config } = await import("../src/config/index.js");
 
 function discoveryPool() {
   return {
@@ -129,7 +130,25 @@ test("pemicu bidask sol sama dengan decideBidaskSolTouch", () => {
   assert.equal(triggerPhrase("bidask:sol", 0.001, 0.0000379), "tunggu harga turun sampai target");
   assert.equal(triggerPhrase("bidask:sol", 0.009, 0.009), "entry sekarang");
   assert.equal(triggerPhrase("bidask:double"), "tunggu sinyal Supertrend");
+  assert.equal(
+    triggerPhrase("bidask:double", 0.00002, 0.0000379),
+    "tunggu harga naik sampai target, lalu tunggu sinyal Supertrend"
+  );
+  assert.equal(
+    triggerPhrase("bidask:double", 0.001, 0.0000379),
+    "tunggu harga turun sampai target, lalu tunggu sinyal Supertrend"
+  );
+  assert.equal(
+    triggerPhrase("bidask:double", Number.NaN, 0.01),
+    "tunggu harga naik/turun sampai target, lalu tunggu sinyal Supertrend"
+  );
+  assert.equal(triggerPhrase("bidask:double", 0.009, 0.009), "tunggu sinyal Supertrend");
   assert.equal(triggerPhrase("spot"), "entry langsung");
+  assert.equal(formatEntryLine({ strategy: "spot", mint: MINT, sizeToken: "0.5" }), `${MINT},0.5,,spot,ca`);
+  assert.equal(
+    formatEntryLine({ strategy: "bidask:double", mint: MINT, sizeToken: "2", targetToken: "0.0000379sol" }),
+    `${MINT},2,,bidask:double,ca,0.0000379sol`
+  );
   assert.ok(pctApart(0.00002, 0.0000379) > 0);
 });
 
@@ -187,8 +206,17 @@ test("wizard bidask sol sampai antrean, tolak harga buruk dan duplikat", async (
 
   res = await turn(state, { type: "callback", data: "eb:rg:1" }, box);
   state = res.state;
+  assert.equal(state.session.step, "size");
+  assert.match(res.replies[0].text, /Pilih ukuran entry/);
+  assert.deepEqual(
+    res.replies[0].keyboard.inline_keyboard.flat().map((button) => button.text),
+    ["Default (strat.conf: 0.1 SOL)", "0.5 SOL", "1 SOL", "2 SOL", "❌ Batal"]
+  );
+
+  res = await turn(state, { type: "callback", data: "eb:sz:d" }, box);
+  state = res.state;
   assert.match(res.replies[0].text, /📋 Konfirmasi entry/);
-  assert.match(res.replies[0].text, /0\.1 SOL \(preset\)/);
+  assert.match(res.replies[0].text, /0\.1 SOL \(default\)/);
   assert.match(res.replies[0].text, /tunggu harga naik sampai target/);
   assert.match(res.replies[0].text, /Rentang {2}: -30% \/ \+15%/);
   assert.match(res.replies[0].text, /bin step 100/);
@@ -216,6 +244,8 @@ test("wizard bidask sol sampai antrean, tolak harga buruk dan duplikat", async (
   state = res.state;
   res = await turn(state, { type: "callback", data: "eb:rg:0" }, box);
   state = res.state;
+  res = await turn(state, { type: "callback", data: "eb:sz:d" }, box);
+  state = res.state;
   res = await turn(state, { type: "callback", data: "eb:ok" }, box);
   state = res.state;
   assert.match(res.replies[0].text, /sudah ada di antrean/);
@@ -242,6 +272,9 @@ test("entry sekarang menulis now dan ringkasannya harga pasar", async () => {
   assert.match(res.replies[0].text, /Pakai tombolnya ya/);
 
   res = await turn(state, { type: "callback", data: "eb:rg:2" }, box);
+  state = res.state;
+  assert.equal(state.session.step, "size");
+  res = await turn(state, { type: "callback", data: "eb:sz:d" }, box);
   state = res.state;
   assert.equal(state.session.step, "confirm");
   assert.match(res.replies[0].text, /📋 Konfirmasi entry/);
@@ -273,8 +306,13 @@ test("spot dan bidask double tidak minta harga; batal dan timeout", async () => 
   state = res.state;
   res = await turn(state, { type: "text", text: MINT }, box);
   state = res.state;
+  assert.equal(state.session.step, "size");
+  assert.doesNotMatch(res.replies[0].text, /Kirim harga target/);
+  res = await turn(state, { type: "callback", data: "eb:sz:d" }, box);
+  state = res.state;
   assert.match(res.replies[0].text, /entry langsung/);
   assert.match(res.replies[0].text, /dihitung saat entry/);
+  assert.match(res.replies[0].text, /0\.1 SOL \(default\)/);
   assert.doesNotMatch(res.replies[0].text, /Kirim harga target/);
 
   res = await turn(state, { type: "text", text: "/batal" }, box);
@@ -296,14 +334,59 @@ test("spot dan bidask double tidak minta harga; batal dan timeout", async () => 
   assert.equal(res.state.session.step, "idle");
 });
 
-test("bidask double ringkasannya nunggu supertrend", async () => {
+test("bidask double: supertrend langsung, harga target, lalu ukuran", async () => {
   const box = harness();
   let state = emptyEntrybotState();
   let res = await turn(state, { type: "callback", data: "eb:st:dbl" }, box);
   state = res.state;
   res = await turn(state, { type: "text", text: MINT }, box);
+  state = res.state;
+  assert.equal(state.session.step, "doubleChoice");
+  assert.deepEqual(
+    res.replies[0].keyboard.inline_keyboard.flat().map((button) => button.text),
+    ["📈 Langsung pantau Supertrend", "🎯 Harga target", "❌ Batal"]
+  );
+
+  res = await turn(state, { type: "callback", data: "eb:dir" }, box);
+  state = res.state;
+  assert.equal(state.session.step, "size");
+  res = await turn(state, { type: "callback", data: "eb:sz:1" }, box);
+  state = res.state;
   assert.match(res.replies[0].text, /tunggu sinyal Supertrend/);
   assert.match(res.replies[0].text, /Bidask Double/);
+  assert.match(res.replies[0].text, /Size {5}: 1 SOL/);
+  assert.doesNotMatch(res.replies[0].text, /lalu tunggu sinyal Supertrend/);
+  res = await turn(state, { type: "callback", data: "eb:ok" }, box);
+  state = res.state;
+  assert.equal(box.lines[0], `${MINT},1,,bidask:double,ca`);
+  assert.equal(state.items[0].sizeSol, 1);
+  assert.match(res.replies[0].text, /Size {5}: 1 SOL/);
+
+  res = await turn(state, { type: "text", text: "/entry" }, box);
+  state = res.state;
+  res = await turn(state, { type: "callback", data: "eb:st:dbl" }, box);
+  state = res.state;
+  const other = "So11111111111111111111111111111111111111112";
+  res = await turn(state, { type: "text", text: other }, box);
+  state = res.state;
+  res = await turn(state, { type: "callback", data: "eb:px" }, box);
+  state = res.state;
+  assert.equal(state.session.step, "price");
+  res = await turn(state, { type: "text", text: "now" }, box);
+  state = res.state;
+  assert.match(res.replies[0].text, /tidak pakai now/);
+  res = await turn(state, { type: "text", text: "0.00001sol" }, box);
+  state = res.state;
+  assert.equal(state.session.step, "size");
+  res = await turn(state, { type: "callback", data: "eb:sz:d" }, box);
+  state = res.state;
+  assert.match(res.replies[0].text, /tunggu harga turun sampai target, lalu tunggu sinyal Supertrend/);
+  assert.match(res.replies[0].text, /0\.1 SOL \(default\)/);
+  res = await turn(state, { type: "callback", data: "eb:ok" }, box);
+  state = res.state;
+  assert.equal(box.lines[1], `${other},,,bidask:double,ca,0.00001sol`);
+  assert.equal(parsePoolList(box.lines[1])[0].entryPriceUnit, "sol");
+  assert.equal(parsePoolList(box.lines[1])[0].entryPrice, 0.00001);
 });
 
 test("/antrean menandai entrybot dan hapus mengomentari baris", async () => {
@@ -387,6 +470,57 @@ test("pantau posisi terbuka, skip yang ditahan, dan baris hilang", () => {
   assert.match(gone.notes[0].text, /tidak aktif/);
   const kept = commitReview([item], gone, []);
   assert.equal(kept[0].status, "watching");
+});
+
+test("tombol ukuran mengikuti ENTRYBOT_SIZE_OPTIONS", async () => {
+  const saved = config.entry.entrybotSizeOptions;
+  config.entry.entrybotSizeOptions = [0.25, 3];
+  try {
+    const box = harness();
+    let state = emptyEntrybotState();
+    let res = await turn(state, { type: "text", text: "/entry" }, box);
+    state = res.state;
+    res = await turn(state, { type: "callback", data: "eb:st:spt" }, box);
+    state = res.state;
+    res = await turn(state, { type: "text", text: MINT }, box);
+    state = res.state;
+    assert.deepEqual(
+      res.replies[0].keyboard.inline_keyboard.flat().map((button) => button.text),
+      ["Default (strat.conf: 0.1 SOL)", "0.25 SOL", "3 SOL", "❌ Batal"]
+    );
+    res = await turn(state, { type: "callback", data: "eb:sz:0.25" }, box);
+    state = res.state;
+    assert.match(res.replies[0].text, /Size {5}: 0\.25 SOL/);
+    assert.doesNotMatch(res.replies[0].text, /\(default\)/);
+    res = await turn(state, { type: "callback", data: "eb:ok" }, box);
+    assert.equal(box.lines[0], `${MINT},0.25,,spot,ca`);
+    assert.equal(res.state.items[0].sizeSol, 0.25);
+    assert.equal(res.state.items[0].sizeIsDefault, false);
+  } finally {
+    config.entry.entrybotSizeOptions = saved;
+  }
+});
+
+test("entrybot memberitahu saat target bidask double tersentuh", () => {
+  const queuedAt = Date.parse("2026-01-01T00:00:00.000Z");
+  const item = {
+    id: "qarm",
+    mint: MINT,
+    symbol: "BONK",
+    strategy: "bidask:double",
+    status: "watching",
+    queuedAt,
+    skips: {},
+    sizeSol: 0.5,
+  };
+  const poolText = `${MINT},0.5,,bidask:double,ca,0.0000379sol\n`;
+  const arm = `[2026-01-01T00:00:03.000Z] [INFO] CA ${MINT} bidask:double target tersentuh, menunggu Supertrend (${MINT})`;
+  const once = reviewQueue([item], { poolText, positions: {}, logLines: [arm] }, queuedAt + 5000);
+  assert.match(once.notes[0].text, /🎯 BONK target tersentuh, menunggu Supertrend/);
+  assert.equal(once.items[0].status, "watching");
+  assert.equal(once.items[0].armedAt, queuedAt + 5000);
+  const again = reviewQueue(once.items, { poolText, positions: {}, logLines: [arm] }, queuedAt + 8000);
+  assert.equal(again.notes.length, 0);
 });
 
 test("pantauan baris now: peringatan skip dan entry berhasil", () => {

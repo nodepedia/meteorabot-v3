@@ -1,6 +1,7 @@
 import { loadEnv, bool, num } from "./env.js";
 import { modeRules, LEGACY_MODE } from "./rules.js";
 import { parseBidaskSolPresets } from "./bidask-sol-range.js";
+import { parseEntrybotSizeOptions } from "./entrybot-size.js";
 
 const FEE_MODES = ["none", "priority", "jito", "both"];
 function normalizeFeeMode(raw) {
@@ -182,6 +183,8 @@ export function buildConfig(e = {}) {
     // Tombol preset entry bot. Tiap item { lowerPct, upperPct }.
     // Kosong atau tidak ada yang valid = -50/15, -30/15, -20/15.
     bidaskSolEntryPresets: parseBidaskSolPresets(e.BIDASK_SOL_ENTRY_PRESETS),
+    // Tombol ukuran tetap di entry bot, selain Default (kolom size kosong).
+    entrybotSizeOptions: parseEntrybotSizeOptions(e.ENTRYBOT_SIZE_OPTIONS),
     // Refresh kandidat (pool list + posisi terbuka via RPC), bukan cadence sinyal.
     scanIntervalSec: num(e.ENTRY_SCAN_INTERVAL_SEC, 15),
     timeframe: e.ENTRY_TIMEFRAME || "15m",

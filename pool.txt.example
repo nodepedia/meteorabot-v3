@@ -11,10 +11,21 @@
 #   POOL_ADDRESS,1x,,spot
 # spot, CA token (pool dipilih bot):
 #   TOKEN_CA,1x,,spot,ca
-# bidask:double, alamat pool:
+# bidask:double, alamat pool (kolom ke-5 kosong):
 #   POOL_ADDRESS,0.5,,bidask:double
+#   POOL_ADDRESS,0.5,,bidask:double,,0.0012
 # bidask:double, CA token:
 #   TOKEN_CA,1.25x,,bidask:double,ca
+#   TOKEN_CA,1x,,bidask:double,ca,0.0000379sol
+#   Kolom ke-6 opsional. Kosong = hanya Supertrend (perilaku lama).
+#   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token.
+#   now atau harga tidak valid = baris dilewati. Kolom ke-7 tidak dipakai.
+#   Arah dari harga pertama: di bawah menunggu naik, di atas menunggu turun,
+#   tepat di target langsung armed. Harga belum terbaca = belum armed.
+#   Begitu armed, tetap armed walau harga menjauh (tahan restart).
+#   Sebelum armed Supertrend tidak masuk. Setelah armed, Supertrend seperti biasa.
+#   Ubah target atau hapus/# baris menghapus arah dan armed.
+#   Entry berhasil tidak memberi #. Arah dan armed direset; sentuh lagi untuk masuk berikutnya.
 # bidask:sol (hanya CA + harga entry per token, tanpa Supertrend):
 #   TOKEN_CA,1x,,bidask:sol,ca,0.00123
 #   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd

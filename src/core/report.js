@@ -125,6 +125,9 @@ function watchLine(w) {
   if (w.pendingBidaskSol) {
     return `${name} | bidask:sol ${bidaskSolTouchPhrase(w)}`;
   }
+  if (w.pendingBidaskDouble) {
+    return `${name} | bidask:double ${bidaskSolTouchPhrase(w)}, lalu Supertrend`;
+  }
   if (w.line == null || w.price == null) {
     return `${name} | ${trendLabel(w.trend)} | harga belum tersedia untuk dibandingkan`;
   }

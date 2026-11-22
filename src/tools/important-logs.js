@@ -356,6 +356,9 @@ export function buildImportantLogsReport({
       if (w.pendingBidaskSol) {
         return `${name} (bidask:sol ${w.sizeSol} SOL, ${bidaskSolTouchPhrase(w)})`;
       }
+      if (w.pendingBidaskDouble) {
+        return `${name} (bidask:double ${w.sizeSol} SOL, ${bidaskSolTouchPhrase(w)}, lalu Supertrend)`;
+      }
       const trend = w.trend === "bullish" ? "NAIK" : w.trend === "bearish" ? "TURUN" : "?";
       return `${name} (${w.sizeSol} SOL, tren ${trend}, harga ${fmtNum(w.price)} vs garis ${fmtNum(w.line)})`;
     });
