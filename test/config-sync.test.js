@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "fs";
-import path from "path";
 import { buildConfig } from "../src/config/index.js";
+import { STRAT_EXAMPLE_FILE } from "../src/core/paths.js";
 import { calcSpotTokenBinMetrics, evaluateSpotTokenBidaskTrigger } from "../src/exit/spot-token-bidask.js";
 
 function parseStratConf() {
-  const raw = fs.readFileSync(path.resolve("strat.conf"), "utf8");
+  const raw = fs.readFileSync(STRAT_EXAMPLE_FILE, "utf8");
   const out = {};
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
@@ -27,9 +27,9 @@ function stripFunctions(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
-test("config-sync: fallback default di src/config/index.js 100% identik dengan strat.conf", () => {
+test("config-sync: fallback default di src/config/index.js 100% identik dengan strat.conf.example", () => {
   const stratEnv = parseStratConf();
-  assert.ok(Object.keys(stratEnv).length > 50, "strat.conf harus memiliki seluruh parameter strategi");
+  assert.ok(Object.keys(stratEnv).length > 50, "strat.conf.example harus memiliki seluruh parameter strategi");
 
   const fromStrat = stripFunctions(buildConfig(stratEnv));
   const fromDefaults = stripFunctions(buildConfig({}));
@@ -37,8 +37,25 @@ test("config-sync: fallback default di src/config/index.js 100% identik dengan s
   assert.deepEqual(
     fromDefaults,
     fromStrat,
-    "Ada parameter di strat.conf yang fallback default-nya di src/config/index.js atau src/config/rules.js belum disamakan!"
+    "Ada parameter di strat.conf.example yang fallback default-nya di src/config/index.js atau src/config/rules.js belum disamakan!"
   );
+});
+
+test("config-sync: strat.conf yang kekurangan kunci baru tetap sama dengan default", () => {
+  const full = parseStratConf();
+  const partial = { ...full };
+  for (const key of [
+    "BIDASK_SOL_ENTRY_PRESETS",
+    "ENTRYBOT_SIZE_OPTIONS",
+    "ENTRY_SIZE_SPLIT",
+    "BIDASK_DOUBLE_MIN_BIN_STEP",
+    "BIDASK_DOUBLE_TRAILING_TRIGGER_PCT",
+    "BIDASK_DOUBLE_REBALANCE_ENABLED",
+  ]) {
+    assert.ok(key in full, `${key} harus ada di strat.conf.example`);
+    delete partial[key];
+  }
+  assert.deepEqual(stripFunctions(buildConfig(partial)), stripFunctions(buildConfig({})));
 });
 
 test("config-sync: parameter kembar OOR Kanan & Re-entry Cooldown wajib sinkron (normal & high volume >$100k)", () => {

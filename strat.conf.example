@@ -1,9 +1,12 @@
 # =========================================================
-#  METEORA BOT — default strategi (DI-COMMIT ke git)
-#  Ubah nilai tuning DI SINI lalu `git commit`, bukan di .env.
-#  Rahasia & setelan instance (wallet, RPC, API key, telegram,
-#  DRY_RUN) ada di .env — file itu tidak di-commit.
-#  Nilai di file ini MENANG atas .env bila key-nya sama.
+#  METEORA BOT — contoh strategi (DI-COMMIT)
+#  Salin sekali: cp strat.conf.example strat.conf
+#  Tuning yang dipakai bot ada di strat.conf. File itu tidak
+#  di-commit dan tidak ditimpa `git pull`. Kunci baru muncul
+#  di file contoh ini. strat.conf yang belum punya kunci itu
+#  tetap jalan: bot memakai default di kode (sama dengan contoh).
+#  Rahasia (wallet, RPC, API key, telegram, DRY_RUN) ada di .env.
+#  Nilai di strat.conf MENANG atas .env bila key-nya sama.
 # =========================================================
 
 # true = PnL ditampilkan/dihitung dalam basis SOL

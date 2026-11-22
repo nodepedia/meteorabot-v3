@@ -9,7 +9,7 @@
 5. Jangan commit tanpa izin. Setelah hasil disetujui, baru tawarkan commit dengan pesan sederhana.
 6. Jelaskan dengan bahasa sederhana (non-teknis). Waktu selalu pakai WIB — konversi kalau sumbernya UTC.
 7. Selalu baca `PROJECT_STRUCTURE.md` dulu untuk menentukan file yang relevan; jangan baca semua folder.
-8. Setiap kali mengubah angka aturan/parameter strategi (timer, persentase, cooldown, threshold), WAJIB jalankan pencarian lintas repo (`rg`) di `strat.conf`, `src/config/`, `src/`, dan `test/` untuk memastikan semua parameter kembar serta fallback default di `src/config/index.js` 100% sinkron, lalu pastikan `test/config-sync.test.js` lulus.
+8. Setiap kali mengubah angka aturan/parameter strategi (timer, persentase, cooldown, threshold), WAJIB jalankan pencarian lintas repo (`rg`) di `strat.conf.example`, `strat.conf` (bila ada), `src/config/`, `src/`, dan `test/` untuk memastikan semua parameter kembar serta fallback default di `src/config/index.js` 100% sinkron dengan `strat.conf.example`, lalu pastikan `test/config-sync.test.js` lulus. Jangan commit `strat.conf`.
 
 ## Snapshot
 
@@ -41,8 +41,8 @@ Gaya: Prettier `printWidth: 120`, kutip ganda. Sebelum selesai jalankan `npm run
 
 - **`npm install` menjalankan `postinstall`** (`scripts/patch-anchor.js`) yang mem-patch `@coral-xyz/anchor` + `@meteora-ag/dlmm` untuk ESM Node 24. Ganti/update dependency → jalankan `npm install` ulang, jika tidak bot gagal import.
 - **Bot menulis ke `pool.txt`**: mengomentari (`#`) pool yang sudah selesai. Jangan biarkan `pool.txt` terbuka di editor saat bot jalan (save akan menimpa mark bot).
-- File state runtime **git-ignored** dan tidak boleh di-commit: `state.json`, `pool.txt`, `decision-log.json`, `pnl-history.json`, `supertrend-cache.json`, `logs/`, `.env`, `state/` (antrean klik Telegram: `telegram-commands.json`, offset, katalog tombol).
-- **Default strategi ada di `strat.conf`** (di-commit). Tuning dilakukan di sini lalu `git commit`, bukan di `.env`. Bila key sama, `strat.conf` **menang** atas `.env` (`loadEnv` di `src/config/env.js`).
+- File state runtime **git-ignored** dan tidak boleh di-commit: `state.json`, `pool.txt`, `decision-log.json`, `pnl-history.json`, `supertrend-cache.json`, `logs/`, `.env`, `strat.conf`, `strat.conf.bak`, `state/` (antrean klik Telegram: `telegram-commands.json`, offset, katalog tombol).
+- **Tuning strategi ada di `strat.conf`** (gitignored, tidak ditimpa `git pull`). Template yang di-commit: `strat.conf.example`. Pertama kali: `cp strat.conf.example strat.conf`. Bila key sama, `strat.conf` **menang** atas `.env` (`loadEnv` di `src/config/env.js`). Kunci yang belum ada di `strat.conf` memakai default di kode, sama dengan nilai contoh. Jangan commit angka tuning.
 - Tes memakai override env (`STATE_FILE`, `DECISION_LOG_FILE`, `PNL_HISTORY_FILE`) supaya tidak menyentuh file produksi — ikuti pola ini untuk tes baru.
 - `test/smoke.test.js` mengimpor semua modul; kalau pindah/ganti nama file, update daftar `MODULES` di file itu.
 - `scripts/pnl-report.js` **read-only** — tidak menyentuh `state.json`, tidak mengirim transaksi.
