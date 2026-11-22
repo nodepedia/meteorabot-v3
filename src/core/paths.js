@@ -15,8 +15,11 @@ function resolveFile(envName, fallbackName) {
 }
 
 export const ENV_FILE = path.join(ROOT, ".env");
-// Default strategi yang di-commit ke git (menang atas .env).
+// strat.conf = tuning lokal (gitignored, tidak ditimpa git pull).
+// STRAT_FILE di env menunjuk file lain; kalau di-set, tidak ada fallback.
 export const STRAT_FILE = resolveFile("STRAT_FILE", "strat.conf");
+// Template yang di-commit. Dipakai bila strat.conf belum ada.
+export const STRAT_EXAMPLE_FILE = path.resolve(ROOT, "strat.conf.example");
 export const LOG_DIR = path.join(ROOT, "logs");
 export const IMPORTANT_LOG_FILE = resolveFile("IMPORTANT_LOG_FILE", path.join("logs", "important.log"));
 export const IMPORTANT_EVENTS_FILE = resolveFile("IMPORTANT_EVENTS_FILE", path.join("logs", "important-events.jsonl"));

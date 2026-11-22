@@ -18,7 +18,8 @@
 
 ## File Penting
 
-- `strat.conf` → default strategi (entry/exit/DCA/swap, dll). Di-commit ke git; tuning di sini.
+- `strat.conf` → tuning strategi yang dipakai bot (entry/exit/DCA/swap). Gitignored; `git pull` tidak menimpa.
+- `strat.conf.example` → template strategi yang di-commit. Salin sekali: `cp strat.conf.example strat.conf`. Kunci baru muncul di sini.
 - `.env` → rahasia & setelan instance saja (wallet, RPC, API Key, telegram, DRY_RUN). Jangan di-commit.
 - `.env.example` → contoh pengisian `.env`
 - `pool.txt` → daftar pool yang dipantau bot (gitignored; header format ditulis bot)

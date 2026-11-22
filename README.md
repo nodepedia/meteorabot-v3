@@ -21,7 +21,18 @@ git clone https://github.com/nodepedia/meteorabot-v3.git ~/meteorabot-v3
 cd ~/meteorabot-v3
 npm install          # postinstall menjalankan scripts/patch-anchor.js
 cp .env.example .env && chmod 600 .env
+cp strat.conf.example strat.conf
 ```
+
+## Konfigurasi
+
+`strat.conf` adalah tuning yang dipakai bot. File itu tidak di-commit, dan `git pull` tidak menimpanya.
+
+```bash
+cp strat.conf.example strat.conf
+```
+
+Lakukan sekali saat pertama pasang. Kunci baru muncul di `strat.conf.example`. Kalau `strat.conf` belum punya kunci itu, bot memakai default di kode (sama dengan nilai di contoh) dan menulis nama kuncinya sekali saat mulai. Tidak ada `strat.conf` sama sekali: bot memakai `strat.conf.example` dan memperingatkan. Rahasia tetap di `.env`. Kalau key yang sama ada di keduanya, nilai `strat.conf` yang menang.
 
 ## `.env` (rahasia, jangan di-commit)
 | Variabel | Isi |
@@ -38,8 +49,8 @@ cp .env.example .env && chmod 600 .env
 | `DRY_RUN` | `true` untuk tes, `false` untuk live |
 
 
-## `strat.conf` (strategi, di-commit)
-Semua tuning strategi ada di sini: entry, DCA, exit, swap, log, dan lainnya. Kalau key yang sama ada di `.env`, nilai `strat.conf` yang menang. Yang paling sering diubah:
+## `strat.conf` (strategi)
+Semua tuning strategi ada di file lokal ini (lihat [Konfigurasi](#konfigurasi)): entry, DCA, exit, swap, log, dan lainnya. Kalau key yang sama ada di `.env`, nilai `strat.conf` yang menang. Yang paling sering diubah:
 - `ENTRY_DEFAULT_SIZE_SOL=0.1`: size dasar per entry (SOL)
 - `ENTRY_EXPIRY_HOURS`: pool yang tidak entry dalam X jam akan di-`#`
 - `ENTRY_MAX_FAILURES=3`: pool di-`#` setelah gagal entry sebanyak ini
@@ -155,3 +166,4 @@ ls logs/                          # entry-out.log, exit-error.log, telegram-out.
 ```bash
 cd ~/meteorabot-v3 && git pull && npm install && pm2 restart ecosystem.config.cjs
 ```
+`git pull` tidak mengubah `strat.conf`.

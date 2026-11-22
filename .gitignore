@@ -1,5 +1,7 @@
 node_modules/
 .env
+strat.conf
+strat.conf.bak
 .gh-token
 pool.txt
 *.log
