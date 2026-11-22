@@ -16,6 +16,12 @@
 - `scripts/` → script bantu (laporan PnL, dll)
 - `test/` → file pengujian
 
+## Dokumen
+
+- `README.md` → ringkasan bahasa Inggris untuk pembaca non-teknis (apa yang bot lakukan, tiga gaya, risiko)
+- `setup.md` → pasang bot inti: Node 24, `.env`, `strat.conf`, `pool.txt`, empat proses PM2
+- `worker-setup.md` → bot Telegram opsional yang hanya menulis `pool.txt`, plus cara tombol di pesan status
+
 ## File Penting
 
 - `strat.conf` → tuning strategi yang dipakai bot (entry/exit/DCA/swap). Gitignored; `git pull` tidak menimpa.
