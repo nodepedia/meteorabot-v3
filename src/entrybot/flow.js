@@ -5,15 +5,20 @@ import {
   cancelKeyboard,
   confirmKeyboard,
   deleteKeyboard,
+  doubleChoiceKeyboard,
   emptySession,
+  formatDoubleChoice,
   formatEntryLine,
   formatQueueMessage,
   formatQuoteAsk,
   formatRangeAsk,
+  formatSizeAsk,
+  formatSizeLabel,
   formatSolChoice,
   formatSummary,
   isSolanaMint,
   listActiveLines,
+  matchSizeOption,
   parseCallbackData,
   parseCommand,
   parseTargetPrice,
@@ -22,11 +27,13 @@ import {
   rangeKeyboard,
   sameChat,
   sessionExpired,
+  sizeKeyboard,
   solChoiceKeyboard,
   strategyKeyboard,
   strategyLabel,
   symbolFromPools,
 } from "./logic.js";
+import { formatEntrybotSizeToken } from "../config/entrybot-size.js";
 
 function touch(session, now, patch) {
   return { ...session, ...patch, updatedAt: now };
@@ -34,6 +41,20 @@ function touch(session, now, patch) {
 
 function reply(text, keyboard = null, toast = null) {
   return { replies: [{ text, keyboard }], toast };
+}
+
+function toSize(session, now, patch) {
+  return touch(session, now, {
+    step: "size",
+    sizeSol: null,
+    sizeToken: null,
+    sizeIsDefault: false,
+    ...patch,
+  });
+}
+
+function sizeReply(session, deps) {
+  return reply(formatSizeAsk(session), sizeKeyboard(deps.defaultSizeSol), "Ukuran");
 }
 
 function toRange(session, now, patch) {
@@ -132,21 +153,70 @@ export async function handleEntrybotTurn(state, turn, deps) {
         now
       );
     }
-    if (parsed.type === "now" || parsed.type === "target") {
-      if (session.step !== "solChoice" || session.strategy !== "bidask:sol") {
+    if (parsed.type === "now" || parsed.type === "target" || parsed.type === "direct") {
+      const solChoice = session.step === "solChoice" && session.strategy === "bidask:sol";
+      const doubleChoice = session.step === "doubleChoice" && session.strategy === "bidask:double";
+      if (parsed.type === "now") {
+        if (!solChoice) {
+          return finish(
+            state,
+            session,
+            items,
+            reply("Pakai tombol yang ada di pesan terakhir ya.", null, "Batal"),
+            now
+          );
+        }
+        const next = toRange(session, now, {
+          entryNow: true,
+          targetRaw: "now",
+          target: null,
+          targetUnit: null,
+        });
+        return finish(state, next, items, reply(formatRangeAsk(next), rangeKeyboard(), "Entry sekarang"), now);
+      }
+      if (parsed.type === "direct") {
+        if (!doubleChoice) {
+          return finish(
+            state,
+            session,
+            items,
+            reply("Pakai tombol yang ada di pesan terakhir ya.", null, "Batal"),
+            now
+          );
+        }
+        const next = toSize(session, now, { entryNow: false, targetRaw: null, target: null, targetUnit: null });
+        return finish(state, next, items, sizeReply(next, deps), now);
+      }
+      if (!solChoice && !doubleChoice) {
         return finish(state, session, items, reply("Pakai tombol yang ada di pesan terakhir ya.", null, "Batal"), now);
       }
-      if (parsed.type === "target") {
-        const next = touch(session, now, { step: "price", entryNow: false });
-        return finish(state, next, items, reply(formatQuoteAsk(next), cancelKeyboard(), "Harga target"), now);
+      const next = touch(session, now, { step: "price", entryNow: false });
+      return finish(state, next, items, reply(formatQuoteAsk(next), cancelKeyboard(), "Harga target"), now);
+    }
+    if (parsed.type === "size") {
+      if (session.step !== "size") {
+        return finish(state, session, items, reply("Pakai tombol yang ada di pesan terakhir ya.", null, "Batal"), now);
       }
-      const next = toRange(session, now, {
-        entryNow: true,
-        targetRaw: "now",
-        target: null,
-        targetUnit: null,
+      const picked = parsed.size == null ? null : matchSizeOption(parsed.size);
+      if (parsed.size != null && picked == null) {
+        return finish(
+          state,
+          session,
+          items,
+          reply("Ukuran itu nggak ada. Pilih tombol yang tampil.", sizeKeyboard(deps.defaultSizeSol), "Batal"),
+          now
+        );
+      }
+      const sizeIsDefault = parsed.size == null;
+      const sizeSol = sizeIsDefault ? Number(deps.defaultSizeSol) : Number(picked);
+      const next = touch(session, now, {
+        step: "confirm",
+        sizeSol,
+        sizeToken: sizeIsDefault ? null : formatEntrybotSizeToken(picked),
+        sizeIsDefault,
       });
-      return finish(state, next, items, reply(formatRangeAsk(next), rangeKeyboard(), "Entry sekarang"), now);
+      const toast = sizeIsDefault ? "Default" : `${formatEntrybotSizeToken(picked)} SOL`;
+      return finish(state, next, items, reply(formatSummary(next, sizeSol), confirmKeyboard(), toast), now);
     }
     if (parsed.type === "range") {
       if (session.step !== "range" || session.strategy !== "bidask:sol") {
@@ -156,8 +226,7 @@ export async function handleEntrybotTurn(state, turn, deps) {
       if (!preset) {
         return finish(state, session, items, reply("Presetnya nggak dikenal.", rangeKeyboard(), "Batal"), now);
       }
-      const next = touch(session, now, {
-        step: "confirm",
+      const next = toSize(session, now, {
         lowerPct: preset.lowerPct,
         upperPct: preset.upperPct,
         rangeToken: formatBidaskSolRangeToken(preset.lowerPct, preset.upperPct),
@@ -168,7 +237,7 @@ export async function handleEntrybotTurn(state, turn, deps) {
         state,
         next,
         items,
-        reply(formatSummary(next, deps.defaultSizeSol), confirmKeyboard(), label ? `Rentang ${label}` : "Rentang"),
+        { ...sizeReply(next, deps), toast: label ? `Rentang ${label}` : "Rentang" },
         now
       );
     }
@@ -181,6 +250,7 @@ export async function handleEntrybotTurn(state, turn, deps) {
         mint: session.mint,
         targetToken: session.targetRaw,
         rangeToken: session.rangeToken,
+        sizeToken: session.sizeToken,
       });
       const written = await deps.appendLine(line);
       if (!written?.ok && written?.duplicate) {
@@ -207,7 +277,9 @@ export async function handleEntrybotTurn(state, turn, deps) {
         symbol: session.symbol,
         strategy: session.strategy,
         line,
-        sizeSol: deps.defaultSizeSol,
+        sizeSol: Number.isFinite(Number(session.sizeSol)) ? Number(session.sizeSol) : deps.defaultSizeSol,
+        sizeToken: session.sizeToken || null,
+        sizeIsDefault: session.sizeIsDefault === true,
         targetRaw: session.targetRaw || null,
         lowerPct: session.lowerPct,
         upperPct: session.upperPct,
@@ -269,20 +341,44 @@ export async function handleEntrybotTurn(state, turn, deps) {
         now
       );
     }
-    const confirmed = { ...next, step: "confirm" };
-    return finish(
-      state,
-      confirmed,
-      items,
-      reply(formatSummary(confirmed, deps.defaultSizeSol), confirmKeyboard()),
-      now
-    );
+    if (session.strategy === "bidask:double") {
+      return finish(
+        state,
+        { ...next, step: "doubleChoice", entryNow: false, targetRaw: null, target: null, targetUnit: null },
+        items,
+        reply(formatDoubleChoice(next), doubleChoiceKeyboard()),
+        now
+      );
+    }
+    const sized = toSize(next, now, {});
+    return finish(state, sized, items, sizeReply(sized, deps), now);
   }
 
   if (turn.type === "text" && session.step === "price") {
     const parsed = parseTargetPrice(turn.text);
     if (!parsed.ok) {
       return finish(state, touch(session, now, {}), items, reply(priceErrorText(parsed.reason), cancelKeyboard()), now);
+    }
+    if (session.strategy === "bidask:double") {
+      if (parsed.entryNow) {
+        return finish(
+          state,
+          touch(session, now, {}),
+          items,
+          reply(
+            "Bidask Double tidak pakai now. Kirim harga target (contoh 0.0000379sol atau 0.009usd).",
+            cancelKeyboard()
+          ),
+          now
+        );
+      }
+      const next = toSize(session, now, {
+        entryNow: false,
+        targetRaw: parsed.token,
+        target: parsed.entryPrice,
+        targetUnit: parsed.entryPriceUnit,
+      });
+      return finish(state, next, items, sizeReply(next, deps), now);
     }
     if (parsed.entryNow) {
       const next = toRange(session, now, {
@@ -307,6 +403,8 @@ export async function handleEntrybotTurn(state, turn, deps) {
     (session.step === "strategy" ||
       session.step === "confirm" ||
       session.step === "solChoice" ||
+      session.step === "doubleChoice" ||
+      session.step === "size" ||
       session.step === "range")
   ) {
     const hint =
@@ -334,7 +432,7 @@ async function removeQueued(address, items, deps) {
 }
 
 function queuedText(session, line) {
-  const lines = ["⏳ Masuk antrean, dipantau."];
+  const lines = ["⏳ Masuk antrean, dipantau.", `Size     : ${formatSizeLabel(session, session?.sizeSol)}`];
   if (session?.strategy === "bidask:sol") {
     const label = formatBidaskSolRangeLabel(session.lowerPct, session.upperPct);
     if (label) lines.push(`Rentang  : ${label}`);

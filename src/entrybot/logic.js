@@ -1,6 +1,7 @@
 // Parser, teks, dan keputusan antrean entry bot. Tanpa jaringan dan tanpa file.
 import config from "../config/index.js";
 import { formatBidaskSolRangeLabel } from "../config/bidask-sol-range.js";
+import { formatEntrybotSizeToken } from "../config/entrybot-size.js";
 import { LEGACY_MODE } from "../config/rules.js";
 import { WSOL_MINT } from "../core/constants.js";
 import { fmtQuote } from "../core/report.js";
@@ -28,6 +29,8 @@ export const CB = {
   ok: "eb:ok",
   now: "eb:now",
   target: "eb:px",
+  direct: "eb:dir",
+  sizeDefault: "eb:sz:d",
 };
 
 const B58 = "1-9A-HJ-NP-Za-km-z";
@@ -49,6 +52,9 @@ export function emptySession(now = 0) {
     lowerPct: null,
     upperPct: null,
     rangeToken: null,
+    sizeSol: null,
+    sizeToken: null,
+    sizeIsDefault: false,
     updatedAt: now,
   };
 }
@@ -85,13 +91,15 @@ export function shortAddr(value) {
   return `${text.slice(0, 4)}…${text.slice(-4)}`;
 }
 
-export function formatEntryLine({ strategy, mint, targetToken, rangeToken } = {}) {
+export function formatEntryLine({ strategy, mint, targetToken, rangeToken, sizeToken } = {}) {
+  const size = sizeToken ? String(sizeToken) : "";
   if (strategy === "bidask:sol") {
     const range = rangeToken ? `,${rangeToken}` : "";
-    return `${mint},,,bidask:sol,ca,${targetToken}${range}`;
+    return `${mint},${size},,bidask:sol,ca,${targetToken}${range}`;
   }
-  if (strategy === "spot") return `${mint},,,spot,ca`;
-  return `${mint},,,bidask:double,ca`;
+  if (strategy === "spot") return `${mint},${size},,spot,ca`;
+  if (targetToken) return `${mint},${size},,bidask:double,ca,${targetToken}`;
+  return `${mint},${size},,bidask:double,ca`;
 }
 
 export function parseCommand(text) {
@@ -109,6 +117,10 @@ export function parseCallbackData(data) {
   if (text === CB.ok) return { type: "confirm" };
   if (text === CB.now) return { type: "now" };
   if (text === CB.target) return { type: "target" };
+  if (text === CB.direct) return { type: "direct" };
+  if (text === CB.sizeDefault) return { type: "size", size: null };
+  const sizePick = /^eb:sz:(\d+(?:\.\d+)?)$/.exec(text);
+  if (sizePick) return { type: "size", size: Number(sizePick[1]) };
   const range = /^eb:rg:(\d{1,2})$/.exec(text);
   if (range) return { type: "range", index: Number(range[1]) };
   if (text.startsWith("eb:rm:")) {
@@ -134,6 +146,33 @@ export function strategyKeyboard() {
 
 export function cancelKeyboard() {
   return { inline_keyboard: [[{ text: "❌ Batal", callback_data: CB.cancel }]] };
+}
+
+export function doubleChoiceKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: "📈 Langsung pantau Supertrend", callback_data: CB.direct },
+        { text: "🎯 Harga target", callback_data: CB.target },
+      ],
+      [{ text: "❌ Batal", callback_data: CB.cancel }],
+    ],
+  };
+}
+
+export function sizeKeyboard(defaultSize, options = config.entry.entrybotSizeOptions) {
+  const shown = formatEntrybotSizeToken(defaultSize) || "?";
+  const fixed = (options || [])
+    .map((n) => {
+      const token = formatEntrybotSizeToken(n);
+      if (!token) return null;
+      return { text: `${token} SOL`, callback_data: `eb:sz:${token}` };
+    })
+    .filter(Boolean);
+  const rows = [[{ text: `Default (strat.conf: ${shown} SOL)`, callback_data: CB.sizeDefault }]];
+  for (let i = 0; i < fixed.length; i += 3) rows.push(fixed.slice(i, i + 3));
+  rows.push([{ text: "❌ Batal", callback_data: CB.cancel }]);
+  return { inline_keyboard: rows };
 }
 
 export function solChoiceKeyboard() {
@@ -324,7 +363,15 @@ export function pctApart(current, target) {
 }
 
 export function triggerPhrase(strategy, current, target) {
-  if (strategy === "bidask:double") return "tunggu sinyal Supertrend";
+  if (strategy === "bidask:double") {
+    if (!(Number(target) > 0)) return "tunggu sinyal Supertrend";
+    if (!Number.isFinite(Number(current)))
+      return "tunggu harga naik/turun sampai target, lalu tunggu sinyal Supertrend";
+    const decision = decideBidaskSolTouch(current, target, null);
+    if (decision.direction === "up") return "tunggu harga naik sampai target, lalu tunggu sinyal Supertrend";
+    if (decision.direction === "down") return "tunggu harga turun sampai target, lalu tunggu sinyal Supertrend";
+    return "tunggu sinyal Supertrend";
+  }
   if (strategy === "spot") return "entry langsung";
   if (!Number.isFinite(Number(current)) || !(Number(target) > 0)) {
     return "harga belum kebaca, arah menyusul saat entry";
@@ -342,16 +389,38 @@ function fmtPct(value) {
   return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
-function fmtSize(sizeSol) {
-  const n = Number(sizeSol);
-  if (!Number.isFinite(n)) return "? SOL (preset)";
-  return `${n} SOL (preset)`;
+export function formatSizeLabel(session, fallback) {
+  const n = Number(session?.sizeSol ?? fallback);
+  if (!Number.isFinite(n) || !(n > 0)) return "? SOL";
+  const text = `${formatEntrybotSizeToken(n) || n} SOL`;
+  return session?.sizeIsDefault ? `${text} (default)` : text;
+}
+
+export function matchSizeOption(size, options = config.entry.entrybotSizeOptions) {
+  const token = formatEntrybotSizeToken(size);
+  if (!token) return null;
+  return (options || []).find((n) => formatEntrybotSizeToken(n) === token) ?? null;
 }
 
 export function formatPriceLine(priceSol, priceUsd) {
   const sol = Number.isFinite(Number(priceSol)) ? fmtQuote(priceSol, "sol") : "SOL ?";
   const usd = Number.isFinite(Number(priceUsd)) ? fmtQuote(priceUsd, "usd") : "USD ?";
   return `Harga sekarang: ${sol} · ${usd}`;
+}
+
+export function formatDoubleChoice(session) {
+  const symbol = session.symbol || shortAddr(session.mint);
+  return [
+    `${symbol} · ${shortAddr(session.mint)}`,
+    formatPriceLine(session.priceSol, session.priceUsd),
+    "",
+    "Langsung pantau Supertrend, atau pakai harga target?",
+  ].join("\n");
+}
+
+export function formatSizeAsk(session) {
+  const symbol = session.symbol || shortAddr(session.mint);
+  return [`${symbol} · ${shortAddr(session.mint)}`, "", "Pilih ukuran entry:"].join("\n");
 }
 
 export function formatSolChoice(session) {
@@ -370,11 +439,14 @@ export function formatSummary(session, sizeSol) {
     "📋 Konfirmasi entry",
     `Strategi : ${strategyLabel(session.strategy)}`,
     `Token    : ${symbol} (${shortAddr(session.mint)})`,
-    `Size     : ${fmtSize(sizeSol)}`,
+    `Size     : ${formatSizeLabel(session, sizeSol)}`,
   ];
   lines.push(formatPriceLine(session.priceSol, session.priceUsd));
   const entryNow = session.entryNow === true || String(session.targetRaw || "").toLowerCase() === "now";
-  if (session.strategy === "bidask:sol" && !entryNow) {
+  const showTarget =
+    (session.strategy === "bidask:sol" && !entryNow) ||
+    (session.strategy === "bidask:double" && Number(session.target) > 0);
+  if (showTarget) {
     const unit = session.targetUnit === "sol" ? "sol" : "usd";
     const pct = fmtPct(pctApart(currentForUnit(session), session.target));
     const pctText = pct ? ` (${pct} vs harga sekarang)` : "";
@@ -481,6 +553,11 @@ function mentionsItem(text, item) {
   return new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`, "i").test(String(text));
 }
 
+export function classifyEntryArmed(message) {
+  if (/target tersentuh, menunggu Supertrend/i.test(String(message || ""))) return { code: "armed" };
+  return null;
+}
+
 export function classifyEntrySkip(message) {
   const text = String(message || "");
   if (/\[DRY RUN\]\s*Would enter/i.test(text)) return { code: "dry_run", label: "dry-run, posisi tidak dibuka" };
@@ -579,8 +656,10 @@ export function formatEntered(item, position, meta = {}) {
     `Pool     : ${shortAddr(position?.pool)}`,
   ];
   lines.push(`Bin step : ${meta.binStep != null ? meta.binStep : "—"}`);
-  const size = Number(position?.entrySizeSol ?? item.sizeSol);
-  lines.push(`Size     : ${Number.isFinite(size) ? `${size} SOL` : "?"}`);
+  const chosen = Number(item?.sizeSol);
+  const opened = Number(position?.entrySizeSol);
+  const size = Number.isFinite(chosen) && chosen > 0 ? chosen : opened;
+  lines.push(`Size     : ${formatSizeLabel({ sizeSol: size, sizeIsDefault: item?.sizeIsDefault }, size)}`);
   if (item?.strategy === "bidask:sol" || position?.mode === "bidask:sol") {
     const label =
       formatBidaskSolRangeLabel(item?.lowerPct, item?.upperPct) ||
@@ -594,6 +673,17 @@ export function formatEntered(item, position, meta = {}) {
 
 function displaySymbol(item) {
   return item.symbol || shortAddr(item.mint);
+}
+
+function findArm(item, lines) {
+  for (const line of lines || []) {
+    const time = logLineTime(line);
+    if (time != null && time + 2000 < Number(item.queuedAt)) continue;
+    if (!classifyEntryArmed(line)) continue;
+    if (!mentionsItem(line, item)) continue;
+    return true;
+  }
+  return false;
 }
 
 export function reviewQueue(items, view, now, opts = {}) {
@@ -628,6 +718,15 @@ export function reviewQueue(items, view, now, opts = {}) {
         : `⚠️ ${symbol} barisnya sudah tidak aktif. Pantauan berhenti.`;
       notes.push({ id: item.id, kind: "removed", text });
       next.push({ ...item, status: "removed", doneAt: now });
+      continue;
+    }
+    if (!item.armedAt && findArm(item, lines)) {
+      notes.push({
+        id: item.id,
+        kind: "armed",
+        text: `🎯 ${displaySymbol(item)} target tersentuh, menunggu Supertrend.`,
+      });
+      next.push({ ...item, armedAt: now });
       continue;
     }
     const fresh = findSkips(item, lines).find((skip) => {

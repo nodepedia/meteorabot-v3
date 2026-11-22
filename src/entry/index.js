@@ -32,6 +32,13 @@ import {
 } from "./candidates.js";
 import { resolveCaPool, chooseBidaskDoublePool, shouldLogCaSkip, markCaPoolInvalid } from "./ca-resolve.js";
 import { pollBidaskSolPrices, pickBidaskSolEntryPool, bidaskSolQuotePrice } from "./bidask-sol-entry.js";
+import { bidaskDoubleTargetKey, pollBidaskDoubleTargets, supertrendHitsToEnter } from "./bidask-double-target.js";
+import {
+  clearBidaskDoubleTouch,
+  clearBidaskDoubleTouchForId,
+  getBidaskDoubleTouch,
+  pruneBidaskDoubleTouch,
+} from "../state/bidask-double-touch.js";
 import {
   addEntryInProgressMint,
   removeEntryInProgressMint,
@@ -94,11 +101,33 @@ function buildLocalWatchSnapshot() {
       pendingBidaskSol: true,
     });
   }
+  for (const c of doubleTargetCache) {
+    const cmp = bidaskSolQuotePrice({
+      tokenUsd: prices.get(c.mint),
+      solUsd: prices.get(WSOL_MINT),
+      entryPriceUnit: c.entryPriceUnit,
+    });
+    const touch = getBidaskDoubleTouch(c.targetKey);
+    rows.push({
+      pool: c.lineKey,
+      pairName: c.pairName || `CA ${c.mint.slice(0, 8)}`,
+      mint: c.mint,
+      sizeSol: c.sizeSol,
+      mode: "bidask:double",
+      entryPrice: c.entryPrice,
+      entryPriceUnit: cmp.unit,
+      price: cmp.price,
+      touchDirection: c.touchDirection || touch?.direction || null,
+      pendingBidaskDouble: true,
+    });
+  }
   return rows;
 }
 
 export function getWatchSnapshot() {
-  if (candidateCache.length > 0 || bidaskSolCache.length > 0) return buildLocalWatchSnapshot();
+  if (candidateCache.length > 0 || bidaskSolCache.length > 0 || doubleTargetCache.length > 0) {
+    return buildLocalWatchSnapshot();
+  }
   return getSharedWatchSnapshot();
 }
 
@@ -126,6 +155,8 @@ const heldThisRefresh = new Set();
 let candidateCache = [];
 // Baris bidask:sol (CA + harga). Pool dipilih saat harga Jupiter menyentuh target.
 let bidaskSolCache = [];
+// Baris bidask:double yang punya target dan belum armed. Supertrend belum dipakai.
+let doubleTargetCache = [];
 // Jeda singkat setelah pencarian pool gagal, supaya tidak menembak RPC tiap poll.
 const bidaskSolWaitUntil = new Map();
 let _refreshBusy = false;
@@ -198,12 +229,17 @@ export function deactivatePool(pool, reason, opts = {}) {
   failureCooldownUntil.delete(pool);
   dryRunNoted.delete(pool);
   const alias = getPoolAlias(pool);
+  doubleTargetCache = doubleTargetCache.filter((c) => c.lineKey !== pool && c.lineKey !== alias && c.mint !== pool);
   bidaskSolCache = bidaskSolCache.filter((c) => c.mint !== pool && c.mint !== alias);
   heldThisRefresh.add(pool);
   if (alias) heldThisRefresh.add(alias);
   if (commentPoolInList(pool, alias, opts.file)) {
     clearBidaskSolTouchForMint(pool);
-    if (alias && alias !== pool) clearBidaskSolTouchForMint(alias);
+    clearBidaskDoubleTouchForId(pool);
+    if (alias && alias !== pool) {
+      clearBidaskSolTouchForMint(alias);
+      clearBidaskDoubleTouchForId(alias);
+    }
     clearInMemoryGate(pool);
     if (alias) clearPoolAliasesFor(alias);
     const listed = opts.file || config.entry.poolListFile;
@@ -215,6 +251,33 @@ export function deactivatePool(pool, reason, opts = {}) {
   skipped.add(pool);
   log.warn(`Pool ${pool.slice(0, 8)} gagal ditandai di ${config.entry.poolListFile} — skip sampai restart`);
   return false;
+}
+
+// Mint untuk membandingkan harga target. Baris CA: kolom pertama.
+// Baris alamat pool: base mint dari pool itu. Pair bukan SOL ditutup seperti jalur biasa.
+async function resolveBidaskDoubleTargetMint(lineKey, ca) {
+  if (ca) return { mint: lineKey, pairName: `CA ${String(lineKey).slice(0, 8)}` };
+  let info;
+  try {
+    info = await getPoolInfo(lineKey);
+  } catch (err) {
+    log.warn(`Pool ${String(lineKey).slice(0, 8)} lookup failed: ${err.message}`);
+    return null;
+  }
+  if (info.unsupported) {
+    const quoteLabel = info.quoteMint || `${info.xMint?.slice(0, 4) || "?"}/${info.yMint?.slice(0, 4) || "?"}`;
+    log.warn(
+      `Pool ${String(lineKey).slice(0, 8)} rejected: pair bukan SOL (${info.pairName || lineKey} | quote ${quoteLabel})`
+    );
+    tg.notifyPoolUnsupported({ pool: lineKey, pair: info.pairName, quoteMint: quoteLabel });
+    deactivatePool(lineKey, "pair bukan SOL");
+    return null;
+  }
+  if (!info.baseMint) {
+    log.warn(`Pool ${String(lineKey).slice(0, 8)} has no base mint — skip`);
+    return null;
+  }
+  return { mint: info.baseMint, pairName: info.pairName };
 }
 
 // Refresh lambat: pool list, expiry, kuota serentak (dari state), dan pool info.
@@ -244,7 +307,9 @@ export async function refreshCandidates() {
     if (pools.length === 0) {
       candidateCache = [];
       bidaskSolCache = [];
+      doubleTargetCache = [];
       pruneBidaskSolTouch([]);
+      pruneBidaskDoubleTouch([]);
       setWatchSnapshot([]);
       return null;
     }
@@ -257,6 +322,7 @@ export async function refreshCandidates() {
     const now = Date.now();
     const candidates = [];
     const solWatches = [];
+    const doubleTargets = [];
     const stillOpen = new Set();
 
     for (const {
@@ -322,6 +388,31 @@ export async function refreshCandidates() {
         }
         solWatches.push(watch);
         continue;
+      }
+
+      // Target opsional: sebelum armed hanya pantau harga. Supertrend, pilihan
+      // pool, sewa, dan kuota jalan setelah sentuh, lewat jalur di bawah.
+      if (mode === "bidask:double" && Number(entryPrice) > 0) {
+        const unit = entryPriceUnit === "sol" ? "sol" : "usd";
+        const targetKey = bidaskDoubleTargetKey(lineKey, entryPrice, unit);
+        if (!getBidaskDoubleTouch(targetKey)?.armed) {
+          const resolved = await resolveBidaskDoubleTargetMint(lineKey, ca);
+          if (resolved?.mint && !doubleTargets.some((w) => w.lineKey === lineKey)) {
+            doubleTargets.push({
+              lineKey,
+              mint: resolved.mint,
+              pairName: resolved.pairName,
+              ca,
+              sizeSol,
+              entryPrice: Number(entryPrice),
+              entryPriceUnit: unit,
+              targetKey,
+              mode,
+              strategy,
+            });
+          }
+          continue;
+        }
       }
 
       const minBinStep = mode === "bidask:double" ? Math.max(0, Number(config.entry.bidaskDoubleMinBinStep) || 0) : 0;
@@ -521,14 +612,21 @@ export async function refreshCandidates() {
         continue;
       }
 
-      candidates.push({
+      const candidate = {
         pool: poolAddress,
         mint: info.baseMint,
         sizeSol,
         pairName: info.pairName,
         mode,
         strategy,
-      });
+      };
+      if (mode === "bidask:double" && Number(entryPrice) > 0) {
+        const unit = entryPriceUnit === "sol" ? "sol" : "usd";
+        candidate.entryPrice = Number(entryPrice);
+        candidate.entryPriceUnit = unit;
+        candidate.targetKey = bidaskDoubleTargetKey(lineKey, candidate.entryPrice, unit);
+      }
+      candidates.push(candidate);
     }
 
     // Sinkronkan enteredPools per (pool, strategi). Pertahankan entry yang
@@ -544,10 +642,17 @@ export async function refreshCandidates() {
 
     candidateCache = candidates;
     bidaskSolCache = solWatches;
+    doubleTargetCache = doubleTargets;
     pruneBidaskSolTouch(
       pools
         .filter((row) => row.mode === "bidask:sol")
         .map((row) => bidaskSolTouchKey(row.pool, row.entryPrice, row.entryPriceUnit))
+        .filter(Boolean)
+    );
+    pruneBidaskDoubleTouch(
+      pools
+        .filter((row) => row.mode === "bidask:double" && Number(row.entryPrice) > 0)
+        .map((row) => bidaskDoubleTargetKey(row.pool, row.entryPrice, row.entryPriceUnit))
         .filter(Boolean)
     );
     setWatchSnapshot(buildLocalWatchSnapshot());
@@ -580,10 +685,12 @@ function bidaskSolWatchable(now = Date.now()) {
 export async function watchAndEnter() {
   if (!config.entry.enabled) return null;
   if (_watchBusy) return null;
-  if (candidateCache.length === 0 && bidaskSolCache.length === 0) return null;
+  if (candidateCache.length === 0 && bidaskSolCache.length === 0 && doubleTargetCache.length === 0) return null;
   _watchBusy = true;
 
   try {
+    if (doubleTargetCache.length > 0) await pollBidaskDoubleTargets(doubleTargetCache);
+
     const solWatchable = bidaskSolWatchable();
     let solTriggered = [];
     if (solWatchable.length > 0) {
@@ -591,7 +698,8 @@ export async function watchAndEnter() {
       solTriggered = polled.triggered || [];
     }
 
-    const watchable = selectWatchCandidates(candidateCache, {
+    const eligible = supertrendHitsToEnter(candidateCache, getBidaskDoubleTouch);
+    const watchable = selectWatchCandidates(eligible, {
       inFlight: inFlightPools,
       entered: enteredPools,
       cooldowns: failureCooldownUntil,
@@ -601,8 +709,15 @@ export async function watchAndEnter() {
     if (watchable.length > 0) {
       const byPool = new Map(watchable.map((c) => [c.pool, c]));
       const watched = await watchPrices(watchable.map((c) => ({ pool: c.pool, mint: c.mint })));
-      triggered = watched.triggered || [];
-      for (const t of triggered) {
+      const hits = supertrendHitsToEnter(
+        (watched.triggered || []).map((t) => {
+          const c = byPool.get(t.pool);
+          return c ? { ...c, ...t } : t;
+        }),
+        getBidaskDoubleTouch
+      );
+      triggered = hits;
+      for (const t of hits) {
         const c = byPool.get(t.pool);
         if (c) startEntry(t, c);
       }
@@ -664,6 +779,14 @@ function startEntry(trigger, candidate) {
         if (alias) firstSeenAt.delete(alias);
         failureCooldownUntil.delete(pool);
         failureCounts.delete(pool);
+        // Baris tetap aktif. Arah dan armed dihapus supaya masuk lagi harus
+        // menyentuh target dari awal, lalu menunggu Supertrend lagi.
+        if (candidate.targetKey) {
+          clearBidaskDoubleTouch(candidate.targetKey);
+          log.info(
+            `Pool ${pool.slice(0, 8)} bidask:double target direset setelah entry — sentuh lagi sebelum masuk berikutnya`
+          );
+        }
         return;
       }
 

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 const MODULES = [
   "../src/config/index.js",
   "../src/config/bidask-sol-range.js",
+  "../src/config/entrybot-size.js",
   "../src/config/env.js",
   "../src/config/rules.js",
   "../src/core/constants.js",
@@ -19,6 +20,7 @@ const MODULES = [
   "../src/state/bounce.js",
   "../src/state/dca.js",
   "../src/state/bidask-sol-touch.js",
+  "../src/state/bidask-double-touch.js",
   "../src/state/history.js",
   "../src/solana/connection.js",
   "../src/solana/wallet.js",
@@ -48,6 +50,7 @@ const MODULES = [
   "../src/entry/runtime.js",
   "../src/entry/pool-list.js",
   "../src/entry/bidask-sol-entry.js",
+  "../src/entry/bidask-double-target.js",
   "../src/entry/pool-info.js",
   "../src/entry/price-watch.js",
   "../src/entry/pool-price.js",

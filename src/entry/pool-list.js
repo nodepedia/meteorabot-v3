@@ -161,6 +161,8 @@ function resolveEntryMode(modeRaw, { isCa = false, entryPrice = null, entryNow =
 // entry seumur hidup) diabaikan. Mode tetap kolom ke-4.
 // bidask:sol: `CA,size,,bidask:sol,ca,HARGA` (usd atau sol) atau `...,now`.
 // Kolom ke-7 opsional: rentang `bawah/atas`, contoh `-30/15`. Kosong = strat.conf.
+// bidask:double: kolom ke-6 opsional (`CA,size,,bidask:double,ca,HARGA` atau
+// `POOL,size,,bidask:double,,HARGA`). Kosong = Supertrend saja.
 export function parsePoolList(raw) {
   const defaultSize = Number(config.entry.defaultSizeSol);
   const entries = [];
@@ -237,11 +239,36 @@ export function parsePoolList(raw) {
         row.upperPct = parsedRange.upperPct;
       }
       entries.push(row);
-    } else if (isCa) {
-      entries.push({ pool: address, sizeSol, mode, ca: true });
-    } else {
-      entries.push({ pool: address, sizeSol, mode });
+      continue;
     }
+
+    // bidask:double: kolom ke-6 opsional. Kosong = Supertrend saja.
+    // Alamat pool mengosongkan kolom ke-5 (`POOL,size,,bidask:double,,HARGA`).
+    // CA memakai `ca` di kolom ke-5. Harga tidak valid (termasuk now) melewati baris.
+    let doubleTarget = null;
+    if (mode === "bidask:double") {
+      const priceBody = parts[5] == null ? "" : String(parts[5]).split("#")[0].trim();
+      if (priceBody) {
+        if (!parsedPrice?.ok || parsedPrice.entryNow) {
+          const why = parsedPrice?.entryNow
+            ? "now tidak dipakai (kosongkan kolom, atau tulis harga usd/sol)"
+            : parsedPrice?.reason === "suffix"
+              ? `satuan harga "${parsedPrice.suffix}" tidak dikenal (pakai angka, usd, atau sol)`
+              : "harga target harus lebih dari 0 (angka, usd, atau sol)";
+          log.warn(`Pool ${address.slice(0, 8)} skipped: bidask:double ${why}`);
+          continue;
+        }
+        doubleTarget = { entryPrice, entryPriceUnit };
+      }
+    }
+
+    const row = { pool: address, sizeSol, mode };
+    if (isCa) row.ca = true;
+    if (doubleTarget) {
+      row.entryPrice = doubleTarget.entryPrice;
+      row.entryPriceUnit = doubleTarget.entryPriceUnit;
+    }
+    entries.push(row);
   }
   return entries;
 }
@@ -401,10 +428,21 @@ export function poolListHeaderLines() {
     "#   POOL_ADDRESS,1x,,spot",
     "# spot, CA token (pool dipilih bot):",
     "#   TOKEN_CA,1x,,spot,ca",
-    "# bidask:double, alamat pool:",
+    "# bidask:double, alamat pool (kolom ke-5 kosong):",
     "#   POOL_ADDRESS,0.5,,bidask:double",
+    "#   POOL_ADDRESS,0.5,,bidask:double,,0.0012",
     "# bidask:double, CA token:",
     "#   TOKEN_CA,1.25x,,bidask:double,ca",
+    "#   TOKEN_CA,1x,,bidask:double,ca,0.0000379sol",
+    "#   Kolom ke-6 opsional. Kosong = hanya Supertrend (perilaku lama).",
+    "#   Tanpa akhiran atau usd = USD per token. Akhiran sol = SOL per token.",
+    "#   now atau harga tidak valid = baris dilewati. Kolom ke-7 tidak dipakai.",
+    "#   Arah dari harga pertama: di bawah menunggu naik, di atas menunggu turun,",
+    "#   tepat di target langsung armed. Harga belum terbaca = belum armed.",
+    "#   Begitu armed, tetap armed walau harga menjauh (tahan restart).",
+    "#   Sebelum armed Supertrend tidak masuk. Setelah armed, Supertrend seperti biasa.",
+    "#   Ubah target atau hapus/# baris menghapus arah dan armed.",
+    "#   Entry berhasil tidak memberi #. Arah dan armed direset; sentuh lagi untuk masuk berikutnya.",
     "# bidask:sol (hanya CA + harga entry per token, tanpa Supertrend):",
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123",
     "#   TOKEN_CA,1x,,bidask:sol,ca,0.00123usd",

@@ -65,14 +65,16 @@ File ini gitignored. Contoh yang ikut commit: `pool.txt.example`. Saat entry wor
 | `max` | kolom lama, tidak dipakai | — |
 | `mode` | `bidask:double` (atau `bidask`), `spot`, `bidask:sol` | `bidask:double` |
 | kolom ke-5 | `ca` = kolom pertama adalah **CA token (mint)**, bukan pool | kosong (alamat pool) |
-| kolom ke-6 | harga entry per token, hanya `bidask:sol`. Tanpa akhiran atau `usd` = USD. Akhiran `sol` = SOL per token. `now` = masuk begitu harga terbaca | — |
+| kolom ke-6 | harga per token. Wajib untuk `bidask:sol`. Opsional untuk `bidask:double` (kosong = Supertrend saja). Tanpa akhiran atau `usd` = USD. Akhiran `sol` = SOL per token. `now` hanya untuk `bidask:sol` | — |
 | kolom ke-7 | rentang `bidask:sol`, `bawah/atas` (contoh `-30/15`). Bawah −99..−1, atas 0..100. Tidak valid = baris dilewati | `BIDASK_SOL_ENTRY_LOWER_PCT` / `UPPER_PCT` |
 
 ```
 PoolAddr1                       # bidask:double, 0.1 SOL
 PoolAddr2,0.5                   # 0.5 SOL, bidask:double
+PoolAddr2,0.5,,bidask:double,,0.0012       # bidask:double + target USD (kolom ke-5 kosong)
 PoolAddr3,1.25x,1,spot          # spot, 0.125 SOL (angka max diabaikan)
 TokenMint,1.5x,1,spot,ca        # baris CA: pool dipilih bot saat entry
+TokenMint,1x,,bidask:double,ca,0.0000379sol # target SOL, lalu Supertrend
 TokenMint,1x,,bidask:sol,ca,0.00123        # USD per token (sama dengan 0.00123usd)
 TokenMint,1x,,bidask:sol,ca,0.0000379sol   # SOL per token, masuk saat harga menyentuh level itu
 TokenMint,1x,,bidask:sol,ca,now            # masuk di harga pasar, tanpa target
@@ -95,6 +97,12 @@ Token `now` (huruf besar/kecil, baris `CA,,,bidask:sol,ca,now`) tidak memakai se
 
 Saat harga sudah menyentuh target, bot memilih pool DLMM token/SOL (bukan blacklist, TVL >= `BIDASK_SOL_ENTRY_MIN_TVL_USD`, lebar bin <= `BIDASK_SOL_ENTRY_MAX_BINS`) berdasarkan fee/active TVL, lalu volume/TVL, lalu jumlah bin lebih sedikit. Tidak ada yang lolos = tetap menunggu, baris tidak diberi `#`. Setelah entry berhasil, baris itu (termasuk baris CA 6 kolom berakhiran `sol`) diberi `#`, jadi tidak masuk lagi setelah posisi tutup. Hapus `#` untuk memantau lagi. Posisi SOL-only BidAsk: bin bawah dan atas dari kolom ke-7 bila ada, kalau tidak dari `BIDASK_SOL_ENTRY_LOWER_PCT` / `UPPER_PCT` (default −50% / +15%), setoran hanya sampai bin aktif. Setelah terbuka, exit / rebalance / re-entry sama seperti `bidask:sol` yang sudah ada. Log, ringkasan, dan alert Telegram menampilkan harga beserta satuannya (`$0.0012` atau `0.0000379 SOL`), dan rentang posisi dalam satuan yang sama.
 
+`bidask:double` boleh menambah harga target di kolom ke-6. Kosong = Supertrend saja, seperti sebelumnya. Satuan sama dengan `bidask:sol` (tanpa akhiran atau `usd` = USD per token, akhiran `sol` = SOL per token). Baris alamat pool mengosongkan kolom ke-5: `POOL,size,,bidask:double,,HARGA`. Baris CA tetap `ca` di kolom ke-5. `now` atau harga tidak valid membuat baris dilewati.
+
+Sentuhnya sama: harga pertama di bawah target menunggu naik, di atas target menunggu turun, tepat di target langsung mengunci. Harga yang belum terbaca tidak mengunci. Setelah tersentuh, statusnya terkunci (armed) dan tahan restart walau harga menjauh. Sebelum armed, sinyal Supertrend tidak membuka posisi. Setelah armed, pilihan pool, sewa, duplikat, saldo, kuota, dan syarat Supertrend tidak berubah. Lognya: `target tersentuh, menunggu Supertrend`. Mengubah target, atau menghapus / memberi `#` pada baris, menghapus arah dan armed.
+
+Setelah entry `bidask:double` berhasil, baris tidak diberi `#`. Arah dan armed direset, jadi masuk lagi harus menyentuh target dulu (harga pertama setelah reset menentukan arah baru). Kalau harga tepat sama dengan target, itu langsung armed lagi.
+
 Gerbang masuk hanya tanda `#`. Untuk mode selain `bidask:sol`, selama baris tidak dikomentari bot boleh masuk lagi setelah posisi sebelumnya tutup. `bidask:sol` dikomentari begitu entry berhasil. Kuota yang tersisa: paling banyak **1 posisi non-DCA per strategi per pool**. `spot` dan `bidask` (`bidask:double`, `bidask:token`, `bidask:sol`) masing-masing punya slot, jadi satu spot dan satu bidask boleh terbuka di pool yang sama. Dua spot atau dua bidask tidak. Posisi DCA tidak memakan slot bidask.
 
 Baris CA (`,ca`):
@@ -111,15 +119,15 @@ Baris CA (`,ca`):
 
 Proses PM2 terpisah, `meteorabot-entrybot` (`src/worker-entrybot.js`). Ini bot Telegram lain, bukan `meteorabot-telegram`, karena satu bot cuma boleh satu konsumen `getUpdates`.
 
-Entry bot **tidak membuka posisi**. Dia menulis satu baris ke `pool.txt` (size dikosongkan, jadi `ENTRY_DEFAULT_SIZE_SOL` yang dipakai) lalu memantau sampai worker entry yang sudah ada yang mengerjakan. Pilih pool, cek sewa, saldo, Supertrend, dan sentuh harga `bidask:sol` tetap di jalur itu.
+Entry bot **tidak membuka posisi**. Dia menulis satu baris ke `pool.txt` lalu memantau sampai worker entry yang sudah ada yang mengerjakan. Ukuran Default mengosongkan kolom size, jadi `ENTRY_DEFAULT_SIZE_SOL` yang dipakai. Angka tetap (default 0.5, 1, 2, dari `ENTRYBOT_SIZE_OPTIONS` di `strat.conf`) ditulis di kolom itu. Pilih pool, cek sewa, saldo, Supertrend, dan sentuh harga tetap di jalur entry.
 
 Perintah, di chat yang diizinkan:
 
-- `/entry` — pilih Bidask SOL, Bidask Double, atau Spot, lalu kirim CA. Bidask SOL menampilkan harga sekarang, tombol Entry sekarang atau Harga target, lalu preset rentang (`BIDASK_SOL_ENTRY_PRESETS`, default −50%/+15%, −30%/+15%, −20%/+15%), lalu konfirmasi. Ringkasan menampilkan rentang pilihan dan calon pool (bin, bin step, TVL) untuk rentang itu.
+- `/entry` — pilih Bidask SOL, Bidask Double, atau Spot, lalu kirim CA. Bidask SOL menampilkan harga sekarang, tombol Entry sekarang atau Harga target, lalu preset rentang (`BIDASK_SOL_ENTRY_PRESETS`, default −50%/+15%, −30%/+15%, −20%/+15%). Bidask Double menampilkan tombol Langsung pantau Supertrend atau Harga target (format sama dengan Bidask SOL). Semua strategi lalu memilih ukuran: Default (kolom size kosong, jadi `ENTRY_DEFAULT_SIZE_SOL`) atau angka di `ENTRYBOT_SIZE_OPTIONS` (default 0.5, 1, 2), baru konfirmasi. Ringkasan, antrean, dan notifikasi sukses menampilkan ukuran itu. Ringkasan Bidask SOL menampilkan rentang dan calon pool. Bidask Double tanpa target: `tunggu sinyal Supertrend`. Dengan target: `tunggu harga naik/turun sampai target, lalu tunggu sinyal Supertrend`. Saat target tersentuh, entry bot mengirim status antara, lalu notifikasi sukses atau skip yang sudah ada.
 - `/antrean` — daftar baris aktif. Yang dari entry bot ditandai. Tombol hapus memberi `#` pada baris itu.
 - `/batal` — batalkan wizard yang sedang jalan (sekitar 10 menit, lalu sesi hangus).
 
-Baris yang ditulis: `CA,,,bidask:sol,ca,HARGA,-30/15` (akhiran harga dipertahankan, kolom rentang dari preset), `CA,,,bidask:sol,ca,now,-50/15`, `CA,,,bidask:double,ca`, atau `CA,,,spot,ca`. Notifikasi entry berhasil menyebut rentang itu.
+Baris yang ditulis: `CA,,,bidask:sol,ca,HARGA,-30/15` (akhiran harga dipertahankan, kolom rentang dari preset), `CA,,,bidask:sol,ca,now,-50/15`, `CA,,,bidask:double,ca`, `CA,,,bidask:double,ca,HARGA`, `CA,0.5,,spot,ca`, atau `CA,,,spot,ca` bila ukuran Default. Notifikasi entry berhasil menyebut rentang Bidask SOL dan ukuran yang dipilih.
 
 Buat botnya di Telegram lewat [@BotFather](https://t.me/BotFather):
 
