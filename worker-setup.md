@@ -1,113 +1,113 @@
-# Worker opsional dan tombol Telegram
+# Optional worker and Telegram buttons
 
-Panduan ini untuk pemula. Ikuti nomornya dari atas. Perintah diketik di VPS, di folder bot (`~/meteorabot-v3`), kecuali dikatakan lain.
+This guide is for beginners. Follow the numbers from the top. Type the commands on the VPS (the computer that stays on), in the bot folder (`~/meteorabot-v3`), unless a step says to type them somewhere else.
 
-Bot inti (membuka dan menutup posisi) harus sudah jalan. Kalau belum, selesaikan [setup.md](setup.md) dulu, termasuk `DRY_RUN=true` untuk latihan.
+The main bot, the one that opens and closes positions, must already be running. If it is not, finish [setup.md](setup.md) first, including `DRY_RUN=true` so you can practice.
 
-Yang dibahas di sini:
+What this page covers:
 
-1. **Bot antrean** (`meteorabot-entrybot`) — opsional. Ia hanya menambah baris ke daftar pantauan. Ia tidak membuka posisi.
-2. **Tombol di pesan status** — bukan worker opsional. Prosesnya (`meteorabot-telegram`) sudah dijalankan di [setup.md](setup.md). Bagian akhir halaman ini menjelaskan cara menekan tombolnya.
+1. **The queue bot** (`meteorabot-entrybot`) is optional. It only adds a line to the watch list. Opening a position is left to the main bot.
+2. **Buttons on the status message** belong to the main bot. Their process (`meteorabot-telegram`) was already started in [setup.md](setup.md). The end of this page explains how to press those buttons.
 
-Repo lain yang mengisi daftar dari luar tidak dibahas di sini.
+This page leaves out other repos that fill the list from outside.
 
-## Kenapa bot-nya harus beda
+## Why the two bots have to be separate
 
-Telegram hanya mengizinkan **satu** program yang "mendengarkan" tiap bot. Program itu memakai panggilan `getUpdates`.
+Telegram lets only **one** program "listen" to each bot. That program uses a call named `getUpdates`.
 
-Bot notifikasi (`TELEGRAM_BOT_TOKEN`) sudah didengarkan oleh `meteorabot-telegram`, supaya ketukan tombol sampai. Kalau bot antrean memakai token yang sama, Telegram menolak salah satunya. Di log proses tombol muncul:
+The notification bot (`TELEGRAM_BOT_TOKEN`) is already listened to by `meteorabot-telegram`, so button taps get through. If the queue bot uses that same token, Telegram rejects one of the two programs. The button-process log then shows:
 
 ```text
 Telegram getUpdates failed: 409
 ```
 
-dan teks `Conflict`. Perintah `/entry` lalu tidak dibalas. Solusinya: buat bot kedua di @BotFather, dan taruh tokennya di `ENTRYBOT_TELEGRAM_TOKEN`.
+and the text `Conflict`. After that, `/entry` gets no reply. Create a second bot in @BotFather, and put its token in `ENTRYBOT_TELEGRAM_TOKEN`.
 
-## 1. Buat bot di Telegram
+## 1. Create a bot in Telegram
 
-1. Buka Telegram. Cari `@BotFather` dan buka chat resmi itu.
-2. Kirim:
+1. Open Telegram. Search for `@BotFather` and open that official chat.
+2. Send:
 
    ```text
    /newbot
    ```
 
-3. BotFather meminta **nama**. Ini nama yang tampil, boleh ada spasi. Contoh balasan Anda: `Meteora Antrean`.
-4. BotFather lalu meminta **username**. Harus diakhiri `bot`, tanpa spasi. Contoh: `meteora_antrean_bot`. Kalau username sudah dipakai, BotFather meminta yang lain.
-5. BotFather membalas dengan token, bentuknya kira-kira `123456789:AAH...`. Salin seluruh token.
-6. Simpan token hanya untuk langkah `.env` di bawah. Jangan kirim ke orang lain, jangan commit, jangan tempel di chat ini.
+3. BotFather asks for a **name**. This is the name people see, and it may contain spaces. An example of your reply: `Meteora Queue`.
+4. BotFather then asks for a **username**. It must end in `bot`, with no spaces. Example: `meteora_queue_bot`. If that username is already taken, BotFather asks for another one.
+5. BotFather replies with a token. It looks roughly like `123456789:AAH...`. Copy the whole token.
+6. Save that token only for the `.env` step below. Leave it out of git, out of chat, and out of messages to other people.
 
-Token bot notifikasi yang sudah ada di `TELEGRAM_BOT_TOKEN` jangan disalin ke sini.
+Leave the notification token that is already in `TELEGRAM_BOT_TOKEN` on that line. The queue bot gets the new token.
 
-## 2. Ambil chat id
+## 2. Get the chat id
 
-Bot hanya membalas satu chat. Chat lain diabaikan tanpa balasan.
+The bot replies to only one chat. Messages from any other chat are ignored, and the bot stays silent.
 
-### Cara A — chat yang sama dengan notifikasi
+### Way A — the same chat as the notifications
 
-Kalau orang yang sama yang menekan tombol status dan yang mengirim `/entry`, Anda tidak perlu chat id baru. Biarkan `ENTRYBOT_TELEGRAM_CHAT_ID` kosong. Bot antrean memakai `TELEGRAM_CHAT_ID`.
+If the same person presses the status buttons and sends `/entry`, you can skip a new chat id. Leave `ENTRYBOT_TELEGRAM_CHAT_ID` empty. The queue bot then uses `TELEGRAM_CHAT_ID`.
 
-Anda tetap harus membuka chat bot **baru** dan menekan Start, supaya Telegram mengizinkan bot itu mengirim pesan ke Anda.
+You still open the **new** bot's chat and press Start, so Telegram allows that bot to message you.
 
-### Cara B — baca id dari Telegram
+### Way B — read the id from Telegram
 
-Lakukan ini **sebelum** proses antrean dijalankan, dan pakai token bot **baru**.
+Do this **before** you start the queue process, and use the **new** bot's token.
 
-1. Di Telegram, buka bot baru. Tekan **Start**, atau kirim `hi`.
-2. Di browser, buka alamat ini. Ganti `<TOKEN>` dengan token bot baru, tanpa spasi dan tanpa tanda kutip:
+1. In Telegram, open the new bot. Press **Start**, or send `hi`.
+2. In a browser, open this address. Replace `<TOKEN>` with the new bot's token. Leave out spaces and quote marks:
 
    ```text
    https://api.telegram.org/bot<TOKEN>/getUpdates
    ```
 
-3. Halaman yang benar berbentuk JSON dan ada `"ok":true`. Cari potongan seperti:
+3. The right page is JSON and contains `"ok":true`. Look for a piece like this:
 
    ```text
    "chat":{"id":123456789
    ```
 
-   Angka `123456789` itu chat id. Chat grup biasanya angka negatif, misalnya `-1001234567890`. Salin angkanya persis.
+   The number `123456789` is the chat id. A group chat is usually a negative number, for example `-1001234567890`. Copy the digits exactly, including the minus sign when there is one.
 
-Kalau halaman berisi `"ok":true,"result":[]`, pesan Anda belum sampai atau sudah diambil program lain. Kirim `hi` lagi, lalu muat ulang halaman.
+If the page says `"ok":true,"result":[]`, your message has not arrived yet, or another program already collected it. Send `hi` again, then reload the page.
 
-Kalau halaman berisi `409` atau `Conflict`, ada program yang sedang mendengarkan token ini. Hentikan proses itu dulu (`pm2 stop meteorabot-entrybot` bila itu prosesnya), kirim `hi` lagi, lalu buka halaman itu lagi.
+If the page says `409` or `Conflict`, some program is already listening to this token. Stop that process first (`pm2 stop meteorabot-entrybot` when that is the process), send `hi` again, then open the page again.
 
-## 3. Tulis token ke `.env`
+## 3. Write the token into `.env`
 
-1. Masuk ke folder bot:
+1. Go to the bot folder:
 
    ```bash
    cd ~/meteorabot-v3
    ```
 
-2. Buka file rahasia:
+2. Open the secrets file:
 
    ```bash
    nano .env
    ```
 
-3. Cari dua baris ini (panah bawah di nano):
+3. Find these two lines (use the down arrow in nano):
 
    ```text
    ENTRYBOT_TELEGRAM_TOKEN=
    ENTRYBOT_TELEGRAM_CHAT_ID=
    ```
 
-4. Tempel token di kanan `=` pada baris pertama. Jangan tambah spasi atau tanda kutip.
-5. Untuk cara A, biarkan `ENTRYBOT_TELEGRAM_CHAT_ID` kosong. Untuk cara B, tulis angkanya di kanan `=`.
-6. Simpan: tekan `Ctrl+O`, lalu Enter.
-7. Keluar: tekan `Ctrl+X`.
+4. Paste the token to the right of `=` on the first line. Add no spaces and no quote marks.
+5. For Way A, leave `ENTRYBOT_TELEGRAM_CHAT_ID` empty. For Way B, write the number to the right of `=`.
+6. Save: press `Ctrl+O`, then Enter.
+7. Leave: press `Ctrl+X`.
 
-Contoh bentuknya (ini bukan token sungguhan):
+Here is the shape of those lines. The value below is a made-up sample. The letters `contohBukanTokenSungguhan` are Indonesian for "example of a made-up token". Replace the sample with the token BotFather gave you:
 
 ```text
 ENTRYBOT_TELEGRAM_TOKEN=123456789:AAHcontohBukanTokenSungguhan
 ENTRYBOT_TELEGRAM_CHAT_ID=
 ```
 
-## 4. Nyalakan prosesnya
+## 4. Start the process
 
-`meteorabot-entry` harus sudah `online` (lihat `pm2 status`). Dialah yang nanti membuka posisi. Bot antrean hanya menulis baris.
+`meteorabot-entry` must already be `online` (check with `pm2 status`). That process is the one that later opens positions. The queue bot only writes a line.
 
 ```bash
 cd ~/meteorabot-v3
@@ -116,15 +116,15 @@ pm2 save
 pm2 status
 ```
 
-Di `pm2 status`, baris `meteorabot-entrybot` harus `online`. `pm2 save` menyimpan daftar ini supaya ikut bangkit setelah reboot (bersama perintah `pm2 startup` yang sudah dijalankan di setup).
+In `pm2 status`, the `meteorabot-entrybot` row must say `online`. `pm2 save` stores this list so it comes back after a reboot, together with the `pm2 startup` command you already ran during setup.
 
-## 5. Pastikan log-nya benar
+## 5. Check that the log looks right
 
 ```bash
 pm2 logs meteorabot-entrybot --lines 30
 ```
 
-Yang diharapkan:
+What you should see:
 
 ```text
 Meteora Worker: ENTRY BOT
@@ -132,62 +132,70 @@ Antre entry lewat Telegram | chat <angka chat Anda>
 Tidak membuka posisi. Hanya menulis baris pool.txt.
 ```
 
-`Ctrl+C` hanya menutup tampilan log.
+Those lines mean "Meteora Worker: ENTRY BOT", "Queue an entry through Telegram | chat <your chat number>", and "Does not open a position. Only writes a pool.txt line." The placeholder `<angka chat Anda>` is where your chat number appears.
 
-Salinan yang sama ada di `logs/entrybot-out.log` dan, bila ada error, `logs/entrybot-error.log`.
+`Ctrl+C` only closes the log view. The bot keeps running.
 
-Kalau token kosong, proses tetap `online` tetapi tidak mendengarkan. Log-nya:
+The same text is copied to `logs/entrybot-out.log`. Errors, when there are any, go to `logs/entrybot-error.log`.
+
+If the token is empty, the process stays `online` and simply does not listen. The log says:
 
 ```text
 ENTRYBOT_TELEGRAM_TOKEN kosong — entry bot idle, tidak mem-poll Telegram.
 ```
 
-Kalau token ada tetapi chat id kosong dan `TELEGRAM_CHAT_ID` juga kosong:
+That line means: ENTRYBOT_TELEGRAM_TOKEN is empty — the entry bot is idle and is not asking Telegram for updates.
+
+If the token is set, but the chat id is empty and `TELEGRAM_CHAT_ID` is empty too:
 
 ```text
 Chat id kosong — isi TELEGRAM_CHAT_ID atau ENTRYBOT_TELEGRAM_CHAT_ID. Entry bot idle.
 ```
 
-## 6. Pakai `/entry`
+That line means: the chat id is empty — fill in TELEGRAM_CHAT_ID or ENTRYBOT_TELEGRAM_CHAT_ID. The entry bot is idle.
 
-Buka chat dengan bot **antrean** (bukan bot notifikasi), dari akun yang chat id-nya diizinkan. Ketik:
+## 6. Use `/entry`
+
+Open the chat with the **queue** bot (the new bot). Use the account whose chat id is allowed. Type:
 
 ```text
 /entry
 ```
 
-Balasan yang diharapkan:
+The reply you want:
 
 ```text
 🎯 Entry baru / Pilih strategi:
 ```
 
-dengan tombol `Bidask SOL`, `Bidask Double`, `Spot`, dan `❌ Batal`.
+That line means "New entry / Choose a strategy:". The buttons are `Bidask SOL`, `Bidask Double`, `Spot`, and `❌ Batal` (Cancel).
 
-Lalu kirim **alamat token** (mint / CA), bukan alamat pool. Panjangnya kira-kira 32–44 karakter. CA yang tidak valid dibalas:
+Then send the **token address** (also called a mint or CA). It is about 32–44 characters long. An address the bot cannot accept gets this reply:
 
 ```text
 CA-nya nggak valid. Kirim mint Solana (base58, kira-kira 32–44 karakter).
 ```
 
-Sesi yang didiamkan sekitar 10 menit hangus. Bot membalas `Sesi entry sudah kedaluwarsa. Ketik /entry lagi.` Ketik `/entry` untuk mulai dari awal.
+That means: that CA is not valid. Send a Solana mint (base58, about 32–44 characters).
 
-Bot tidak membuka posisi pada langkah ini. Ia menulis satu baris ke `pool.txt`. `meteorabot-entry` yang mengerjakannya.
+A session left alone for about 10 minutes expires. The bot replies `Sesi entry sudah kedaluwarsa. Ketik /entry lagi.` (This entry session has expired. Type /entry again.) Type `/entry` to start from the top.
+
+This step only writes one line into `pool.txt`. `meteorabot-entry` is the process that acts on it.
 
 ### Bidask SOL
 
-1. Tekan `Bidask SOL`. Toast: `Bidask SOL`. Pesan: `Bidask SOL dipilih. Kirim CA token:`
-2. Kirim CA. Bot menampilkan nama singkat, harga sekarang dalam SOL dan USD, lalu `Masuk sekarang, atau pakai harga target?`
-3. Pilih salah satu:
-   - `⚡ Entry sekarang` — masuk begitu harga terbaca. Bukan harga target.
-   - `🎯 Harga target` — bot meminta angka. Contoh yang diterima: `0.0000379sol` atau `0.009usd`. Tanpa akhiran dianggap USD. Balasan salah: `Harga harus lebih dari 0...` atau `Satuan nggak dikenal...`
-4. Bot menanyakan rentang: `Pilih rentang posisi:` Tombolnya dari `BIDASK_SOL_ENTRY_PRESETS`. Default: `Preset 1: -50% / +15%`, `Preset 2: -30% / +15%`, `Preset 3: -20% / +15%`. Angka kiri = seberapa jauh di bawah harga, angka kanan = seberapa jauh di atas. Posisi SOL-only tetap mengisi SOL hanya sampai harga saat ini. Bagian atas dibiarkan kosong.
-5. `Pilih ukuran entry:`
-   - `Default (strat.conf: 0.1 SOL)` memakai `ENTRY_DEFAULT_SIZE_SOL` dan mengosongkan kolom ukuran.
-   - `0.5 SOL`, `1 SOL`, `2 SOL` berasal dari `ENTRYBOT_SIZE_OPTIONS`.
-6. Muncul `📋 Konfirmasi entry` (strategi, token, ukuran, harga, pemicu, rentang, calon pool). Tekan `✅ Konfirmasi`.
+1. Press `Bidask SOL`. The small popup says `Bidask SOL`. The message says `Bidask SOL dipilih. Kirim CA token:` (Bidask SOL selected. Send the token CA:)
+2. Send the CA. The bot shows a short name, the current price in SOL and in USD, then `Masuk sekarang, atau pakai harga target?` (Enter now, or use a target price?)
+3. Choose one:
+   - `⚡ Entry sekarang` (Enter now) enters as soon as the price can be read. The price at that moment is not stored as a target.
+   - `🎯 Harga target` (Target price) makes the bot ask for a number. Examples it accepts: `0.0000379sol` or `0.009usd`. A number with no ending is treated as USD. A wrong reply starts with `Harga harus lebih dari 0...` (The price must be more than 0...) or `Satuan nggak dikenal...` (The unit is not recognized...)
+4. The bot asks for the range with `Pilih rentang posisi:` (Choose the position range:). The buttons come from `BIDASK_SOL_ENTRY_PRESETS`. The defaults are `Preset 1: -50% / +15%`, `Preset 2: -30% / +15%`, and `Preset 3: -20% / +15%`. The left number is how far below the price. The right number is how far above. A SOL-only position still places SOL only up to the current price. The bins above that stay empty.
+5. Next is `Pilih ukuran entry:` (Choose the entry size:)
+   - `Default (strat.conf: 0.1 SOL)` uses `ENTRY_DEFAULT_SIZE_SOL` and leaves the size column empty.
+   - `0.5 SOL`, `1 SOL`, and `2 SOL` come from `ENTRYBOT_SIZE_OPTIONS`.
+6. You then see `📋 Konfirmasi entry` (Confirm entry), with the strategy, token, size, price, trigger, range, and a candidate pool. Press `✅ Konfirmasi` (Confirm).
 
-Balasan berhasil:
+The success reply looks like this:
 
 ```text
 ⏳ Masuk antrean, dipantau.
@@ -195,187 +203,189 @@ Size     : ...
 Rentang  : ...
 ```
 
-dan satu baris, misalnya:
+That means "Added to the queue. It is being watched." `Size` is the amount. `Rentang` means the range.
+
+Under that text is one line, for example:
 
 ```text
 CA,,,bidask:sol,ca,now,-50/15
 ```
 
-atau, bila Anda memilih harga dan ukuran 0.5:
+or, if you chose a price and a size of 0.5:
 
 ```text
 CA,0.5,,bidask:sol,ca,0.0000379sol,-30/15
 ```
 
-Toast: `Masuk antrean`. Ada tombol `🗑 Hapus antrean`.
+The popup says `Masuk antrean` (Added to the queue). There is a button `🗑 Hapus antrean` (Remove from the queue).
 
-Teks pemicu di ringkasan:
+The trigger line in the summary uses these exact words:
 
-- `entry sekarang (harga pasar)` untuk Entry sekarang
-- `tunggu harga naik sampai target` bila harga sekarang di bawah target
-- `tunggu harga turun sampai target` bila harga sekarang di atas target
+- `entry sekarang (harga pasar)` (enter now, at the market price) when you chose Enter now
+- `tunggu harga naik sampai target` (wait for the price to rise to the target) when the current price is below the target
+- `tunggu harga turun sampai target` (wait for the price to fall to the target) when the current price is above the target
 
 ### Bidask Double
 
-1. Tekan `Bidask Double`, lalu kirim CA.
-2. Bot bertanya: `Langsung pantau Supertrend, atau pakai harga target?`
-   - `📈 Langsung pantau Supertrend` — tidak ada harga target. Lanjut ke ukuran.
-   - `🎯 Harga target` — kirim harga seperti di Bidask SOL. Kata `now` ditolak: `Bidask Double tidak pakai now.`
-3. Pilih ukuran, sama seperti di atas. Tidak ada langkah rentang.
-4. Konfirmasi.
+1. Press `Bidask Double`, then send the CA.
+2. The bot asks `Langsung pantau Supertrend, atau pakai harga target?` (Watch Supertrend right away, or use a target price?)
+   - `📈 Langsung pantau Supertrend` (Watch Supertrend right away) sets no target price. You go on to the size step.
+   - `🎯 Harga target` (Target price) asks for a price the same way as Bidask SOL. The word `now` is refused with `Bidask Double tidak pakai now.` (Bidask Double does not use now.)
+3. Choose a size, the same way as above. There is no range step.
+4. Confirm.
 
-Baris yang ditulis:
+The line that gets written:
 
 ```text
 CA,,,bidask:double,ca
 ```
 
-atau dengan target dan ukuran Default:
+or, with a target and the Default size:
 
 ```text
 CA,,,bidask:double,ca,0.0000379sol
 ```
 
-atau dengan ukuran tetap:
+or, with a fixed size:
 
 ```text
 CA,0.5,,bidask:double,ca
 ```
 
-Di ringkasan, pemicunya `tunggu sinyal Supertrend`, atau `tunggu harga naik/turun sampai target, lalu tunggu sinyal Supertrend`. Harga target hanya mengizinkan sinyal. Sinyal Supertrend (tren naik) tetap yang membuka posisi.
+In the summary, the trigger is `tunggu sinyal Supertrend` (wait for the Supertrend signal), or `tunggu harga naik/turun sampai target, lalu tunggu sinyal Supertrend` (wait for the price to rise or fall to the target, then wait for the Supertrend signal). A target price only unlocks the signal. The Supertrend signal, an uptrend, is still what opens the position.
 
 ### Spot
 
-1. Tekan `Spot`, kirim CA, pilih ukuran, konfirmasi. Tidak ada harga dan tidak ada rentang.
-2. Barisnya `CA,,,spot,ca` untuk ukuran Default, atau `CA,0.5,,spot,ca` bila Anda memilih 0.5 SOL.
+1. Press `Spot`, send the CA, choose a size, and confirm. There is no price step and no range step.
+2. The line is `CA,,,spot,ca` for the Default size, or `CA,0.5,,spot,ca` if you chose 0.5 SOL.
 
-Ringkasan menulis pemicu `entry langsung`. Artinya tidak ada harga target. Worker entry tetap menunggu sinyal Supertrend sebelum membuka posisi.
+The summary writes the trigger `entry langsung` (enter right away). That means this style has no target price. The entry worker still waits for the Supertrend signal before it opens the position.
 
-## 7. `/antrean` dan `/batal`
+## 7. `/antrean` and `/batal`
 
-Ketik `/antrean`.
+Type `/antrean`. The command name means "queue".
 
-- Daftar kosong: `Antrean kosong. Ketik /entry buat nambah.`
-- Ada baris: judul `📋 Antrean`, lalu tiap baris dengan strategi, nama, dan `dari entrybot` atau `manual`. Paling banyak 20 baris. Tiap baris punya tombol `🗑 Hapus ...`.
-- Hapus memberi `#` pada baris itu (baris tidak dihapus fisik). Balasan: `Oke, barisnya di-#.` Toast: `Dihapus`.
+- An empty list replies `Antrean kosong. Ketik /entry buat nambah.` (The queue is empty. Type /entry to add one.)
+- When there are lines, the title is `📋 Antrean` (Queue). Each line shows the strategy, the name, and either `dari entrybot` (from the entry bot) or `manual`. At most 20 lines are shown. Each line has a button `🗑 Hapus ...` (Remove ...).
+- Removing a line puts `#` on it. The line stays in the file, with that mark. The reply is `Oke, barisnya di-#.` (OK, the line was marked with #.) The popup says `Dihapus` (Removed).
 
-Ketik `/batal` untuk membatalkan wizard yang sedang berjalan. Balasan: `Oke, dibatalin.` Kalau tidak ada wizard: `Nggak ada yang lagi diisi.` Tombol `❌ Batal` di pesan melakukan hal yang sama.
+Type `/batal` (cancel) to cancel a wizard that is in progress. The reply is `Oke, dibatalin.` (OK, cancelled.) If no wizard is open, the reply is `Nggak ada yang lagi diisi.` (Nothing is being filled in right now.) The `❌ Batal` (Cancel) button on a message does the same thing.
 
-CA yang sudah punya baris aktif ditolak saat konfirmasi: `CA ini sudah ada di antrean (barisnya masih aktif). Cek /antrean.`
+A CA that already has an active line is refused at the confirm step: `CA ini sudah ada di antrean (barisnya masih aktif). Cek /antrean.` (This CA is already in the queue. Its line is still active. Check /antrean.)
 
-## 8. Arti notifikasi sesudah masuk antrean
+## 8. What the messages mean after a line joins the queue
 
-Bot antrean memantau log dan posisi. Ia mengirim kabar ke chat yang sama.
+The queue bot watches the logs and the open positions. It sends updates to the same chat.
 
-| Pesan | Artinya |
+| Message | Meaning |
 |---|---|
-| `🎯 ... target tersentuh, menunggu Supertrend.` | Harga Bidask Double sudah menyentuh target. Posisi belum dibuka. Masih menunggu sinyal tren. |
-| `✅ Entry ... berhasil` | Posisi sudah terbuka. Pesan menyebut strategi, posisi, pool, bin step, ukuran, dan (untuk Bidask SOL) rentang. Bila ada, disertakan tautan transaksi. |
-| `⚠️ ... belum bisa entry: dry-run, posisi tidak dibuka. Masih nunggu.` | `DRY_RUN` masih menyala. Baris tetap menunggu. Tidak ada transaksi. |
-| `⚠️ ... belum bisa entry: SOL di wallet kurang. Masih nunggu.` | SOL tidak cukup. Baris tetap ada. |
-| `⚠️ ... belum bisa entry: sudah ada posisi. Masih nunggu.` | Slot strategi itu sudah terpakai. |
-| `⚠️ ... belum bisa entry: sewa non-refundable. Masih nunggu.` | Biaya sewa pool tidak bisa kembali, jadi entry ditahan. |
-| `⚠️ ... belum bisa entry: ... Masih nunggu.` | Belum ada pool yang lolos saringan (TVL, lebar, dan sebagainya). Teks setelah titik dua menyalin alasan dari log. |
-| `⚠️ ... keluar dari antrean: ...` | Baris sudah tidak aktif (diberi `#` atau dihapus). |
-| `⚠️ ... barisnya sudah tidak aktif. Pantauan berhenti.` | Sama, tanpa alasan yang lebih rinci. |
+| `🎯 ... target tersentuh, menunggu Supertrend.` | The Bidask Double price has touched the target. The position is still closed. It is waiting for the uptrend signal. |
+| `✅ Entry ... berhasil` | The position is open. The message names the strategy, the position, the pool, the bin step, the size, and, for Bidask SOL, the range. When a transaction exists, a link to it is included. |
+| `⚠️ ... belum bisa entry: dry-run, posisi tidak dibuka. Masih nunggu.` | `DRY_RUN` is still on. The line keeps waiting. No transaction was sent. |
+| `⚠️ ... belum bisa entry: SOL di wallet kurang. Masih nunggu.` | The wallet does not have enough SOL. The line stays. |
+| `⚠️ ... belum bisa entry: sudah ada posisi. Masih nunggu.` | That style's slot on the pool is already taken. |
+| `⚠️ ... belum bisa entry: sewa non-refundable. Masih nunggu.` | The pool's rent fee cannot be refunded, so the entry is held. |
+| `⚠️ ... belum bisa entry: ... Masih nunggu.` | No pool passed the filters (money in the pool, width, and so on). The text after the colon is copied from the log. |
+| `⚠️ ... keluar dari antrean: ...` | The line is no longer active. It was marked with `#`, or it was removed. |
+| `⚠️ ... barisnya sudah tidak aktif. Pantauan berhenti.` | The same outcome, with no extra reason attached. |
 
-Peringatan "belum bisa entry" untuk alasan yang sama tidak diulang lebih sering dari sekitar 15 menit.
+A "cannot enter yet" warning for the same reason waits about 15 minutes before it is sent again.
 
-Entry Bidask SOL yang berhasil (dan `DRY_RUN` mati) membuat baris itu diberi `#`. Spot dan Bidask Double yang berhasil tidak diberi `#`. Mereka bisa masuk lagi nanti. Bidask Double yang punya target harus menyentuh target itu lagi.
+A successful Bidask SOL entry, once `DRY_RUN` is off, marks that line with `#`. A successful Spot or Bidask Double entry leaves the line unmarked. Those can enter again later. A Bidask Double line that has a target has to touch that target again.
 
-## 9. Kunci `strat.conf` yang dipakai bot ini
+## 9. The `strat.conf` keys this bot uses
 
-Ubah di `strat.conf` (bukan di `.env` bila kuncinya sama, karena `strat.conf` yang menang). Lalu restart:
+Change these in `strat.conf`. When the same key is also in `.env`, the `strat.conf` value wins. Then restart:
 
 ```bash
 pm2 restart meteorabot-entrybot meteorabot-entry
 ```
 
-| Kunci | Default di contoh | Dipakai untuk |
+| Key | Default in the example | What it is for |
 |---|---|---|
-| `ENTRY_DEFAULT_SIZE_SOL` | `0.1` | Tombol Default, dan baris yang kolom ukurannya kosong. |
-| `ENTRYBOT_SIZE_OPTIONS` | `0.5,1,2` | Tombol ukuran tetap, angka SOL dipisah koma. Angka tidak valid diabaikan. |
-| `BIDASK_SOL_ENTRY_PRESETS` | `-50/15,-30/15,-20/15` | Urutan tombol rentang Bidask SOL. |
-| `BIDASK_SOL_ENTRY_LOWER_PCT` | `-50` | Rentang bawah bila suatu baris `pool.txt` tidak menulis kolom ke-7. Bot antrean sendiri selalu menulis preset yang Anda tekan. |
-| `BIDASK_SOL_ENTRY_UPPER_PCT` | `15` | Rentang atas untuk baris tanpa kolom ke-7. |
-| `BIDASK_SOL_ENTRY_MIN_TVL_USD` | `20000` | Pool dengan TVL di bawah ini tidak dipilih saat entry SOL-only. |
-| `BIDASK_SOL_ENTRY_MAX_BINS` | `169` | Pool yang lebih lebar dari ini dilewati. |
+| `ENTRY_DEFAULT_SIZE_SOL` | `0.1` | The Default button, and any line whose size column is empty. |
+| `ENTRYBOT_SIZE_OPTIONS` | `0.5,1,2` | The fixed-size buttons. SOL amounts, separated by commas. A number the bot cannot read is ignored. |
+| `BIDASK_SOL_ENTRY_PRESETS` | `-50/15,-30/15,-20/15` | The order of the Bidask SOL range buttons. |
+| `BIDASK_SOL_ENTRY_LOWER_PCT` | `-50` | The lower end of the range when a `pool.txt` line leaves column 7 empty. The queue bot itself always writes the preset you pressed. |
+| `BIDASK_SOL_ENTRY_UPPER_PCT` | `15` | The upper end of the range for a line with no column 7. |
+| `BIDASK_SOL_ENTRY_MIN_TVL_USD` | `20000` | A pool with less money in it than this is passed over for a SOL-only entry. |
+| `BIDASK_SOL_ENTRY_MAX_BINS` | `169` | A pool wider than this is skipped. |
 
-Ringkasan di Telegram menampilkan calon pool menurut saringan yang sama. Yang membuka posisi tetap `meteorabot-entry`.
+The Telegram summary shows a candidate pool using those same filters. The process that opens the position is still `meteorabot-entry`.
 
-## 10. Mematikan
+## 10. Turning it off
 
-Hentikan sementara (bisa dinyalakan lagi):
+Stop it for now. You can start it again later:
 
 ```bash
 pm2 stop meteorabot-entrybot
 pm2 save
 ```
 
-Nyalakan lagi:
+Start it again:
 
 ```bash
 pm2 start meteorabot-entrybot
 pm2 save
 ```
 
-Agar proses tetap hidup tetapi tidak mendengarkan: kosongkan `ENTRYBOT_TELEGRAM_TOKEN` di `.env`, simpan, lalu:
+To leave the process running while it stops listening, clear `ENTRYBOT_TELEGRAM_TOKEN` in `.env`, save, then run:
 
 ```bash
 pm2 restart meteorabot-entrybot
 ```
 
-Log kembali ke kalimat `entry bot idle`. Hapus proses dari daftar pm2:
+The log goes back to the `entry bot idle` line. To remove the process from the pm2 list:
 
 ```bash
 pm2 delete meteorabot-entrybot
 pm2 save
 ```
 
-Baris yang sudah tertulis di `pool.txt` tidak ikut terhapus. `meteorabot-entry` tetap membacanya.
+Lines already written in `pool.txt` stay there. `meteorabot-entry` keeps reading them.
 
-State wizard ada di `state/entrybot.json`. File itu tidak ikut git. Menghapusnya hanya melupakan sesi dan pantauan notifikasi, tidak menghapus baris di `pool.txt`.
+The wizard's saved progress is in `state/entrybot.json`. Git does not track that file. Deleting it only forgets the current session and which notifications were already sent. Lines in `pool.txt` stay.
 
-## 11. Masalah yang sering muncul
+## 11. Common problems
 
-| Yang terjadi | Sebab | Perbaikan |
+| What happens | Why | What to do |
 |---|---|---|
-| `/entry` tidak dibalas sama sekali | Chat ini bukan chat yang diizinkan, atau proses idle | Samakan chat dengan `TELEGRAM_CHAT_ID` / `ENTRYBOT_TELEGRAM_CHAT_ID`. Cek log langkah 5. |
-| Log tombol `Telegram getUpdates failed: 409` | Token antrean sama dengan `TELEGRAM_BOT_TOKEN` | Buat bot baru. Isi `ENTRYBOT_TELEGRAM_TOKEN` dengan token itu. Restart kedua proses: `pm2 restart meteorabot-telegram meteorabot-entrybot`. |
-| `ENTRYBOT_TELEGRAM_TOKEN kosong` | Baris di `.env` masih kosong, atau proses belum di-restart | Isi token, `pm2 restart meteorabot-entrybot`. |
-| `Chat id kosong` | Kedua chat id kosong | Isi `TELEGRAM_CHAT_ID` atau `ENTRYBOT_TELEGRAM_CHAT_ID`, lalu restart. |
-| `Gagal ambil harga` | Harga Jupiter atau daftar pool gagal dibaca | Kirim CA yang sama lagi. Cek kunci Jupiter di `.env` dan log `meteorabot-entry`. |
-| `Gagal nulis pool.txt` | File tidak bisa ditulis | Pastikan bot dijalankan dari folder repo dan `pool.txt` ada (`cp pool.txt.example pool.txt`). |
-| `CA ini sudah ada di antrean` | Baris aktif untuk CA itu sudah ada | `/antrean`, hapus yang lama, atau biarkan. |
-| Notifikasi `dry-run, posisi tidak dibuka` | Latihan masih menyala | Ini normal selama `DRY_RUN=true`. Live hanya setelah Anda sengaja mengubahnya di [setup.md](setup.md). |
-| Baris sudah di `pool.txt` tetapi tidak ada posisi | `meteorabot-entry` mati, atau masih menunggu sinyal / harga / pool | `pm2 status`. Untuk Spot dan Bidask Double, tunggu sinyal. Untuk harga target, tunggu harga menyentuh. |
-| Setelah reboot bot antrean hilang | Belum `pm2 save` | Ulangi langkah 4. |
+| `/entry` gets no reply at all | Only the chat saved in `TELEGRAM_CHAT_ID` or `ENTRYBOT_TELEGRAM_CHAT_ID` gets a reply, and an idle process stays silent | Use the chat that matches `TELEGRAM_CHAT_ID` or `ENTRYBOT_TELEGRAM_CHAT_ID`. Check the log from step 5. |
+| The button log says `Telegram getUpdates failed: 409` | The queue token is the same as `TELEGRAM_BOT_TOKEN` | Create a new bot. Put that token in `ENTRYBOT_TELEGRAM_TOKEN`. Restart both processes: `pm2 restart meteorabot-telegram meteorabot-entrybot`. |
+| `ENTRYBOT_TELEGRAM_TOKEN kosong` (ENTRYBOT_TELEGRAM_TOKEN is empty) | That line in `.env` is still empty, or the process was not restarted after you filled it in | Fill in the token, then run `pm2 restart meteorabot-entrybot`. |
+| `Chat id kosong` (Chat id is empty) | Both chat id lines are empty | Fill in `TELEGRAM_CHAT_ID` or `ENTRYBOT_TELEGRAM_CHAT_ID`, then restart. |
+| `Gagal ambil harga` (Could not fetch the price) | The Jupiter price, or the pool list, could not be read | Send the same CA again. Check the Jupiter keys in `.env` and the `meteorabot-entry` log. |
+| `Gagal nulis pool.txt` (Could not write pool.txt) | The file cannot be written | Run the bot from the repo folder, and make sure `pool.txt` exists (`cp pool.txt.example pool.txt`). |
+| `CA ini sudah ada di antrean` (This CA is already in the queue) | An active line for that CA is already there | Open `/antrean` and remove the old line, or leave it. |
+| A notice says `dry-run, posisi tidak dibuka` (dry-run, the position was not opened) | Practice mode is still on | This is expected while `DRY_RUN=true`. Switch to live only after you choose to, in [setup.md](setup.md). |
+| The line is in `pool.txt`, and there is still no position | `meteorabot-entry` is stopped, or it is still waiting for a signal, a price, or a pool | Check `pm2 status`. For Spot and Bidask Double, wait for the signal. For a target price, wait until the price touches it. |
+| After a reboot, the queue bot is gone | `pm2 save` has not been run since you started it | Repeat step 4. |
 
-## Tombol di pesan status
+## Buttons on the status message
 
-Bagian ini bukan worker opsional. Proses `meteorabot-telegram` adalah satu dari empat proses inti di [setup.md](setup.md). Ia hanya mendengarkan ketukan. Pesan status dikirim oleh proses entry dan exit.
+This section is about the main bot. The process `meteorabot-telegram` is one of the four main processes in [setup.md](setup.md). It only listens for taps. The entry process and the exit process are the ones that send the status message.
 
-Syarat:
+You need all of these:
 
-- `TELEGRAM_BOT_TOKEN` dan `TELEGRAM_CHAT_ID` terisi.
-- `pm2 status` menunjukkan `meteorabot-telegram` `online`.
-- Di log: `Meteora Worker: TELEGRAM BUTTONS` dan `Tombol: ON`.
-- `TELEGRAM_BUTTONS_ENABLED` di `strat.conf` bukan `false`. Default contoh adalah `true`. Mengubahnya lalu `pm2 restart meteorabot-entry meteorabot-exit meteorabot-telegram`.
+- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are filled in.
+- `pm2 status` shows `meteorabot-telegram` as `online`.
+- The log contains `Meteora Worker: TELEGRAM BUTTONS` and `Tombol: ON` (Buttons: ON).
+- `TELEGRAM_BUTTONS_ENABLED` in `strat.conf` is something other than `false`. The example default is `true`. After you change it, run `pm2 restart meteorabot-entry meteorabot-exit meteorabot-telegram`.
 
-`false` membuat pesan status tetap terkirim, tanpa tombol.
+With `false`, the status message is still sent, and it has no buttons.
 
-Cara pakai, di chat notifikasi (bot pertama, bukan bot antrean):
+How to use them, in the notification chat (the first bot):
 
-1. Tunggu pesan Position Status. Hanya pesan itu yang membawa tombol. Alert "entry berhasil" dan sejenisnya tidak.
-2. `♻️` diikuti nama token = bentuk ulang posisi itu. Nama adalah simbol pair tanpa akhiran `-SOL`.
-3. Tekan `♻️`. Tombol baris itu berubah menjadi `Token`, `SOL`, dan `Batal` dalam satu baris.
-4. `Token` membentuk ulang sisi token. `SOL` membentuk ulang sisi SOL. Keduanya langsung masuk antrean. Tidak ada pertanyaan "Ya" lagi. Toast-nya `Rebalance <nama> dijadwalkan`.
-5. `⚡` = tutup posisi (Zap Out). Tekan, lalu `✅ Ya, zap out <nama>` untuk jadi, atau `✖️ Batal`. Toast jadwal: `Zap Out <nama> dijadwalkan`.
-6. Posisi token-only hanya menampilkan `⚡`. Tidak ada `♻️`.
-7. Nama yang lebih panjang dari 10 karakter ditampilkan satu tombol per baris, supaya tidak terpotong.
+1. Wait for a Position Status message. Only that message has buttons. An "entry succeeded" alert, and messages like it, have none.
+2. `♻️` followed by the token name reshapes that position. The name is the pair's symbol with the `-SOL` ending left off.
+3. Press `♻️`. That row's buttons change to `Token`, `SOL`, and `Batal` (Cancel), all on one row.
+4. `Token` reshapes the token side. `SOL` reshapes the SOL side. Either choice goes straight into the queue. There is no extra Yes question. The popup says `Rebalance <nama> dijadwalkan` (Rebalance <name> is scheduled). `<nama>` is the token name.
+5. `⚡` closes the position (Zap Out). Press it, then press `✅ Ya, zap out <nama>` (Yes, zap out <name>) to go ahead, or `✖️ Batal` (Cancel). The scheduled popup says `Zap Out <nama> dijadwalkan` (Zap Out <name> is scheduled).
+6. A token-only position shows only `⚡`. It has no `♻️` button.
+7. A name longer than 10 characters is shown as one button per line, so the name is not cut off.
 
-Yang mengerjakan antrean adalah `meteorabot-exit`, pada siklus berikutnya. Ketukan hanya mengubah keyboard pesan yang sama. Tidak ada pesan baru dari ketukan itu.
+`meteorabot-exit` works through that queue on its next cycle. A tap only changes the buttons on the same message. The tap itself sends no new message.
 
-Bila sisi yang dipilih tidak punya yang bisa dibentuk ulang, balasannya `Tidak ada yang bisa di-rebalance di sisi itu`. Perintah yang lebih lama dari 10 menit, atau untuk posisi yang sudah tidak ada, tidak dijalankan.
+If the side you chose has nothing that can be reshaped, the reply is `Tidak ada yang bisa di-rebalance di sisi itu` (There is nothing to rebalance on that side). A command older than 10 minutes, or for a position that no longer exists, is left undone.
 
-Zap Out menutup posisi seperti tutup manual, menukar sisa token ke SOL, dan tidak melanjutkan buka-ulang otomatis yang biasa terjadi saat harga keluar dari atas range.
+Zap Out closes the position the same way a manual close does, swaps leftover tokens into SOL, and stops the automatic re-open that usually follows when the price leaves the top of the range.
