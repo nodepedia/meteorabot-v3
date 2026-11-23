@@ -238,6 +238,112 @@ test("sisi SOL: geser bin satu step ikut memicu, di luar rentang tidak", () => {
   assert.equal(oor.action, "none");
 });
 
+test("tangga 20 lalu 5: sisi token dan pulih satu anak tangga", () => {
+  const ladder = {
+    enabled: true,
+    solEnabled: true,
+    firstStepPct: 20,
+    nextStepPct: 5,
+    stepPct: 10,
+    cooldownSec: 60,
+    retry: 3,
+  };
+  const now = 2_000_000;
+
+  assert.equal(
+    evaluateBidaskDoubleRebalance({ pos, tracked: tracked(), cfg: ladder, priceChangePct: -19.9, now }).action,
+    "none"
+  );
+  const first = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked(),
+    cfg: ladder,
+    priceChangePct: -20,
+    now,
+  });
+  assert.equal(first.action, "rebalance");
+  assert.equal(first.stepLevel, 20);
+
+  const between = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 20 }),
+    cfg: ladder,
+    priceChangePct: -24.9,
+    now,
+  });
+  assert.equal(between.action, "none");
+  assert.equal(between.stepLevel, 20);
+
+  const next = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 20 }),
+    cfg: ladder,
+    priceChangePct: -25,
+    now,
+  });
+  assert.equal(next.action, "rebalance");
+  assert.equal(next.stepLevel, 25);
+
+  const jump = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked(),
+    cfg: ladder,
+    priceChangePct: -37,
+    now,
+  });
+  assert.equal(jump.action, "rebalance");
+  assert.equal(jump.stepLevel, 35);
+
+  const shortOfFirstGap = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 20, lastBidaskDoubleRebalanceAt: 1_000_000 }),
+    cfg: ladder,
+    priceChangePct: -1,
+    now,
+  });
+  assert.notEqual(shortOfFirstGap.action, "rebalance_sol");
+
+  const backFromFirst = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 20, lastBidaskDoubleRebalanceAt: 1_000_000 }),
+    cfg: ladder,
+    priceChangePct: 0,
+    now,
+  });
+  assert.equal(backFromFirst.action, "rebalance_sol");
+  assert.equal(backFromFirst.stepLevel, 0);
+
+  const oneNextRung = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 25, lastBidaskDoubleRebalanceAt: 1_000_000 }),
+    cfg: ladder,
+    priceChangePct: -20,
+    now,
+  });
+  assert.equal(oneNextRung.action, "rebalance_sol");
+  assert.equal(oneNextRung.stepLevel, 20);
+  assert.equal(oneNextRung.reason, "recover_25_to_20pct");
+
+  const notQuite = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 25, lastBidaskDoubleRebalanceAt: 1_000_000 }),
+    cfg: ladder,
+    priceChangePct: -20.1,
+    now,
+  });
+  assert.equal(notQuite.action, "none");
+
+  const oldState = evaluateBidaskDoubleRebalance({
+    pos,
+    tracked: tracked({ lastBidaskDoubleRebalancePct: 10 }),
+    cfg: ladder,
+    priceChangePct: -20,
+    now,
+  });
+  assert.equal(oldState.action, "rebalance");
+  assert.equal(oldState.stepLevel, 20);
+});
+
 test("bin token yang dibentuk ulang: di atas active, atau seluruh range bila harga di bawah range", () => {
   assert.deepEqual(tokenSideBinsForBidaskRebalance(100, 80, 140), { fromBinId: 101, toBinId: 140 });
   assert.deepEqual(tokenSideBinsForBidaskRebalance(70, 80, 140), { fromBinId: 80, toBinId: 140 });

@@ -3,6 +3,30 @@ import { modeRules, LEGACY_MODE } from "./rules.js";
 import { parseBidaskSolPresets } from "./bidask-sol-range.js";
 import { parseEntrybotSizeOptions } from "./entrybot-size.js";
 
+function envPresent(e, key) {
+  if (!e || !Object.prototype.hasOwnProperty.call(e, key)) return false;
+  const value = e[key];
+  return value != null && String(value).trim() !== "";
+}
+
+// Kunci baru FIRST/NEXT menang. Keduanya kosong dan STEP_PCT lama terisi
+// → tangga seragam (first = next = nilai lama). Selain itu 20 lalu tiap 5.
+function resolveRebalanceSteps(e, { firstKey, nextKey, legacyKey, defaultFirst = 20, defaultNext = 5 }) {
+  const firstSet = envPresent(e, firstKey);
+  const nextSet = envPresent(e, nextKey);
+  const legacySet = envPresent(e, legacyKey);
+  if (!firstSet && !nextSet && legacySet) {
+    const step = Math.max(1, num(e[legacyKey], 10));
+    return { firstStepPct: step, nextStepPct: step, stepPct: step, legacyUniform: true };
+  }
+  return {
+    firstStepPct: Math.max(1, firstSet ? num(e[firstKey], defaultFirst) : defaultFirst),
+    nextStepPct: Math.max(1, nextSet ? num(e[nextKey], defaultNext) : defaultNext),
+    stepPct: Math.max(1, legacySet ? num(e[legacyKey], 10) : 10),
+    legacyUniform: false,
+  };
+}
+
 const FEE_MODES = ["none", "priority", "jito", "both"];
 function normalizeFeeMode(raw) {
   const value = String(raw == null ? "" : raw)
@@ -141,24 +165,34 @@ export function buildConfig(e = {}) {
     retry: Math.max(1, Math.floor(num(e.SPOT_TOKEN_BIDASK_RETRY, 3))),
   };
 
-  // Rebalance sisi token posisi bidask:double. Step = turunnya harga pool
+  // Rebalance sisi token posisi bidask:double. Satuan = turunnya harga pool
   // dari entryPoolPrice posisi itu sendiri (bukan % bin seperti spot).
+  // Tangga: firstStepPct, lalu tiap nextStepPct (20, 25, 30, ...).
+  // stepPct = kunci lama. Hanya jadi langkah bila legacyUniform.
   const bidaskDoubleRebalance = {
     enabled: bool(e.BIDASK_DOUBLE_REBALANCE_ENABLED, true),
-    // Sisi SOL: saat harga pulih satu step dari rebalance terakhir, SOL di bawah
-    // bin aktif dibentuk ulang jadi BidAsk. Ikut mati bila enabled = false.
+    // Sisi SOL: saat harga pulih satu anak tangga (jarak ke level sebelumnya),
+    // SOL di bawah bin aktif dibentuk ulang jadi BidAsk. Ikut mati bila enabled = false.
     solEnabled: bool(e.BIDASK_DOUBLE_SOL_REBALANCE_ENABLED, true),
-    stepPct: Math.max(1, num(e.BIDASK_DOUBLE_REBALANCE_STEP_PCT, 10)),
+    ...resolveRebalanceSteps(e, {
+      firstKey: "BIDASK_DOUBLE_REBALANCE_FIRST_STEP_PCT",
+      nextKey: "BIDASK_DOUBLE_REBALANCE_NEXT_STEP_PCT",
+      legacyKey: "BIDASK_DOUBLE_REBALANCE_STEP_PCT",
+    }),
     cooldownSec: Math.max(0, num(e.BIDASK_DOUBLE_REBALANCE_COOLDOWN_SEC, 60)),
     retry: Math.max(1, Math.floor(num(e.BIDASK_DOUBLE_REBALANCE_RETRY, 3))),
   };
 
-  // Rebalance sisi token posisi bidask:sol. Step = porsi bin di atas active
+  // Rebalance sisi token posisi bidask:sol. Satuan = porsi bin di atas active
   // yang sudah berisi token (sama seperti spot), bukan turunnya harga entry.
-  // Tidak ada sisi SOL.
+  // Tangga yang sama di satuan itu. Tidak ada sisi SOL otomatis.
   const bidaskSolRebalance = {
     enabled: bool(e.BIDASK_SOL_REBALANCE_ENABLED, true),
-    stepPct: Math.max(1, num(e.BIDASK_SOL_REBALANCE_STEP_PCT, 10)),
+    ...resolveRebalanceSteps(e, {
+      firstKey: "BIDASK_SOL_REBALANCE_FIRST_STEP_PCT",
+      nextKey: "BIDASK_SOL_REBALANCE_NEXT_STEP_PCT",
+      legacyKey: "BIDASK_SOL_REBALANCE_STEP_PCT",
+    }),
   };
 
   const entry = {

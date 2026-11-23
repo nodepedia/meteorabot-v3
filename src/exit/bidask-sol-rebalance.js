@@ -29,6 +29,7 @@ import {
   extractTokenSideLiquidity,
 } from "./spot-token-bidask.js";
 import { tokenSideBinsForBidaskRebalance } from "./bidask-double-rebalance.js";
+import { normalizeRebalanceLadder, rebalanceLadderLevel } from "./rebalance-ladder.js";
 import {
   capRedepositRaw,
   DEFAULT_MAX_BINS_PER_TX,
@@ -53,7 +54,9 @@ export function resetBidaskSolSolSideCallCount() {
 }
 
 // Porsi bin yang sudah jadi token, sama seperti spot (bin di atas active / span).
-// Step 10, 20, 30, ... Hanya naik. Tidak ada rebalance sisi SOL saat harga pulih.
+// Tangga di satuan itu: pertama 20, lalu tiap 5 (20, 25, 30, ...).
+// stepPct saja (tanpa first/next) = tangga seragam lama. Hanya naik.
+// Tidak ada rebalance sisi SOL saat harga pulih.
 export function evaluateBidaskSolRebalance({ pos, tracked, cfg, force = false }) {
   if (!pos || pos.mode !== "bidask:sol") {
     return { action: "none", reason: "not_bidask_sol" };
@@ -62,39 +65,41 @@ export function evaluateBidaskSolRebalance({ pos, tracked, cfg, force = false })
 
   const lowerBin = Number.isFinite(Number(pos.lowerBin)) ? Number(pos.lowerBin) : Number(tracked?.lowerBin);
   const upperBin = Number.isFinite(Number(pos.upperBin)) ? Number(pos.upperBin) : Number(tracked?.upperBin);
-  const step = Math.max(1, Number(cfg.stepPct) || 10);
+  const ladder = normalizeRebalanceLadder(cfg);
   const metrics = calcSpotTokenBinMetrics({
     activeBin: pos.activeBin,
     lowerBin,
     upperBin,
-    stepPct: step,
+    stepPct: ladder.firstStepPct,
   });
+  const stepLevel = rebalanceLadderLevel(metrics.tokenBinPct, ladder.firstStepPct, ladder.nextStepPct);
+  const leveled = { ...metrics, stepLevel };
   const lastPct = Math.max(0, Number(tracked?.lastBidaskSolRebalancePct) || 0);
 
-  if (!metrics.inRange) {
-    return { action: "none", reason: "out_of_range", lastPct, ...metrics };
+  if (!leveled.inRange) {
+    return { action: "none", reason: "out_of_range", lastPct, ...leveled };
   }
 
   // Manual: tetap hanya bin token. Bin SOL (active dan di bawahnya) tidak disentuh,
   // juga saat harga sudah pulih.
   if (force) {
-    if (metrics.tokenBins > 0 && metrics.fromBinId != null && metrics.toBinId != null) {
-      return { action: "rebalance", reason: "manual", lastPct, ...metrics };
+    if (leveled.tokenBins > 0 && leveled.fromBinId != null && leveled.toBinId != null) {
+      return { action: "rebalance", reason: "manual", lastPct, ...leveled };
     }
-    return { action: "none", reason: "no_token_bins", lastPct, ...metrics };
+    return { action: "none", reason: "no_token_bins", lastPct, ...leveled };
   }
 
-  // Step yang sama atau lebih rendah tidak diulang. Tidak ada jalur pulih sisi SOL.
-  if (metrics.stepLevel >= lastPct + step && metrics.stepLevel >= step) {
+  // Anak tangga yang sama atau lebih rendah tidak diulang. Tidak ada jalur pulih sisi SOL.
+  if (leveled.stepLevel > lastPct + 1e-9) {
     return {
       action: "rebalance",
-      reason: `step_${metrics.stepLevel}pct`,
+      reason: `step_${leveled.stepLevel}pct`,
       lastPct,
-      ...metrics,
+      ...leveled,
     };
   }
 
-  return { action: "none", reason: "below_next_step", lastPct, ...metrics };
+  return { action: "none", reason: "below_next_step", lastPct, ...leveled };
 }
 
 async function fetchPositionOnChain(pool, positionPubKey, walletPubKey) {

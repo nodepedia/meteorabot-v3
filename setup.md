@@ -107,10 +107,14 @@ Comments in `strat.conf.example` explain each key. These are the ones people cha
 | `BIDASK_SOL_ENTRY_PRESETS` | `-50/15,-30/15,-20/15` | The range buttons in the queue bot. |
 | `ENTRYBOT_SIZE_OPTIONS` | `0.5,1,2` | The size buttons in the queue bot, besides Default. |
 | `REBALANCE_MODE` | `inplace` | Reshape the position in place. `withdraw` pulls the funds to the wallet, then deposits them again. |
+| `BIDASK_DOUBLE_REBALANCE_FIRST_STEP_PCT` / `NEXT_STEP_PCT` | `20` / `5` | Bidask double reshapes its token bins after the pool price falls 20% from that position's own entry, then every further 5% (20, 25, 30, ...). When price recovers by one rung (20 points after the first reshape, then 5), the SOL side is reshaped too. |
+| `BIDASK_SOL_REBALANCE_FIRST_STEP_PCT` / `NEXT_STEP_PCT` | `20` / `5` | SOL-only positions use the same rungs, counted as the share of bins above the active bin that have turned into token, not as a price drop. Spot keeps even steps. |
 | `TELEGRAM_BUTTONS_ENABLED` | `true` | `false` sends status messages with no buttons. |
 | `SWAP_PENDING_RETRY_SEC` | `90` | How many seconds to wait before trying a leftover-token swap again. |
 
 When a position is closed, the bot swaps leftover tokens (including rewards) into SOL. A token that is being protected, and USDC, stay as they are. The details are in the swap-section comments in `strat.conf.example`.
+
+If `strat.conf` still has `BIDASK_DOUBLE_REBALANCE_STEP_PCT` or `BIDASK_SOL_REBALANCE_STEP_PCT` and does not yet have the matching `FIRST_STEP_PCT` and `NEXT_STEP_PCT` keys, that mode keeps even steps of the old value. The exit process logs the ladder it is actually using when it starts.
 
 ## 5. Create `pool.txt`
 
