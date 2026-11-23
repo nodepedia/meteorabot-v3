@@ -348,16 +348,23 @@ BIDASK_SOL_TRAILING_DROP_PCT=1.5
 BIDASK_SOL_ENABLE_BOUNCE_RECOVERY=false
 BIDASK_SOL_YIELD_CLOSE_BELOW_PCT=0
 
-# ===== Rebalance sisi token bidask:sol (tiap step % bin token) =====
+# ===== Rebalance sisi token bidask:sol (porsi bin token) =====
 # Posisi bidask:sol (SOL-only, dibuka manual lalu diadopsi exit worker).
 # Saat harga turun di dalam range, bin di atas active bin berubah jadi token.
-# Tiap kelipatan STEP_PCT dari porsi bin token (10, 20, 30, ...), bot
-# membentuk ulang HANYA bin token itu jadi kurva BidAsk di posisi yang sama.
+# Satuan pemicu = porsi bin itu terhadap lebar range (bukan turunnya harga).
+# Rebalance pertama saat porsi mencapai FIRST_STEP_PCT (20), lalu tiap
+# NEXT_STEP_PCT (5): 20, 25, 30, 35, ...
+# Bot membentuk ulang HANYA bin token itu jadi kurva BidAsk di posisi yang sama.
 # Bin yang masih SOL (active bin dan di bawahnya) tidak disentuh.
 # Tidak ada rebalance sisi SOL saat harga pulih. Range tidak berubah, tidak ada swap.
 # Cara tarik/setor ikut REBALANCE_MODE. false = fitur mati.
+# STEP_PCT lama diabaikan bila FIRST atau NEXT ada. Bila kedua kunci baru tidak
+# ada di strat.conf dan STEP_PCT terisi, tangga seragam sebesar STEP_PCT
+# (perilaku lama: 10, 20, 30, ... bila nilainya 10).
 # Perubahan dipakai setelah restart meteorabot-exit.
 BIDASK_SOL_REBALANCE_ENABLED=true
+BIDASK_SOL_REBALANCE_FIRST_STEP_PCT=20
+BIDASK_SOL_REBALANCE_NEXT_STEP_PCT=5
 BIDASK_SOL_REBALANCE_STEP_PCT=10
 
 # ===== Exit — Spot (satu mode, isi SOL-only, span >= SPOT_MIN_BINS) =====
@@ -496,17 +503,23 @@ SPOT_TOKEN_BIDASK_RETRY=3
 
 # ===== Rebalance sisi token bidask:double → BidAsk =====
 # Saat harga pool turun dari entryPoolPrice MASING-MASING posisi (utama dan
-# tiap posisi DCA sendiri), tiap kelipatan STEP_PCT bot menarik token yang
-# duduk di bin di atas bin aktif dan menyetor ulang ke posisi yang sama
-# dengan bentuk BidAsk. SOL tidak masuk/keluar. Range posisi tidak disusutkan.
-# Bukan persen isi bin seperti spot: -10%, -20%, -30%, ... dari harga entry.
+# tiap posisi DCA sendiri), bot menarik token yang duduk di bin di atas bin
+# aktif dan menyetor ulang ke posisi yang sama dengan bentuk BidAsk.
+# Satuan = persen turun harga dari entry posisi itu, bukan persen isi bin.
+# Rebalance pertama di FIRST_STEP_PCT (20), lalu tiap NEXT_STEP_PCT (5):
+# 20, 25, 30, 35, ... SOL tidak masuk/keluar pada sisi token. Range tidak disusutkan.
 # false = fitur mati (posisi dibiarkan bentuk awalnya), termasuk sisi SOL.
+# STEP_PCT lama diabaikan bila FIRST atau NEXT ada. Bila kedua kunci baru tidak
+# ada dan STEP_PCT terisi, tangga seragam sebesar STEP_PCT.
 # Perubahan dipakai setelah restart meteorabot-exit.
 BIDASK_DOUBLE_REBALANCE_ENABLED=true
-# Sisi SOL: setelah rebalance token, saat harga pulih minimal satu step
-# (dan naik harga atau geser bin cukup satu step), SOL di bawah bin aktif
-# dibentuk ulang jadi BidAsk. false = sisi SOL tidak diapa-apakan.
+# Sisi SOL: setelah rebalance token, saat harga pulih minimal satu anak tangga
+# (jarak ke level sebelumnya: dari 20 kembali 20 poin, dari 25/30/35 kembali
+# sebesar NEXT_STEP) dan naik harga atau geser bin cukup jarak itu, SOL di
+# bawah bin aktif dibentuk ulang jadi BidAsk. false = sisi SOL tidak diapa-apakan.
 BIDASK_DOUBLE_SOL_REBALANCE_ENABLED=true
+BIDASK_DOUBLE_REBALANCE_FIRST_STEP_PCT=20
+BIDASK_DOUBLE_REBALANCE_NEXT_STEP_PCT=5
 BIDASK_DOUBLE_REBALANCE_STEP_PCT=10
 # Jeda minimum (detik) antar rebalance pada posisi yang sama.
 BIDASK_DOUBLE_REBALANCE_COOLDOWN_SEC=60

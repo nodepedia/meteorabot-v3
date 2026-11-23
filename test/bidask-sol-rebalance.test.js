@@ -48,13 +48,18 @@ function solPos(activeBin, extra = {}) {
   };
 }
 
-test("config: BIDASK_SOL_REBALANCE default nyala, step 10", () => {
+test("config: BIDASK_SOL_REBALANCE default nyala, tangga 20 lalu 5", () => {
   const built = buildConfig({});
   assert.equal(built.bidaskSolRebalance.enabled, true);
-  assert.equal(built.bidaskSolRebalance.stepPct, 10);
+  assert.equal(built.bidaskSolRebalance.firstStepPct, 20);
+  assert.equal(built.bidaskSolRebalance.nextStepPct, 5);
+  assert.equal(built.bidaskSolRebalance.legacyUniform, false);
   const off = buildConfig({ BIDASK_SOL_REBALANCE_ENABLED: "false", BIDASK_SOL_REBALANCE_STEP_PCT: "25" });
   assert.equal(off.bidaskSolRebalance.enabled, false);
   assert.equal(off.bidaskSolRebalance.stepPct, 25);
+  assert.equal(off.bidaskSolRebalance.firstStepPct, 25);
+  assert.equal(off.bidaskSolRebalance.nextStepPct, 25);
+  assert.equal(off.bidaskSolRebalance.legacyUniform, true);
 });
 
 test("step 10/20/30, tidak mengulang step yang sama atau lebih rendah, flag mati", () => {
@@ -120,6 +125,31 @@ test("step 10/20/30, tidak mengulang step yang sama atau lebih rendah, flag mati
   });
   assert.equal(disabled.action, "none");
   assert.equal(disabled.reason, "disabled");
+});
+
+test("tangga 20 lalu 5 di satuan porsi bin token, bukan turunnya harga", () => {
+  const ladder = { enabled: true, firstStepPct: 20, nextStepPct: 5, stepPct: 10 };
+  const fresh = { lastBidaskSolRebalancePct: 0 };
+  // lebar 1000 bin: porsi token = (1000 - active) / 10
+  const at = (activeBin, lastPct = 0) =>
+    evaluateBidaskSolRebalance({
+      pos: solPos(activeBin, { lowerBin: 0, upperBin: 1000 }),
+      tracked: { lastBidaskSolRebalancePct: lastPct },
+      cfg: ladder,
+    });
+
+  assert.equal(at(801).stepLevel, 0);
+  assert.equal(at(801).action, "none");
+  assert.equal(at(800).action, "rebalance");
+  assert.equal(at(800).stepLevel, 20);
+  assert.equal(at(751, 20).action, "none");
+  assert.equal(at(751, 20).stepLevel, 20);
+  assert.equal(at(750, 20).action, "rebalance");
+  assert.equal(at(750, 20).stepLevel, 25);
+  assert.equal(at(630).action, "rebalance");
+  assert.equal(at(630).stepLevel, 35);
+  assert.equal(at(630, 35).action, "none");
+  assert.equal(fresh.lastBidaskSolRebalancePct, 0);
 });
 
 test("mode lain tidak memicu rebalance bidask:sol, dan sebaliknya", async () => {

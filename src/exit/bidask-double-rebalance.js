@@ -40,21 +40,29 @@ import {
   tryInPlaceRebalance,
   uiToRaw,
 } from "./rebalance-shape.js";
+import { normalizeRebalanceLadder, rebalanceLadderGap, rebalanceLadderLevel } from "./rebalance-ladder.js";
 
 const rebalanceInProgress = new Set();
 
 // Step dari turunnya harga pool vs entry posisi ini.
-// -10% → 10, -19.9% → 10, -20% → 20. Harga naik atau flat → 0.
+// Angka kedua = step seragam lama (10 → -10% = 10, -20% = 20).
+// Objek { firstStepPct, nextStepPct } = tangga (20 lalu tiap 5).
+// Harga naik atau flat → 0.
 function formatPct(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n.toFixed(1) : "?";
 }
 
-export function bidaskDoubleStepLevel(priceChangePct, stepPct = 10) {
-  const step = Math.max(1, Number(stepPct) || 10);
+export function bidaskDoubleStepLevel(priceChangePct, stepOrLadder = 10, nextStepPct) {
   const change = Number(priceChangePct);
   if (!Number.isFinite(change) || change >= 0) return 0;
-  return Math.floor((-change + 1e-9) / step) * step;
+  const ladder =
+    stepOrLadder != null && typeof stepOrLadder === "object"
+      ? normalizeRebalanceLadder(stepOrLadder)
+      : normalizeRebalanceLadder(
+          nextStepPct == null ? { stepPct: stepOrLadder } : { firstStepPct: stepOrLadder, nextStepPct }
+        );
+  return rebalanceLadderLevel(-change, ladder.firstStepPct, ladder.nextStepPct);
 }
 
 // Bin token yang dibentuk ulang. Tidak menyentuh bin aktif (bisa campur SOL+token)
@@ -116,8 +124,8 @@ export function evaluateBidaskDoubleRebalance({
   }
   const change = havePrice ? Number(priceChangePct) : null;
 
-  const step = Math.max(1, Number(cfg.stepPct) || 10);
-  const stepLevel = havePrice ? bidaskDoubleStepLevel(change, step) : 0;
+  const ladder = normalizeRebalanceLadder(cfg);
+  const stepLevel = havePrice ? bidaskDoubleStepLevel(change, ladder) : 0;
   const lastPct = Math.max(0, Number(tracked?.lastBidaskDoubleRebalancePct) || 0);
   const lastAt = Number(tracked?.lastBidaskDoubleRebalanceAt) || 0;
   const cooldownMs = Math.max(0, Number(cfg.cooldownSec) || 0) * 1000;
@@ -165,8 +173,8 @@ export function evaluateBidaskDoubleRebalance({
     return { action: "none", reason: "nothing_to_rebalance", lastPct, stepLevel, priceChangePct: change };
   }
 
-  // 1. Harga turun satu step lagi dari entry: bentuk ulang token di atas bin aktif.
-  if (stepLevel >= lastPct + step && stepLevel >= step) {
+  // 1. Harga turun sampai anak tangga berikutnya: bentuk ulang token di atas bin aktif.
+  if (stepLevel > lastPct + 1e-9) {
     if (inCooldown) {
       return {
         action: "cooldown",
@@ -186,15 +194,18 @@ export function evaluateBidaskDoubleRebalance({
     };
   }
 
-  // 2. Harga pulih minimal satu step sejak rebalance terakhir (sama seperti spot):
-  //    step yang tercatat turun, dan naiknya harga atau geser bin cukup satu step.
+  // 2. Harga pulih minimal satu anak tangga sejak rebalance terakhir.
+  //    "Satu step" = jarak ke level tangga sebelumnya (20 → 0 jaraknya 20,
+  //    25 → 20 jaraknya 5). Naiknya harga atau geser bin harus cukup jarak itu.
+  const gap = rebalanceLadderGap(lastPct, ladder.firstStepPct, ladder.nextStepPct);
   const depthPct = change < 0 ? -change : 0;
   const risePctFromLastStep = lastPct - depthPct;
   const risePctFromLastBin = lastBin != null && binSpan > 0 ? ((activeBin - lastBin) * 100) / binSpan : null;
   const recoveredEnough =
-    lastPct >= step &&
-    stepLevel <= lastPct - step &&
-    (risePctFromLastStep + 1e-9 >= step || (risePctFromLastBin != null && risePctFromLastBin + 1e-9 >= step));
+    lastPct > 1e-9 &&
+    gap > 0 &&
+    stepLevel <= lastPct - gap + 1e-9 &&
+    (risePctFromLastStep + 1e-9 >= gap || (risePctFromLastBin != null && risePctFromLastBin + 1e-9 >= gap));
 
   if (recoveredEnough) {
     if (haveBins && (activeBin < lowerBin || activeBin > upperBin)) {
@@ -248,7 +259,7 @@ function livePoolBlock(pool) {
 }
 
 // Bentuk ulang posisi bidask:double di tempat yang sama, tanpa mengecilkan range.
-// Token: tiap kelipatan turun harga dari entry. SOL: saat harga pulih satu step.
+// Token: anak tangga turun harga dari entry. SOL: saat harga pulih satu anak tangga.
 async function executeBidaskSolRebalance(ctx) {
   const {
     decision,

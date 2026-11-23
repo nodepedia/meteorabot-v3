@@ -70,6 +70,7 @@ import { handleBidaskSolOorKananReentry, planBidaskSolOorKananReentry } from "./
 import { handleSpotTokenBidask } from "./spot-token-bidask.js";
 import { handleBidaskDoubleRebalance } from "./bidask-double-rebalance.js";
 import { handleBidaskSolRebalance } from "./bidask-sol-rebalance.js";
+import { formatRebalanceLadder } from "./rebalance-ladder.js";
 import { lookupConfiguredEntrySizeSol } from "../entry/pool-list.js";
 import { consumeTelegramCommands } from "./telegram-commands.js";
 
@@ -281,6 +282,10 @@ function emitSummary(positions) {
 
 export async function mainLoop(opts = {}) {
   const { runSweep = process.env.EXIT_INLINE_SWEEP !== "false" } = opts;
+  log.info(
+    `Tangga rebalance bidask:double (turun harga dari entry): ${formatRebalanceLadder(config.bidaskDoubleRebalance)}`
+  );
+  log.info(`Tangga rebalance bidask:sol (porsi bin token): ${formatRebalanceLadder(config.bidaskSolRebalance)}`);
   // Tunda ringkasan pertama ~20s agar refresh kandidat pool sudah selesai.
   lastSummaryAt = Date.now() - minutes(config.tgStatusInterval) + 20_000;
 
