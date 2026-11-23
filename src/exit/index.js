@@ -3,7 +3,7 @@ import log from "../core/logger.js";
 import { sleep, minutes } from "../core/utils.js";
 import {
   getOpenPositions,
-  pnlFromEntry,
+  pnlBasisFromEntry,
   fetchInitialDepositEvents,
   initialCapitalForPosition,
   needsHistoricalFirstDeposit,
@@ -103,8 +103,11 @@ async function ensureTrackedInitialCapital(pos, { adopted }) {
 
   const saved = setInitialCapitalSol(pos.position, capital);
   if (saved != null) {
-    const pnl = pnlFromEntry(entry, { initialCapitalSol: saved });
-    if (pnl != null) pos.pnlPct = pnl;
+    const basis = pnlBasisFromEntry(entry, { initialCapitalSol: saved });
+    if (basis?.pct != null) {
+      pos.pnlPct = basis.pct;
+      pos.pnlSol = basis.pnlSol ?? null;
+    }
     log.info(`${pair}: modal awal ${saved} SOL`);
   }
   return saved;
