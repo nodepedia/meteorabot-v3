@@ -20,6 +20,7 @@ import {
   recordTrackedRange,
   noteBidaskSolOpenOffset,
   getOpenTrackedPositions,
+  isExternalPosition,
   registerMissedCycle,
   resetMissedCycle,
   markClosedNotDetected,
@@ -185,7 +186,7 @@ function handleMissingPositions(seen) {
     recordAction(`CLOSE ${label} — ${humanReason("not_detected")} | PnL puncak ${fmtPct(p.lastPnlPeak)}`);
     tg.notifyPositionMissing(p.position, p.pair, count);
     sweepClosedPosition(p.baseMint, label, p.pool);
-    if (!getOpenTrackedPositions().some((t) => t.pool === p.pool)) {
+    if (!isExternalPosition(p) && !getOpenTrackedPositions().some((t) => t.pool === p.pool)) {
       deactivatePool(p.pool, "posisi ditutup manual / hilang");
     }
   }
@@ -368,7 +369,9 @@ export async function mainLoop(opts = {}) {
       const adopted = !tracked;
       if (!tracked) {
         const mode = classifyMode(pos);
-        trackPosition(pos.position, pos.pool, pos.pair, pos.baseMint, pos.collectFeeMode, mode);
+        trackPosition(pos.position, pos.pool, pos.pair, pos.baseMint, pos.collectFeeMode, mode, false, {
+          source: "adopted",
+        });
         tracked = getTrackedPosition(pos.position);
         // Spot yang mendarat tanpa tracking entry (tx error di log): pulihkan size.
         if ((tracked?.mode || mode) === "spot") {

@@ -2,6 +2,7 @@ import config from "../config/index.js";
 import log from "../core/logger.js";
 import { fmtQuote } from "../core/report.js";
 import { WSOL_MINT } from "../core/constants.js";
+import { getPrices } from "../market/jupiter-price.js";
 import * as tg from "../notify/telegram.js";
 import { getOpenTrackedPositions } from "../state/positions.js";
 import {
@@ -13,7 +14,7 @@ import {
 import { bidaskSolRangePair } from "../config/bidask-sol-range.js";
 import { loadPoolList, commentPoolInList, ensurePoolListHeader, isBidaskSolNow } from "./pool-list.js";
 import { getPoolInfo, pairNameCache } from "./pool-info.js";
-import { watchPrices, getLastPrices } from "./price-watch.js";
+import { watchPrices, watchPriceFields, noteBullishPriceGap } from "./price-watch.js";
 import { getSupertrend, getSupertrendFallback } from "../market/supertrend-state.js";
 import { getConnection } from "../solana/connection.js";
 import {
@@ -62,11 +63,12 @@ export { getPoolNames } from "./pool-info.js";
 export { selectWatchCandidates } from "./candidates.js";
 
 // Ringkasan pool yang sedang dipantau untuk log naratif (tanpa I/O).
-function buildLocalWatchSnapshot() {
-  const prices = getLastPrices();
+// Harga cache yang lebih tua dari ~60 detik ditandai basi, bukan "siap entry".
+function buildLocalWatchSnapshot(now = Date.now()) {
   const rows = candidateCache.map((c) => {
     const st = getSupertrend(c.mint) || getSupertrendFallback(c.mint);
-    const price = prices.get(c.mint);
+    const quote = watchPriceFields(c.mint, now);
+    if (st?.direction === "bullish") noteBullishPriceGap(c.mint, quote.price != null, now);
     return {
       pool: c.pool,
       pairName: c.pairName || pairNameCache.get(c.pool) || null,
@@ -74,14 +76,18 @@ function buildLocalWatchSnapshot() {
       sizeSol: c.sizeSol,
       trend: st ? st.direction : null,
       line: st ? st.line : null,
-      price: Number.isFinite(price) ? price : null,
+      price: quote.price,
+      priceStale: quote.priceStale,
+      priceAgeSec: quote.priceAgeSec,
     };
   });
   for (const c of bidaskSolCache) {
     const solNow = isBidaskSolNow(c);
+    const token = watchPriceFields(c.mint, now);
+    const sol = watchPriceFields(WSOL_MINT, now);
     const cmp = bidaskSolQuotePrice({
-      tokenUsd: prices.get(c.mint),
-      solUsd: prices.get(WSOL_MINT),
+      tokenUsd: token.price,
+      solUsd: sol.price,
       entryPriceUnit: solNow ? "usd" : c.entryPriceUnit,
     });
     const unit = solNow ? "now" : c.entryPriceUnit === "sol" ? "sol" : "usd";
@@ -94,7 +100,9 @@ function buildLocalWatchSnapshot() {
       entryPrice: solNow ? null : c.entryPrice,
       entryPriceUnit: solNow ? "now" : cmp.unit,
       entryNow: solNow,
-      price: cmp.price,
+      price: token.priceStale ? null : cmp.price,
+      priceStale: token.priceStale || (!solNow && c.entryPriceUnit === "sol" && sol.priceStale),
+      priceAgeSec: token.priceAgeSec,
       touchDirection: solNow
         ? null
         : c.touchDirection || getBidaskSolTouchDirection(bidaskSolTouchKey(c.mint, c.entryPrice, unit)) || null,
@@ -102,9 +110,11 @@ function buildLocalWatchSnapshot() {
     });
   }
   for (const c of doubleTargetCache) {
+    const token = watchPriceFields(c.mint, now);
+    const sol = watchPriceFields(WSOL_MINT, now);
     const cmp = bidaskSolQuotePrice({
-      tokenUsd: prices.get(c.mint),
-      solUsd: prices.get(WSOL_MINT),
+      tokenUsd: token.price,
+      solUsd: sol.price,
       entryPriceUnit: c.entryPriceUnit,
     });
     const touch = getBidaskDoubleTouch(c.targetKey);
@@ -116,7 +126,9 @@ function buildLocalWatchSnapshot() {
       mode: "bidask:double",
       entryPrice: c.entryPrice,
       entryPriceUnit: cmp.unit,
-      price: cmp.price,
+      price: token.priceStale ? null : cmp.price,
+      priceStale: token.priceStale || (c.entryPriceUnit === "sol" && sol.priceStale),
+      priceAgeSec: token.priceAgeSec,
       touchDirection: c.touchDirection || touch?.direction || null,
       pendingBidaskDouble: true,
     });
@@ -182,6 +194,22 @@ function clearInMemoryGate(pool) {
     enteredPools.delete(quotaKey(key, "bidask"));
     bidaskSolWaitUntil.delete(key);
   }
+}
+
+// Log skip kuota strategi: paling sering sekali per 10 menit per baris.
+const sameStrategyLoggedAt = new Map();
+
+export function noteSameStrategySkip(key, label, now = Date.now()) {
+  const id = String(key || "");
+  const last = sameStrategyLoggedAt.get(id) || 0;
+  if (id && now - last < 10 * 60 * 1000) return false;
+  if (id) sameStrategyLoggedAt.set(id, now);
+  log.info(`${label} skip: token sudah punya posisi aktif dengan strategi yang sama (log berikutnya ≥10 menit lagi)`);
+  return true;
+}
+
+export function resetSameStrategySkipLog() {
+  sameStrategyLoggedAt.clear();
 }
 
 function isStrategySlotBusy(pool, mint, strategy) {
@@ -369,7 +397,10 @@ export async function refreshCandidates() {
           (p) =>
             p && p.closed !== true && p.baseMint === lineKey && p.isDca !== true && strategyOfMode(p.mode) === strategy
         );
-        if (sameStrategyOpen) continue;
+        if (sameStrategyOpen) {
+          noteSameStrategySkip(`${lineKey}:${strategy}`, `CA ${lineKey}`, now);
+          continue;
+        }
         if (solWatches.some((w) => w.mint === lineKey)) continue;
         const watch = {
           mint: lineKey,
@@ -424,7 +455,10 @@ export async function refreshCandidates() {
           (p) =>
             p && p.closed !== true && p.baseMint === lineKey && p.isDca !== true && strategyOfMode(p.mode) === strategy
         );
-        if (sameStrategyOpen) continue;
+        if (sameStrategyOpen) {
+          noteSameStrategySkip(`${lineKey}:${strategy}`, `CA ${lineKey}`, now);
+          continue;
+        }
         const r = await resolveCaPool(lineKey, { minBinStep });
         if (!r.pool) {
           if (shouldLogCaSkip(lineKey, now)) {
@@ -593,6 +627,8 @@ export async function refreshCandidates() {
       }
       if (mintBlock.sameStrategy) {
         stillOpen.add(slotKey);
+        const where = ca ? `CA ${lineKey}` : `Pool ${poolAddress.slice(0, 8)} token ${info.baseMint}`;
+        noteSameStrategySkip(`${info.baseMint || lineKey}:${strategy}`, where, now);
         continue;
       }
       if (isEntryInProgressMint(info.baseMint) || isMintClosing(info.baseMint)) continue;
@@ -682,6 +718,44 @@ function bidaskSolWatchable(now = Date.now()) {
   });
 }
 
+// Mint yang dibutuhkan semua poller dalam satu tick. WSOL ikut bila ada target
+// satuan SOL atau kandidat Supertrend (rem harga memakai harga SOL yang sama).
+export function collectEntryPriceMints({ doubleTargets = [], solWatches = [], watchable = [] } = {}) {
+  const mints = new Set();
+  for (const row of doubleTargets) if (row?.mint) mints.add(row.mint);
+  for (const row of solWatches) if (row?.mint) mints.add(row.mint);
+  for (const row of watchable) if (row?.mint) mints.add(row.mint);
+  const solUnit = [...doubleTargets, ...solWatches].some(
+    (row) => row && !isBidaskSolNow(row) && row.entryPriceUnit === "sol"
+  );
+  if (mints.size > 0 && (solUnit || watchable.length > 0)) mints.add(WSOL_MINT);
+  return [...mints];
+}
+
+// Satu getPrices per tick, lalu peta yang sama masuk ke tiap poller.
+// Tanpa peta, poller tetap fetch sendiri (test yang memanggilnya langsung).
+export async function pollSharedEntryPrices({
+  doubleTargets = [],
+  solWatches = [],
+  watchable = [],
+  fetchPrices = getPrices,
+  watchDeps = {},
+} = {}) {
+  const ids = collectEntryPriceMints({ doubleTargets, solWatches, watchable });
+  const fetched = ids.length > 0 ? await fetchPrices(ids) : new Map();
+  const prices = fetched instanceof Map ? fetched : new Map();
+  const double = doubleTargets.length > 0 ? await pollBidaskDoubleTargets(doubleTargets, { prices }) : { armed: [] };
+  const sol = solWatches.length > 0 ? await pollBidaskSolPrices(solWatches, { prices }) : { triggered: [] };
+  const watched =
+    watchable.length > 0
+      ? await watchPrices(
+          watchable.map((row) => ({ pool: row.pool, mint: row.mint })),
+          { ...watchDeps, prices }
+        )
+      : { triggered: [], pending: 0 };
+  return { prices, double, sol, watched };
+}
+
 export async function watchAndEnter() {
   if (!config.entry.enabled) return null;
   if (_watchBusy) return null;
@@ -689,15 +763,7 @@ export async function watchAndEnter() {
   _watchBusy = true;
 
   try {
-    if (doubleTargetCache.length > 0) await pollBidaskDoubleTargets(doubleTargetCache);
-
     const solWatchable = bidaskSolWatchable();
-    let solTriggered = [];
-    if (solWatchable.length > 0) {
-      const polled = await pollBidaskSolPrices(solWatchable);
-      solTriggered = polled.triggered || [];
-    }
-
     const eligible = supertrendHitsToEnter(candidateCache, getBidaskDoubleTouch);
     const watchable = selectWatchCandidates(eligible, {
       inFlight: inFlightPools,
@@ -705,10 +771,16 @@ export async function watchAndEnter() {
       cooldowns: failureCooldownUntil,
       now: Date.now(),
     });
+    const polled = await pollSharedEntryPrices({
+      doubleTargets: doubleTargetCache,
+      solWatches: solWatchable,
+      watchable,
+    });
+    const solTriggered = polled.sol.triggered || [];
     let triggered = [];
     if (watchable.length > 0) {
       const byPool = new Map(watchable.map((c) => [c.pool, c]));
-      const watched = await watchPrices(watchable.map((c) => ({ pool: c.pool, mint: c.mint })));
+      const watched = polled.watched;
       const hits = supertrendHitsToEnter(
         (watched.triggered || []).map((t) => {
           const c = byPool.get(t.pool);

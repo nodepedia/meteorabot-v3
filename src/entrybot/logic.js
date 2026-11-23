@@ -558,12 +558,28 @@ export function classifyEntryArmed(message) {
   return null;
 }
 
+function entryWorkerOpened(position, lines) {
+  if (!position || position.source === "adopted") return false;
+  if (position.openedAt != null && position.openedAt !== "") return true;
+  if (position.source != null && position.source !== "") return true;
+  const addr = position.position;
+  if (!addr) return false;
+  for (const line of lines || []) {
+    const opened = /position opened:\s*([1-9A-HJ-NP-Za-km-z]+)/.exec(String(line));
+    if (opened && opened[1] === addr) return true;
+  }
+  return false;
+}
+
 export function classifyEntrySkip(message) {
   const text = String(message || "");
   if (/\[DRY RUN\]\s*Would enter/i.test(text)) return { code: "dry_run", label: "dry-run, posisi tidak dibuka" };
   if (/non-refundable|nonrefundable/i.test(text)) return { code: "non_refundable", label: "sewa non-refundable" };
   if (/insufficient SOL|saldo SOL kurang|Wallet SOL rendah/i.test(text)) {
     return { code: "low_sol", label: "SOL di wallet kurang" };
+  }
+  if (/token sudah punya posisi aktif/i.test(text)) {
+    return { code: "same_strategy", label: "token sudah punya posisi aktif" };
   }
   if (/sudah punya posisi|posisi sudah ada|duplicate/i.test(text)) {
     return { code: "duplicate", label: "sudah ada posisi" };
@@ -613,13 +629,14 @@ function modeOf(position) {
   return LEGACY_MODE[raw] || raw;
 }
 
-export function findOpenedPosition(item, positions) {
+export function findOpenedPosition(item, positions, lines) {
   const list = Array.isArray(positions) ? positions : Object.values(positions || {});
   let found = null;
   for (const position of list) {
     if (!position || position.closed === true || position.isDca === true) continue;
     if (position.baseMint !== item.mint) continue;
     if (modeOf(position) !== item.strategy) continue;
+    if (!entryWorkerOpened(position, lines)) continue;
     const seen = Number(position.firstSeenAt) || 0;
     if (seen + 15000 < Number(item.queuedAt)) continue;
     if (!found || seen < Number(found.firstSeenAt || 0)) found = position;
@@ -703,7 +720,7 @@ export function reviewQueue(items, view, now, opts = {}) {
       if (item && now - doneAt < DONE_KEEP_MS) next.push(item);
       continue;
     }
-    const opened = findOpenedPosition(item, view.positions);
+    const opened = findOpenedPosition(item, view.positions, lines);
     if (opened) {
       const meta = extractOpenMeta(lines, opened, item);
       notes.push({ id: item.id, kind: "entered", text: formatEntered(item, opened, meta) });

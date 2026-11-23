@@ -45,6 +45,10 @@ export function trackPosition(
       pair: pair || "",
       baseMint: baseMint || "",
       firstSeenAt: Date.now(),
+      // openedAt = entry worker / re-entry bot. null + source "adopted" = posisi luar.
+      // State lama tidak punya kedua field ini; itu dibaca sebagai posisi luar.
+      openedAt: extra?.source === "adopted" ? null : (finitePositive(extra?.openedAt) ?? Date.now()),
+      source: extra?.source === "adopted" ? "adopted" : extra?.source || "entry",
       // Re-entry OOR kanan: awal rantai (warmup + batas waktu). Kosong = entry
       // baru atau posisi yang baru diadopsi, dihitung dari firstSeenAt. Hanya diisi sekali.
       exitWarmupStartedAt: finitePositive(extra?.exitWarmupStartedAt),
@@ -142,6 +146,16 @@ export function setEntryPoolPrice(positionAddress, price) {
   p.entryPoolPrice = value;
   writeState(state);
   return value;
+}
+
+// Posisi yang tidak dibuka bot. Baru: source "adopted".
+// Lama (state.json sebelum field ini): source dan openedAt keduanya kosong.
+export function isExternalPosition(tracked) {
+  if (!tracked || typeof tracked !== "object") return false;
+  if (tracked.source === "adopted") return true;
+  const noOpened = tracked.openedAt == null || tracked.openedAt === "";
+  const noSource = tracked.source == null || tracked.source === "";
+  return noOpened && noSource;
 }
 
 export function getTrackedPosition(positionAddress) {
