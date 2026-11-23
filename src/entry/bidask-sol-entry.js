@@ -14,7 +14,7 @@ import {
   getBidaskSolTouchDirection,
   setBidaskSolTouchDirection,
 } from "../state/bidask-sol-touch.js";
-import { getLastPrices } from "./price-watch.js";
+import { forgetPrice, rememberPrices } from "./price-watch.js";
 import { addrOf, isDlmmPool, isCaPoolInvalid } from "./ca-resolve.js";
 import { isBidaskSolNow } from "./pool-list.js";
 
@@ -270,16 +270,11 @@ export async function pollBidaskSolPrices(watches = [], deps = {}) {
   const list = (watches || []).filter((w) => w?.mint && (isBidaskSolNow(w) || Number(w.entryPrice) > 0));
   if (list.length === 0) return { triggered: [] };
 
-  const prices = await fetchPrices([...list.map((w) => w.mint), WSOL_MINT]);
-  const last = getLastPrices();
-  for (const [mint, value] of prices) {
-    if (mint === WSOL_MINT) continue;
-    if (Number.isFinite(value)) last.set(mint, value);
-  }
+  const prices = deps.prices instanceof Map ? deps.prices : await fetchPrices([...list.map((w) => w.mint), WSOL_MINT]);
+  rememberPrices(prices, deps.now);
   const solUsd = prices.get(WSOL_MINT);
   const solNum = Number(solUsd);
-  if (Number.isFinite(solNum) && solNum > 0) last.set(WSOL_MINT, solNum);
-  else last.delete(WSOL_MINT);
+  if (!(Number.isFinite(solNum) && solNum > 0)) forgetPrice(WSOL_MINT);
 
   const triggered = [];
   let missingSol = 0;

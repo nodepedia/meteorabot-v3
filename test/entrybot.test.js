@@ -447,10 +447,15 @@ test("pantau posisi terbuka, skip yang ditahan, dan baris hilang", () => {
   );
   assert.match(low.notes[0].text, /SOL di wallet kurang/);
 
-  const opened = findOpenedPosition(item, {
-    a: { baseMint: MINT, mode: "spot", closed: false, firstSeenAt: queuedAt + 1000, position: POS, pool: POOL },
-    old: { baseMint: MINT, mode: "spot", closed: false, firstSeenAt: queuedAt - 60_000, position: "old" },
-  });
+  const openLog = `SPOT position opened: ${POS} (tx: ${TX}) | bins [1..2] step 80`;
+  const opened = findOpenedPosition(
+    item,
+    {
+      a: { baseMint: MINT, mode: "spot", closed: false, firstSeenAt: queuedAt + 1000, position: POS, pool: POOL },
+      old: { baseMint: MINT, mode: "spot", closed: false, firstSeenAt: queuedAt - 60_000, position: "old" },
+    },
+    [openLog]
+  );
   assert.equal(opened.position, POS);
   const done = reviewQueue(
     [item],
@@ -595,6 +600,87 @@ test("classify skip tidak menganggap log bin step sukses sebagai gagal", () => {
   assert.equal(classifyEntrySkip(`CA ${MINT.slice(0, 8)} → pool ${POOL.slice(0, 8)} (bin step 100, TVL 50000)`), null);
   assert.equal(classifyEntrySkip("[DRY RUN] Would enter bidask:sol CA 7EJqZHD4").code, "dry_run");
   assert.equal(classifyEntrySkip("REDFLAG non-refundable rent").code, "non_refundable");
+  assert.equal(classifyEntrySkip("posisi sudah ada di pool").code, "duplicate");
+  const same = classifyEntrySkip(
+    `${MINT} skip: token sudah punya posisi aktif dengan strategi yang sama (log berikutnya ≥10 menit lagi)`
+  );
+  assert.equal(same.code, "same_strategy");
+  assert.equal(same.label, "token sudah punya posisi aktif");
+});
+
+test("posisi luar tidak dihitung entry berhasil; log position opened tetap bukti", () => {
+  const queuedAt = Date.parse("2026-01-01T00:00:00.000Z");
+  const item = {
+    id: "qext",
+    mint: MINT,
+    symbol: "BONK",
+    strategy: "spot",
+    status: "watching",
+    queuedAt,
+    skips: {},
+  };
+  const poolText = `${MINT},,,spot,ca\n`;
+  const external = {
+    baseMint: MINT,
+    mode: "spot",
+    closed: false,
+    firstSeenAt: queuedAt + 1000,
+    position: POS,
+    pool: POOL,
+    source: "adopted",
+    openedAt: null,
+    entrySizeSol: null,
+  };
+  assert.equal(findOpenedPosition(item, { a: external }, [`📌 ENTRY posisi ${POS} terdeteksi di on-chain`]), null);
+  assert.equal(
+    findOpenedPosition(item, {
+      a: { baseMint: MINT, mode: "spot", closed: false, firstSeenAt: queuedAt + 1000, position: POS, pool: POOL },
+    }),
+    null
+  );
+  const proved = findOpenedPosition(item, {
+    a: { ...external, source: "entry", openedAt: queuedAt + 500 },
+  });
+  assert.equal(proved.position, POS);
+  const viaLog = findOpenedPosition(
+    item,
+    { a: { baseMint: MINT, mode: "spot", closed: false, firstSeenAt: queuedAt + 1000, position: POS, pool: POOL } },
+    [`SPOT position opened: ${POS} (tx: ${TX})`]
+  );
+  assert.equal(viaLog.position, POS);
+
+  const watching = reviewQueue(
+    [item],
+    {
+      poolText,
+      positions: { a: external },
+      logLines: [`📌 ENTRY BONK — posisi spot aktif terdeteksi di on-chain`],
+    },
+    queuedAt + 2000
+  );
+  assert.equal(watching.items[0].status, "watching");
+  assert.equal(watching.notes.length, 0);
+});
+
+test("skip strategi sama diberitahu sekali, lalu ditahan", () => {
+  const queuedAt = Date.parse("2026-01-01T00:00:00.000Z");
+  const item = {
+    id: "qsame",
+    mint: MINT,
+    symbol: "BONK",
+    strategy: "spot",
+    status: "watching",
+    queuedAt,
+    skips: {},
+  };
+  const poolText = `${MINT},,,spot,ca\n`;
+  const line = `[2026-01-01T00:00:02.000Z] [INFO] CA ${MINT} skip: token sudah punya posisi aktif dengan strategi yang sama (log berikutnya ≥10 menit lagi)`;
+  const once = reviewQueue([item], { poolText, positions: {}, logLines: [line] }, queuedAt + 5000);
+  assert.match(once.notes[0].text, /belum bisa entry: token sudah punya posisi aktif/);
+  assert.equal(once.notes[0].code, "same_strategy");
+  assert.equal(once.items[0].status, "watching");
+  const again = reviewQueue(once.items, { poolText, positions: {}, logLines: [line] }, queuedAt + 6000);
+  assert.equal(again.notes.length, 0);
 });
 
 test("append pool.txt atomik, header utuh, duplikat ditolak", () => {

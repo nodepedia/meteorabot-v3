@@ -242,7 +242,9 @@ function closeDeps({ swapResults = {}, protFn = prot(), balances = {} } = {}) {
 }
 
 test("close: base + reward mint di-swap ke SOL, pool dinonaktifkan", async () => {
-  reset({ positions: { POS1: { position: "POS1", pool: "POOLA", baseMint: BASE, closed: false } } });
+  reset({
+    positions: { POS1: { position: "POS1", pool: "POOLA", baseMint: BASE, closed: false, openedAt: 1, source: "entry" } },
+  });
   const c = closeDeps();
   const r = await handleClose({ position: "POS1", pool: "POOLA", baseMint: BASE, pnlPct: 1 }, "stop_loss", { deps: c.deps });
   assert.equal(r.success, true);
@@ -252,7 +254,9 @@ test("close: base + reward mint di-swap ke SOL, pool dinonaktifkan", async () =>
 });
 
 test("close: swap gagal → swap tertunda, pool BELUM dinonaktifkan; retry sukses → baru dinonaktifkan", async () => {
-  reset({ positions: { POS2: { position: "POS2", pool: "POOLB", baseMint: BASE, closed: false } } });
+  reset({
+    positions: { POS2: { position: "POS2", pool: "POOLB", baseMint: BASE, closed: false, openedAt: 1, source: "entry" } },
+  });
   const c = closeDeps({ swapResults: { [BASE]: { success: false, error: "slippage" } } });
   const r = await handleClose({ position: "POS2", pool: "POOLB", baseMint: BASE, pnlPct: 1 }, "stop_loss", { deps: c.deps });
   assert.equal(r.swapPending, true);

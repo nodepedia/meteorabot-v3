@@ -120,8 +120,19 @@ function trendLabel(trend) {
   return "tren belum siap";
 }
 
+function priceAgeLabel(w) {
+  const sec = Number(w.priceAgeSec);
+  return Number.isFinite(sec) ? ` (${sec}s)` : "";
+}
+
 function watchLine(w) {
   const name = w.pairName || `${(w.pool || "").slice(0, 8)}…`;
+  if (w.priceStale) {
+    const age = priceAgeLabel(w);
+    if (w.pendingBidaskSol) return `${name} | bidask:sol harga basi${age}`;
+    if (w.pendingBidaskDouble) return `${name} | bidask:double harga basi${age}, lalu Supertrend`;
+    return `${name} | ${trendLabel(w.trend)} | harga basi${age}`;
+  }
   if (w.pendingBidaskSol) {
     return `${name} | bidask:sol ${bidaskSolTouchPhrase(w)}`;
   }

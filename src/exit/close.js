@@ -4,7 +4,7 @@ import * as tg from "../notify/telegram.js";
 import { closePosition } from "../meteora/close.js";
 import { waitClosedPositionPnl } from "../meteora/positions.js";
 import { swapMintsToSol, enqueuePendingSwap } from "./pending-swaps.js";
-import { recordClose, getTrackedPosition, getOpenTrackedPositions } from "../state/positions.js";
+import { recordClose, getTrackedPosition, getOpenTrackedPositions, isExternalPosition } from "../state/positions.js";
 import { clearTrailingState } from "../state/trailing.js";
 import { clearBounceRecovery } from "../state/bounce.js";
 import {
@@ -79,6 +79,8 @@ export async function handleClose(pos, reason, opts = {}) {
       // Dijalankan paralel dengan swap; fallback ke PnL live bila belum ter-index.
       // Ambil tracked sebelum clearTrailingState agar referensi trailing masih tersedia.
       const trackedClose = getTrackedPosition(pos.position);
+      // Posisi luar (diadopsi) tidak boleh memberi '#' pada baris pool.txt yang masih menunggu.
+      const externalClose = isExternalPosition(trackedClose);
       const realizedPnlPromise = result.dryRun
         ? Promise.resolve(null)
         : waitPnlFn(pos.pool, pos.position, { initialCapitalSol: trackedClose?.initialCapitalSol });
@@ -131,9 +133,17 @@ export async function handleClose(pos, reason, opts = {}) {
         if (sw.failed.length > 0) {
           swapPending = true;
           for (const f of sw.failed) {
-            enqueuePendingSwap({ mint: f.mint, pool: pos.pool, pair: pairLabel, reason, deactivate: !skipDeactivate });
+            enqueuePendingSwap({
+              mint: f.mint,
+              pool: pos.pool,
+              pair: pairLabel,
+              reason,
+              deactivate: !skipDeactivate && !externalClose,
+            });
           }
-          log.warn(`Swap failed for ${pairLabel}: ${sw.failed.map((f) => `${f.mint.slice(0, 8)} ${f.error}`).join("; ")}`);
+          log.warn(
+            `Swap failed for ${pairLabel}: ${sw.failed.map((f) => `${f.mint.slice(0, 8)} ${f.error}`).join("; ")}`
+          );
         }
         if (sw.swapped.length > 0 || sw.failed.length > 0) {
           swapInfo = {
@@ -173,7 +183,9 @@ export async function handleClose(pos, reason, opts = {}) {
       // Sesi pool selesai (tak ada posisi tersisa, termasuk DCA) → tandai '#'
       // di pool.txt agar tidak di-entry lagi tanpa pengawasan manual.
       const stillOpenInPool = getOpenTrackedPositions().some((p) => p.pool === pos.pool);
-      if (!skipDeactivate && !stillOpenInPool && !swapPending) deactivateFn(pos.pool, "entry+exit selesai");
+      if (!skipDeactivate && !externalClose && !stillOpenInPool && !swapPending) {
+        deactivateFn(pos.pool, "entry+exit selesai");
+      }
       return { success: true, swapInfo, swapPending };
     } else {
       const brief = String(result?.error || "unknown").split("\n")[0];

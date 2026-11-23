@@ -10,7 +10,7 @@ import { getPrices } from "../market/jupiter-price.js";
 import { bidaskSolTouchKey } from "../state/bidask-sol-touch.js";
 import { getBidaskDoubleTouch, setBidaskDoubleTouch } from "../state/bidask-double-touch.js";
 import { bidaskSolQuotePrice, decideBidaskSolTouch } from "./bidask-sol-entry.js";
-import { getLastPrices } from "./price-watch.js";
+import { forgetPrice, rememberPrices } from "./price-watch.js";
 
 export function bidaskDoubleTargetKey(lineId, target, unit = "usd") {
   return bidaskSolTouchKey(lineId, target, unit);
@@ -79,16 +79,11 @@ export async function pollBidaskDoubleTargets(watches = [], deps = {}) {
   const list = (watches || []).filter((w) => w?.mint && Number(w.entryPrice) > 0);
   if (list.length === 0) return { armed: [] };
 
-  const prices = await fetchPrices([...list.map((w) => w.mint), WSOL_MINT]);
-  const last = getLastPrices();
-  for (const [mint, value] of prices) {
-    if (mint === WSOL_MINT) continue;
-    if (Number.isFinite(value)) last.set(mint, value);
-  }
+  const prices = deps.prices instanceof Map ? deps.prices : await fetchPrices([...list.map((w) => w.mint), WSOL_MINT]);
+  rememberPrices(prices, deps.now);
   const solUsd = prices.get(WSOL_MINT);
   const solNum = Number(solUsd);
-  if (Number.isFinite(solNum) && solNum > 0) last.set(WSOL_MINT, solNum);
-  else last.delete(WSOL_MINT);
+  if (!(Number.isFinite(solNum) && solNum > 0)) forgetPrice(WSOL_MINT);
 
   const armed = [];
   let missingSol = 0;

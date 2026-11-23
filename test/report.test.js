@@ -11,6 +11,33 @@ test("bullish + harga <= garis ditandai siap entry", () => {
   assert.match(block, /siap entry/);
 });
 
+test("harga basi tidak ditandai siap entry", () => {
+  const block = blockWith({
+    pool: "p1",
+    pairName: "WOW-SOL",
+    trend: "bullish",
+    line: 100,
+    price: 99,
+    priceStale: true,
+    priceAgeSec: 75,
+  });
+  assert.match(block, /harga basi \(75s\)/);
+  assert.doesNotMatch(block, /siap entry/);
+  const sol = blockWith({
+    pool: "mintmint",
+    pairName: "CA mintmint",
+    pendingBidaskSol: true,
+    entryPrice: 1,
+    entryPriceUnit: "usd",
+    price: 1,
+    touchDirection: "down",
+    priceStale: true,
+    priceAgeSec: 90,
+  });
+  assert.match(sol, /harga basi \(90s\)/);
+  assert.doesNotMatch(sol, /siap entry/);
+});
+
 test("bullish + harga di atas garis menunggu turun", () => {
   const block = blockWith({ pool: "p1", pairName: "WOW-SOL", trend: "bullish", line: 100, price: 101 });
   assert.match(block, /menunggu turun/);
