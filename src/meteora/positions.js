@@ -265,6 +265,10 @@ const poolPnlCache = new Map(); // pool -> { at, map: Map(position -> entry) }
 // - modal bersih bukan angka, ≤ 1e-6, atau ≤ 1% dari total setoran
 //   (pembagi ~0, termasuk modal negatif)
 // Field persen Meteora yang kosong dihitung 0, sama seperti sebelumnya.
+//
+// pnlBasisFromEntry mengembalikan { pct, pnlSol }. pnlSol adalah pembilang
+// SOL hanya bila persen dihitung dari angka itu (mode SOL). Cadangan field
+// persen Meteora dan mode USD tidak punya pembilang SOL (pnlSol null).
 const NET_CAPITAL_ABS_EPSILON = 1e-6;
 const NET_CAPITAL_MIN_DEPOSIT_RATIO = 0.01;
 
@@ -393,16 +397,16 @@ export function needsHistoricalFirstDeposit(entry) {
   return allTimeDepositsInflated(entry);
 }
 
-export function pnlFromEntry(entry, { solMode = config.solMode, initialCapitalSol = null } = {}) {
+export function pnlBasisFromEntry(entry, { solMode = config.solMode, initialCapitalSol = null } = {}) {
   if (!entry || typeof entry !== "object") return null;
   const useSol = Boolean(solMode);
-  const fallback = meteoraPctChange(entry, useSol);
+  const fallback = { pct: meteoraPctChange(entry, useSol), pnlSol: null };
   const pnlAbs = finiteAmount(useSol ? entry.pnlSol : entry.pnlUsd);
   if (useSol) {
     const capital = finiteAmount(initialCapitalSol);
     if (capital != null && capital > 0 && pnlAbs != null) {
       const pct = (pnlAbs / capital) * 100;
-      if (Number.isFinite(pct)) return pct;
+      if (Number.isFinite(pct)) return { pct, pnlSol: pnlAbs };
     }
   }
   const deposits = finiteAmount(useSol ? entry.allTimeDeposits?.total?.sol : entry.allTimeDeposits?.total?.usd);
@@ -413,7 +417,13 @@ export function pnlFromEntry(entry, { solMode = config.solMode, initialCapitalSo
   if (!Number.isFinite(net) || net <= NET_CAPITAL_ABS_EPSILON) return fallback;
   if (deposits > 0 && net <= deposits * NET_CAPITAL_MIN_DEPOSIT_RATIO) return fallback;
   const pct = (pnlAbs / net) * 100;
-  return Number.isFinite(pct) ? pct : fallback;
+  if (!Number.isFinite(pct)) return fallback;
+  return { pct, pnlSol: useSol ? pnlAbs : null };
+}
+
+export function pnlFromEntry(entry, opts = {}) {
+  const basis = pnlBasisFromEntry(entry, opts);
+  return basis ? basis.pct : null;
 }
 
 export function livePnlEntryFor(positionAddress) {
@@ -593,8 +603,10 @@ async function enrichPnl(positions) {
       if (!isOpenPositionPnlEntry(entry)) continue;
 
       const initialCapitalSol = getInitialCapitalSol(p.position);
-      const pnl = pnlFromEntry(entry, { initialCapitalSol });
+      const basis = pnlBasisFromEntry(entry, { initialCapitalSol });
+      const pnl = basis?.pct ?? null;
       p.pnlPct = pnl == null ? 0 : pnl;
+      p.pnlSol = basis?.pnlSol ?? null;
       if (p.position) livePnlEntries.set(p.position, entry);
       // null = data yield tidak tersedia (dibedakan dari 0%).
       // feePct24hAt = waktu cache sukses; kosong bila angka yield tidak ada.

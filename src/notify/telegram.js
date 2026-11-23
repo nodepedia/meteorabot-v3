@@ -445,6 +445,22 @@ function signedPct(v) {
   return `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 }
 
+// Pembilang SOL yang sama dengan persen. Kosong / bukan angka = tidak ada.
+function signedSol(v) {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return null;
+  return `${n > 0 ? "+" : ""}${n.toFixed(4)}`;
+}
+
+function pnlStatusLine(p) {
+  const pct = signedPct(p.pnlPct);
+  const mark = emoji(p.pnlPct);
+  const sol = signedSol(p.pnlSol);
+  if (sol == null) return `PnL: ${pct}${mark}`;
+  return `PnL: ${sol} SOL | ${pct}${mark ? ` ${mark}` : ""}`;
+}
+
 // Label pendek untuk alasan exit (bukan kalimat naratif).
 export function exitLabel(reason) {
   if (!reason) return "?";
@@ -622,7 +638,7 @@ export function buildStatusMessage(positions) {
     msg += `Age : ${age}\n`;
 
     if (p.pnlPct != null) {
-      msg += `PnL: ${signedPct(p.pnlPct)}${emoji(p.pnlPct)}\n`;
+      msg += `${pnlStatusLine(p)}\n`;
     }
 
     // Yield selalu tampil; info OOR hanya muncul saat keluar rentang.

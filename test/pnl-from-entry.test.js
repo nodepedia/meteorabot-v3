@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import config from "../src/config/index.js";
 import { WSOL_MINT } from "../src/core/constants.js";
-import { pnlFromEntry, initialCapitalForPosition, initialDepositSol } from "../src/meteora/positions.js";
+import {
+  pnlFromEntry,
+  pnlBasisFromEntry,
+  initialCapitalForPosition,
+  initialDepositSol,
+} from "../src/meteora/positions.js";
 
 // Sakura-SOL 8ksEo9xQK9eYsA3MukPoCurTpGTx4xc4VxomhRew9M7T.
 // Setoran seumur hidup membengkak karena rebalance; modal bersih = 0.125 SOL.
@@ -202,6 +207,44 @@ test("modal awal ada tapi pnlSol tidak ada: tetap cadangan", () => {
     allTimeWithdrawals: { total: { sol: "3.5733" } },
   };
   assert.equal(pnlFromEntry(entry, { solMode: true, initialCapitalSol: 1 }), 3.22);
+});
+
+test("basis SOL: pembilang sama dengan angka yang menghasilkan persen", () => {
+  const net = pnlBasisFromEntry(SAKURA, { solMode: true });
+  assert.equal(net.pnlSol, -0.03174);
+  assert.equal(net.pct, pnlFromEntry(SAKURA, { solMode: true }));
+
+  const capital = pnlBasisFromEntry(CLAUDIA, { solMode: true, initialCapitalSol: 1 });
+  assert.equal(capital.pnlSol, 0.1134);
+  assert.ok(Math.abs(capital.pct - 11.34) < 1e-9);
+  assert.equal(capital.pct, pnlFromEntry(CLAUDIA, { solMode: true, initialCapitalSol: 1 }));
+});
+
+test("basis SOL kosong bila persen bukan dari pnlSol", () => {
+  const fallback = pnlBasisFromEntry(CLAUDIA, { solMode: true });
+  assert.equal(fallback.pct, 3.22);
+  assert.equal(fallback.pnlSol, null);
+
+  const missing = pnlBasisFromEntry({ pnlSolPctChange: "12.5" }, { solMode: true });
+  assert.equal(missing.pct, 12.5);
+  assert.equal(missing.pnlSol, null);
+
+  const usd = pnlBasisFromEntry(
+    {
+      pnlUsd: "-0.03174",
+      pnlPctChange: "-2.99",
+      pnlSol: "-999",
+      pnlSolPctChange: "-99",
+      allTimeDeposits: { total: { usd: "1.0610", sol: "50" } },
+      allTimeWithdrawals: { total: { usd: "0.9360", sol: "40" } },
+    },
+    { solMode: false, initialCapitalSol: 1 }
+  );
+  assert.equal(usd.pnlSol, null);
+  assert.ok(Math.abs(usd.pct - sakuraPct()) < 1e-9);
+
+  assert.equal(pnlBasisFromEntry(null, { solMode: true }), null);
+  assert.equal(pnlBasisFromEntry(undefined), null);
 });
 
 test("mode USD mengabaikan modal awal SOL", () => {

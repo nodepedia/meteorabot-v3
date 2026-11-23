@@ -155,9 +155,112 @@ test("status tanpa trailing tidak menampilkan Exit at walau stop loss aktif", ()
       mode: "bidask:sol",
     },
   ]);
-  assert.match(msg, /PnL: -12\.00%/);
+  assert.match(msg, /PnL: -12\.00%🔴/);
+  assert.doesNotMatch(msg, /PnL:.*SOL/);
   assert.doesNotMatch(msg, /Exit at/);
   assert.doesNotMatch(msg, /-40/);
+});
+
+test("status PnL: SOL absolut, persen, lalu emoji", () => {
+  resetState();
+  const msg = buildStatusMessage([
+    {
+      pair: "DCTY-SOL",
+      position: "PosNoState",
+      ageMinutes: 1582,
+      pnlPct: 1.43,
+      pnlSol: 0.0157,
+      feePct24h: 6.85,
+      activeBin: 100,
+      lowerBin: 90,
+      upperBin: 110,
+      mode: "bidask:double",
+    },
+  ]);
+  assert.equal(
+    msg,
+    [
+      "🚨 Meteora DLMM Position Status:",
+      "",
+      "DCTY-SOL",
+      "Age : 1582m",
+      "PnL: +0.0157 SOL | +1.43% 🟢",
+      "Yield: 6.85%",
+    ].join("\n")
+  );
+});
+
+test("status PnL negatif: 4 desimal, tanda minus, dan emoji merah", () => {
+  resetState();
+  const msg = buildStatusMessage([
+    {
+      pair: "DCTY-SOL",
+      position: "PosNoState",
+      ageMinutes: 10,
+      pnlPct: -12,
+      pnlSol: -0.12,
+      feePct24h: 3,
+      activeBin: 100,
+      lowerBin: 90,
+      upperBin: 110,
+      mode: "bidask:sol",
+    },
+  ]);
+  assert.match(msg, /PnL: -0\.1200 SOL \| -12\.00% 🔴/);
+  assert.match(msg, /Yield: 3\.00%/);
+});
+
+test("status PnL membulatkan SOL ke 4 desimal dan nol tanpa emoji", () => {
+  resetState();
+  const rounded = buildStatusMessage([
+    {
+      pair: "DCTY-SOL",
+      position: "PosNoState",
+      ageMinutes: 1,
+      pnlPct: 1.234,
+      pnlSol: 0.01574,
+      feePct24h: 1,
+      activeBin: 100,
+      lowerBin: 90,
+      upperBin: 110,
+    },
+  ]);
+  assert.match(rounded, /PnL: \+0\.0157 SOL \| \+1\.23% 🟢/);
+
+  const flat = buildStatusMessage([
+    {
+      pair: "DCTY-SOL",
+      position: "PosNoState",
+      ageMinutes: 1,
+      pnlPct: 0,
+      pnlSol: 0,
+      feePct24h: 1,
+      activeBin: 100,
+      lowerBin: 90,
+      upperBin: 110,
+    },
+  ]);
+  assert.match(flat, /PnL: 0\.0000 SOL \| 0\.00%\n/);
+  assert.doesNotMatch(flat, /PnL:.*🟢|PnL:.*🔴/);
+});
+
+test("status PnL tanpa angka SOL tetap baris persen lama", () => {
+  resetState();
+  const base = {
+    pair: "DCTY-SOL",
+    position: "PosNoState",
+    ageMinutes: 4,
+    pnlPct: 1.43,
+    feePct24h: 6.85,
+    activeBin: 100,
+    lowerBin: 90,
+    upperBin: 110,
+  };
+  for (const pnlSol of [undefined, null, "", "nope", Number.NaN, Number.POSITIVE_INFINITY]) {
+    const msg = buildStatusMessage([{ ...base, pnlSol }]);
+    assert.match(msg, /PnL: \+1\.43%🟢/);
+    assert.doesNotMatch(msg, /PnL:.*SOL/);
+  }
 });
 
 test("status trailing aktif: menampilkan Trailing, Peak, dan Exit at", () => {
@@ -172,6 +275,7 @@ test("status trailing aktif: menampilkan Trailing, Peak, dan Exit at", () => {
       position: POS,
       ageMinutes: 56,
       pnlPct: 9,
+      pnlSol: 0.09,
       feePct24h: 22.37,
       activeBin: 100,
       lowerBin: 90,
@@ -179,6 +283,7 @@ test("status trailing aktif: menampilkan Trailing, Peak, dan Exit at", () => {
       mode: "bidask:double",
     },
   ]);
+  assert.match(msg, /PnL: \+0\.0900 SOL \| \+9\.00% 🟢/);
   assert.match(msg, /Trailing: 🔁/);
   assert.match(msg, /Peak: \+11\.40%/);
   assert.match(msg, /Exit at : [+-]?\d+\.\d{2}%/);
